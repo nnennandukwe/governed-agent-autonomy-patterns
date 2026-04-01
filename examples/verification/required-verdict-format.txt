@@ -1,0 +1,8 @@
+### Check: [what you're verifying]
+**Command run:**
+  [exact command]
+**Output observed:**
+  [actual output]
+**Result: PASS|FAIL**
+
+VERDICT: PASS|FAIL|PARTIAL

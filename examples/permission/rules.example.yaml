@@ -1,0 +1,24 @@
+permission_policy:
+  allow:
+    - "git status"
+    - "git diff"
+    - "npm test"
+  ask:
+    - "git push"
+    - "rm *"
+    - "curl *"
+  deny:
+    - "rm -rf /"
+    - "chmod -R 777 /"
+
+dangerous_overrides:
+  destructive_paths:
+    - "/"
+    - "/System"
+    - "/usr"
+  blocked_wrappers:
+    - "sh"
+    - "bash"
+    - "zsh"
+    - "env"
+    - "xargs"
