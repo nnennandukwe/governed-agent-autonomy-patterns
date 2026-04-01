@@ -1,0 +1,13 @@
+publish_policy:
+  allow:
+    - "ci publish from approved tag"
+    - "artifact inventory generation"
+    - "post-publish verification"
+  ask:
+    - "publish to secondary registry"
+    - "re-run publish after failed verification"
+  deny:
+    - "local npm publish"
+    - "publish from untagged commit"
+    - "publish without artifact inventory"
+    - "publish when checksum is missing"

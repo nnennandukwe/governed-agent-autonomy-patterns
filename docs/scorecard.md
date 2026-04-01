@@ -256,3 +256,20 @@ Use this worksheet when reviewing vendors, internal prototypes, or platform upgr
 - `5-9`: Promising, but governance is still too thin.
 - `10-12`: Strong baseline for controlled rollout.
 - `13-15`: Mature control-plane posture.
+
+## Applying This Scorecard To Release Pipelines
+
+Use the same five categories when evaluating packaging and publish automation.
+
+- Planning gate:
+  Is there an approved release plan that names the tag, commit, registry target, and expected artifact before publish starts?
+- Permission control:
+  Can publishing happen only from CI or another controlled path, with local or ad hoc publish blocked by policy?
+- Verification independence:
+  Does a separate verifier inspect the built artifact, validate the file inventory, and confirm the published package matches what was approved?
+- Tool trust review:
+  Do packaging config, registry targets, credentials, and release-tooling changes trigger explicit review before they take effect?
+- Visibility and auditability:
+  Can operators see the artifact contents, checksum, approver, publish result, and rollback path after the release completes?
+
+If the release path scores lower than the coding path, the system still has an integrity gap. Safe generation does not help much if unsafe packaging can ship the wrong artifact.

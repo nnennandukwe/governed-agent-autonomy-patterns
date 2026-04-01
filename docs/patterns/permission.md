@@ -82,6 +82,14 @@ This receipt shows another important guardrail. Wrapper commands can otherwise b
 - Wrapper commands bypass the real policy boundary.
 - Permission prompts are vague, so users approve without understanding risk.
 
+## Release-Time Application
+
+Release workflows need the same policy discipline as coding workflows.
+
+- Publish should run only from a controlled surface such as CI on an approved tag.
+- Local `npm publish`, custom shell wrappers, or ad hoc registry pushes should be denied or escalated explicitly.
+- Artifact inspection and manifest checks should be mandatory steps, not optional conventions.
+
 ## Checklist
 
 - Are allow, ask, and deny outcomes explicit?

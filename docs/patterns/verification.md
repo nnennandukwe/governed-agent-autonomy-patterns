@@ -76,6 +76,14 @@ This is what turns verification from a vibe into a contract.
 - Reports describe what should happen instead of what did happen.
 - `PARTIAL` becomes a polite way to avoid making a decision.
 
+## Release-Time Application
+
+Release verification should validate the shipped artifact, not only the source tree.
+
+- Inspect the built package contents before publish and fail on unexpected files.
+- Re-fetch the published artifact from the registry and verify it matches the approved checksum.
+- Record the exact commands, outputs, and verdict for the release verification pass.
+
 ## Checklist
 
 - Is verification independent from implementation?

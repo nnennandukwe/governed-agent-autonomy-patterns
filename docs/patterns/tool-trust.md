@@ -78,6 +78,14 @@ This second receipt makes the same point for configuration. Trust-sensitive sett
 - Tool approvals are one-time and overly broad.
 - The system has approval prompts, but no durable record of what changed.
 
+## Release-Time Application
+
+Packaging and publish infrastructure expands agent or operator power too.
+
+- Changes to packaging config, release scripts, registry targets, or publish credentials should trigger explicit review.
+- A new registry, artifact source, or signing path should stay untrusted until approved.
+- Publish tooling should leave a durable approval record that shows what changed and who accepted the risk.
+
 ## Checklist
 
 - Are trust-sensitive capabilities detected explicitly?

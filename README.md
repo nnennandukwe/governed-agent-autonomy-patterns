@@ -18,6 +18,8 @@ This repo packages a reusable framework for evaluating and designing governed ag
 - procurement and evaluation checklists
 - lightweight team rollout guides
 
+The same control-plane logic applies after code generation too. Packaging and publish workflows are part of code integrity, not a separate concern.
+
 ## The four patterns
 
 | Pattern | Purpose | Core question |
@@ -65,6 +67,7 @@ If you are an engineering leader:
 If you are a platform or developer tooling team:
 
 - start with the [pattern pages](docs/patterns/plan.md)
+- review the [governed publish pipeline](docs/applications/governed-publish-pipeline.md) if you own release automation
 - copy the [examples](examples/plan/planning-prompt.md) into internal docs or prototypes
 - adapt the scorecard into design review gates or vendor questionnaires
 
@@ -81,6 +84,7 @@ If you are a practitioner or staff engineer:
 - [Permission pattern](docs/patterns/permission.md): allow, ask, deny, and dangerous overrides
 - [Verification pattern](docs/patterns/verification.md): independent validation with evidence
 - [Tool trust pattern](docs/patterns/tool-trust.md): explicit approval for external tools and risky settings
+- [Governed publish pipeline](docs/applications/governed-publish-pipeline.md): apply the framework to packaging and release workflows
 - [Examples](examples/plan/planning-prompt.md): copyable templates and tiny dependency-free demos
 
 ## Source Methodology
@@ -106,6 +110,7 @@ If you want an implementation path:
 3. Add [verification](docs/patterns/verification.md).
 4. Add [tool trust](docs/patterns/tool-trust.md).
 5. Make visibility explicit across all four.
+6. Apply the same controls to packaging and release with the [governed publish pipeline](docs/applications/governed-publish-pipeline.md).
 
 If you want material to repurpose:
 

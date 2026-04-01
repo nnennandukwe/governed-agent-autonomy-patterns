@@ -76,6 +76,14 @@ This second receipt shows that the system can refine a plan before execution rat
 - Planning is too vague to help because it never becomes concrete enough to evaluate.
 - Planning is hidden, so operators cannot tell when the system is waiting for alignment.
 
+## Release-Time Application
+
+The same planning gate should apply to packaging and publish work.
+
+- Name the release target, commit, registry, and rollback path before publish begins.
+- Generate an artifact inventory plan instead of treating package contents as an implementation detail.
+- Require approval on the release plan before any publish job starts.
+
 ## Checklist
 
 - Does the system separate exploration from mutation?

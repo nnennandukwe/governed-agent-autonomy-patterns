@@ -93,3 +93,19 @@ flowchart TD
   V --> S["Approval States"]
   V --> A["Audit Trail"]
 ```
+
+## Governed Publish Pipeline
+
+This diagram shows how the same control-plane patterns apply to package release. The publish path should be approved, policy-bound, artifact-aware, and independently verified.
+
+```mermaid
+flowchart LR
+  T["Release Tag"] --> P["Release Plan"]
+  P --> B["CI Build"]
+  B --> I["Artifact Inventory"]
+  I --> A{"Approval?"}
+  A -- "No" --> R["Revise Or Block"]
+  A -- "Yes" --> U["Controlled Publish"]
+  U --> V["Post-publish Verification"]
+  V --> L["Audit Trail"]
+```
