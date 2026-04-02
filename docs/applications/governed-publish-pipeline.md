@@ -6,6 +6,10 @@ The wrong lesson from a release incident is "automate more." That is too vague t
 
 This page shows how the repo's four core patterns apply to package release.
 
+A high-level visual of that release path lives below.
+
+![Governance from code generation to release](../assets/diagrams/governance-code-generation-to-release.png)
+
 A visual version of that release checklist lives below.
 
 ![Release integrity checklist](../assets/release-integrity-checklist.png)

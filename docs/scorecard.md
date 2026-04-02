@@ -2,6 +2,10 @@
 
 Use this scorecard to evaluate whether an AI coding system supports code integrity instead of just accelerating output.
 
+![Integrity-first evaluation scorecard](./assets/diagrams/integrity-first-evaluation-scorecard.png)
+
+Use the visual as the quick scan. Use the detailed rubric below when you need evidence and next actions.
+
 ## How To Score
 
 Use the same scale for every category:

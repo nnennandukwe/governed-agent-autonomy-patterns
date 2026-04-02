@@ -4,6 +4,10 @@
 
 This diagram shows the full control plane: planning, permissioning, trust review, verification, and visibility all sit between the operator and raw execution power.
 
+![Governed autonomy control plane](./assets/diagrams/control-plane-overview.png)
+
+Portable mermaid version:
+
 ```mermaid
 flowchart TD
   U["Operator"] --> P["Planner"]
@@ -22,6 +26,12 @@ flowchart TD
   R --> S
   V --> S
 ```
+
+## Primitive vs Governed Autonomy
+
+This comparison makes the core reframe explicit: the difference is not intelligence alone. It is the surrounding system that turns capability into something governable.
+
+![Primitive autonomy vs governed autonomy](./assets/diagrams/primitive-vs-governed-autonomy.png)
 
 ## Plan Flow
 
@@ -76,6 +86,12 @@ flowchart LR
   D -- "Needs Revision" --> R["Revise And Re-review"]
 ```
 
+## Observability And Quota Governance
+
+This diagram shows the runtime accountability layer around agent execution: trace context, model and tool events, usage collection, and policy decisions when thresholds are crossed.
+
+![Agent observability and quota governance](./assets/diagrams/agent-observability-and-quota-governance.png)
+
 ## Cross-Cutting Visibility Map
 
 This diagram shows the surfaces that keep the whole control plane observable. Without these, even good controls become hard to trust.
@@ -97,6 +113,10 @@ flowchart TD
 ## Governed Publish Pipeline
 
 This diagram shows how the same control-plane patterns apply to package release. The publish path should be approved, policy-bound, artifact-aware, and independently verified.
+
+![Governance from code generation to release](./assets/diagrams/governance-code-generation-to-release.png)
+
+Portable mermaid version:
 
 ```mermaid
 flowchart LR

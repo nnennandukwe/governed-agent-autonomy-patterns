@@ -33,28 +33,11 @@ The same control-plane logic applies after code generation too. Packaging and pu
 
 ## Architecture At A Glance
 
-```mermaid
-flowchart TD
-  U["Operator"] --> P["Planner"]
-  P --> A["Plan Approval"]
-  A --> E["Execution Path"]
-
-  E --> G["Permission Gate"]
-  G --> T["Tools and Commands"]
-  G --> R["Tool Trust Review"]
-  R --> T
-
-  E --> V["Independent Verifier"]
-  V --> D["Evidence + Verdict"]
-
-  P --> S["Visibility Surfaces"]
-  A --> S
-  G --> S
-  R --> S
-  V --> S
-```
+![Governed autonomy control plane](docs/assets/diagrams/control-plane-overview.png)
 
 This control plane keeps generation power inside explicit operational boundaries. The point is not to stop work. The point is to make safe work easy and unsafe work obvious.
+
+See the [diagrams](docs/diagrams.md) page for the supporting visual set and portable mermaid versions.
 
 ## How To Use This Repo
 
