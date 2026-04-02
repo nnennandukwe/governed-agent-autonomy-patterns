@@ -4,6 +4,8 @@ Use this scorecard to evaluate whether an AI coding system supports code integri
 
 ![Integrity-first evaluation scorecard](./assets/diagrams/integrity-first-evaluation-scorecard.png)
 
+The visual uses `telemetry gate` as shorthand. In the repo taxonomy, that fifth control surface is named `runtime accountability` because it includes execution state, traceability, quota, and spend attribution together.
+
 Use the visual as the quick scan. Use the detailed rubric below when you need evidence and next actions.
 
 ## How To Score
@@ -12,10 +14,10 @@ Use the same scale for every category:
 
 | Score | Meaning |
 | --- | --- |
-| `0` | Missing. The pattern is absent or mostly aspirational. |
-| `1` | Partial. The pattern exists, but it is easy to bypass or too narrow to trust. |
-| `2` | Strong. The pattern works in normal use and blocks obvious failure modes. |
-| `3` | Control-plane grade. The pattern is explicit, enforced, and visible to operators. |
+| `0` | Missing. The gate is absent or mostly aspirational. |
+| `1` | Partial. The gate exists, but it is easy to bypass or too narrow to trust. |
+| `2` | Strong. The gate works in normal use and blocks obvious failure modes. |
+| `3` | Control-plane grade. The gate is explicit, enforced, and visible to operators. |
 
 ## 1. Planning Gate
 
@@ -59,9 +61,9 @@ In plan mode, the agent will:
 `
 ```
 
-This is the difference between “think first” as a slogan and “think first” as an operating rule.
+This is the difference between "think first" as a slogan and "think first" as an operating rule.
 
-## 2. Permission Control
+## 2. Permission Gate
 
 ### What good looks like
 
@@ -71,7 +73,7 @@ This is the difference between “think first” as a slogan and “think first�
 
 ### Failure mode when absent
 
-The agent inherits too much trust. Operators think they have policy, but the real behavior is “allow unless someone notices a problem.”
+The agent inherits too much trust. Operators think they have policy, but the real behavior is "allow unless someone notices a problem."
 
 ### Questions to ask
 
@@ -104,55 +106,9 @@ if (isDangerousRemovalPath(targetPath)) {
 }
 ```
 
-This is what “safe defaults” looks like in practice: dangerous operations do not get a free pass just because a user previously allowed something nearby.
+This is what "safe defaults" looks like in practice: dangerous operations do not get a free pass just because a user previously allowed something nearby.
 
-## 3. Verification Independence
-
-### What good looks like
-
-- Verification is assigned to a separate role or process.
-- The verifier must run evidence-bearing checks, not just inspect code.
-- The system requires an explicit verdict contract.
-
-### Failure mode when absent
-
-The agent grades its own homework. Passing output becomes a narrative style instead of a tested outcome.
-
-### Questions to ask
-
-- Is verification performed by a separate agent, workflow, or human?
-- Are checks required to include commands, outputs, and a verdict?
-- Can a verifier fail work even when the implementation looks polished?
-
-### Rubric
-
-| Score | Verification behavior |
-| --- | --- |
-| `0` | No independent verification. The implementer self-certifies. |
-| `1` | Some tests run, but verification is weak or optional. |
-| `2` | A separate verification path exists and expects evidence. |
-| `3` | Verification is independent, adversarial, evidence-bearing, and contract-driven. |
-
-### Receipt
-
-> Adapted from a private production codebase; trimmed and renamed for clarity.
-
-```ts
-const REQUIRED_REPORT = `
-### Check: [what you're verifying]
-**Command run:**
-  [exact command]
-**Output observed:**
-  [actual output]
-**Result: PASS|FAIL**
-
-VERDICT: PASS|FAIL|PARTIAL
-`
-```
-
-This matters because “I reviewed the code and it looks fine” is not verification.
-
-## 4. Tool Trust Review
+## 3. Tool Trust Gate
 
 ### What good looks like
 
@@ -198,49 +154,108 @@ export async function checkManagedSettingsSecurity(
 
 This is the right order of operations: detect trust-sensitive change first, then block until a human decides.
 
-## 5. Visibility And Auditability
+## 4. Verification Gate
 
 ### What good looks like
 
-- Approval state, rejection state, risk decisions, and execution status are visible.
-- Operators can see whether the system is waiting, approved, rejected, or failed.
-- Important events are logged or surfaced for later review.
+- Verification is assigned to a separate role or process.
+- The verifier must run evidence-bearing checks, not just inspect code.
+- The system requires an explicit verdict contract.
 
 ### Failure mode when absent
 
-Even a well-designed control plane becomes opaque. Teams cannot tell whether a system is safe because they cannot see where decisions were made.
+The agent grades its own homework. Passing output becomes a narrative style instead of a tested outcome.
 
 ### Questions to ask
 
-- Can operators see when the system is waiting on input or approval?
-- Are approvals, rejections, and execution outcomes logged?
-- Is status visible enough to support incident review or audit trails?
+- Is verification performed by a separate agent, workflow, or human?
+- Are checks required to include commands, outputs, and a verdict?
+- Can a verifier fail work even when the implementation looks polished?
 
 ### Rubric
 
-| Score | Visibility behavior |
+| Score | Verification behavior |
 | --- | --- |
-| `0` | Decisions happen silently or are hard to reconstruct. |
-| `1` | Some events are visible, but status and approval state are inconsistent. |
-| `2` | Operators can observe key decisions and lifecycle state. |
-| `3` | Status, approvals, outcomes, and risk transitions are explicit and inspectable. |
+| `0` | No independent verification. The implementer self-certifies. |
+| `1` | Some tests run, but verification is weak or optional. |
+| `2` | A separate verification path exists and expects evidence. |
+| `3` | Verification is independent, adversarial, evidence-bearing, and contract-driven. |
 
 ### Receipt
 
 > Adapted from a private production codebase; trimmed and renamed for clarity.
 
 ```ts
-pollForApprovedPlan(sessionId, timeoutMs, phase => {
-  if (phase === 'needs_input') logEvent('plan_awaiting_input', {})
+const REQUIRED_REPORT = `
+### Check: [what you're verifying]
+**Command run:**
+  [exact command]
+**Output observed:**
+  [actual output]
+**Result: PASS|FAIL**
 
-  updateTaskState(taskId, current => ({
-    ...current,
-    planningPhase: phase === 'running' ? undefined : phase,
-  }))
+VERDICT: PASS|FAIL|PARTIAL
+`
+```
+
+This matters because "I reviewed the code and it looks fine" is not verification.
+
+## 5. Runtime Accountability
+
+### What good looks like
+
+- Operators can see execution state, current phase, and execution target while work is in flight.
+- Usage events, traces, and spend are attributable to a request, session, workflow, or team.
+- Quota, low-balance, and overage thresholds trigger explicit allow, ask, or stop behavior.
+- Important state transitions and approvals are visible enough to support incident review or audit trails.
+
+### Failure mode when absent
+
+Autonomous work can be technically running while remaining operationally invisible. Teams lose the ability to supervise authority, understand spend, or intervene when thresholds are crossed.
+
+### Questions to ask
+
+- Can operators see what phase the system is in and where it is running?
+- Can usage and spend be tied back to a specific request or session?
+- What happens when quota is exhausted, balance is low, or overage is required?
+- Are threshold crossings visible enough to support approval, alerting, or shutdown?
+
+### Rubric
+
+| Score | Runtime accountability behavior |
+| --- | --- |
+| `0` | Execution state and spend are mostly invisible. Threshold behavior is unclear. |
+| `1` | Some state or usage data exists, but it is inconsistent, delayed, or hard to act on. |
+| `2` | Operators can observe execution state and the system enforces basic quota or spend boundaries. |
+| `3` | State, traceability, quota, cost attribution, and threshold-based intervention are explicit and operator-usable. |
+
+### Receipt
+
+> Adapted from a private production codebase; trimmed and renamed for clarity.
+
+```ts
+pollRemoteSession(sessionId, update => {
+  setRunState({
+    phase: update.phase,
+    executionTarget: update.executionTarget,
+    rejectCount: update.rejectCount,
+  })
 })
 ```
 
-Visibility is not a dashboard afterthought. It is how the rest of the control plane stays real.
+This matters because remote authority should not change silently. A team needs inspectable state while an autonomous workflow is running.
+
+> Adapted from a private production codebase; trimmed and renamed for clarity.
+
+```ts
+export function checkOverageGate(context) {
+  if (!context.extraUsageEnabled) return { outcome: 'block' }
+  if (context.lowBalance) return { outcome: 'ask', reason: 'low_balance' }
+  return { outcome: 'continue' }
+}
+```
+
+This is the other half of runtime accountability: a system that can spend remotely also needs explicit threshold behavior when budget constraints become real.
 
 ## Comparison Worksheet
 
@@ -249,10 +264,10 @@ Use this worksheet when reviewing vendors, internal prototypes, or platform upgr
 | Category | Score (0-3) | Evidence | Risk if weak | Next action |
 | --- | --- | --- | --- | --- |
 | Planning gate |  |  |  |  |
-| Permission control |  |  |  |  |
-| Verification independence |  |  |  |  |
-| Tool trust review |  |  |  |  |
-| Visibility and auditability |  |  |  |  |
+| Permission gate |  |  |  |  |
+| Tool trust gate |  |  |  |  |
+| Verification gate |  |  |  |  |
+| Runtime accountability |  |  |  |  |
 
 ## Interpreting Results
 
@@ -263,17 +278,17 @@ Use this worksheet when reviewing vendors, internal prototypes, or platform upgr
 
 ## Applying This Scorecard To Release Pipelines
 
-Use the same five categories when evaluating packaging and publish automation.
+Use the same five gates when evaluating packaging and publish automation.
 
 - Planning gate:
   Is there an approved release plan that names the tag, commit, registry target, and expected artifact before publish starts?
-- Permission control:
+- Permission gate:
   Can publishing happen only from CI or another controlled path, with local or ad hoc publish blocked by policy?
-- Verification independence:
-  Does a separate verifier inspect the built artifact, validate the file inventory, and confirm the published package matches what was approved?
-- Tool trust review:
+- Tool trust gate:
   Do packaging config, registry targets, credentials, and release-tooling changes trigger explicit review before they take effect?
-- Visibility and auditability:
-  Can operators see the artifact contents, checksum, approver, publish result, and rollback path after the release completes?
+- Verification gate:
+  Does a separate verifier inspect the built artifact, validate the file inventory, and confirm the published package matches what was approved?
+- Runtime accountability:
+  Can operators see the publish result, artifact provenance, approver, rollback path, and any threshold-based release or cost intervention after the release completes?
 
 If the release path scores lower than the coding path, the system still has an integrity gap. Safe generation does not help much if unsafe packaging can ship the wrong artifact.

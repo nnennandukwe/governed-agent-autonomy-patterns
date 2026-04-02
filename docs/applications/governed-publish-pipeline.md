@@ -4,13 +4,15 @@ Packaging and publish workflows are part of code integrity.
 
 The wrong lesson from a release incident is "automate more." That is too vague to help. The right lesson is to govern the publish path so unsafe artifact states cannot ship.
 
-This page shows how the repo's four core patterns apply to package release.
+This page shows how the repo's five core gates apply to package release.
 
 A high-level visual of that release path lives below.
 
 ![Governance from code generation to release](../assets/diagrams/governance-code-generation-to-release.png)
 
-A visual version of that release checklist lives below.
+In the release visual, `telemetry` is the runtime-accountability gate applied to publish results, provenance, and release-state visibility.
+
+A visual version of the release checklist lives below.
 
 ![Release integrity checklist](../assets/release-integrity-checklist.png)
 
@@ -23,7 +25,7 @@ The goal is not to remove humans from the loop. The goal is to move humans to th
 - humans approve intent and review evidence
 - machines enforce packaging, publish, and verification invariants
 
-## The Four Patterns Applied To Publish
+## The Five Gates Applied To Publish
 
 ### 1. Plan
 
@@ -41,7 +43,15 @@ Publish is a privileged action and should be policy-bound.
 - deny local or wrapper-based publish paths by default
 - require artifact inventory checks before the publish step can proceed
 
-### 3. Verification
+### 3. Tool Trust
+
+Release tooling changes can quietly expand risk.
+
+- review packaging config before it takes effect
+- review registry-target, credential, and signing-path changes explicitly
+- record approval decisions so later incident review can reconstruct the trust boundary
+
+### 4. Verification
 
 Verification should focus on the built and shipped artifact.
 
@@ -49,13 +59,13 @@ Verification should focus on the built and shipped artifact.
 - fail if unexpected files, debug assets, or internal paths appear
 - re-fetch the published package and compare it to the approved artifact
 
-### 4. Tool Trust
+### 5. Runtime Accountability
 
-Release tooling changes can quietly expand risk.
+Release should stay inspectable after publish starts and after the artifact ships.
 
-- review packaging-config changes before they take effect
-- review registry-target, credential, and signing-path changes explicitly
-- record approval decisions so later incident review can reconstruct the trust boundary
+- record publish result, artifact provenance, and rollback handle
+- surface release-state changes and approval history clearly
+- require explicit alert, approval, or stop behavior when release or cost thresholds are crossed
 
 ## Minimal Governed Publish Flow
 
@@ -65,7 +75,8 @@ Release tooling changes can quietly expand risk.
 4. Review the release report and approve or block publish.
 5. Publish through a controlled service account.
 6. Re-fetch the published artifact and verify it matches the approved artifact.
-7. Store the approver, checksum, registry result, and rollback handle in an audit record.
+7. Store the approver, checksum, provenance, publish result, and rollback handle in an audit record.
+8. Alert, stop, or require approval when release or cost thresholds are crossed.
 
 ## Common Failure Modes
 
@@ -74,6 +85,7 @@ Release tooling changes can quietly expand risk.
 - Release automation exists, but artifact inspection is optional.
 - Registry or credential changes expand trust without explicit review.
 - Teams verify source code quality but never verify the actual shipped package.
+- A shipped artifact cannot be traced back to a release record, approval record, or provenance signal afterward.
 
 ## What To Copy First
 
@@ -86,7 +98,8 @@ Release tooling changes can quietly expand risk.
 ## Related Reading
 
 - [Scorecard](../scorecard.md)
-- [Plan pattern](../patterns/plan.md)
-- [Permission pattern](../patterns/permission.md)
-- [Verification pattern](../patterns/verification.md)
-- [Tool trust pattern](../patterns/tool-trust.md)
+- [Plan gate](../patterns/plan.md)
+- [Permission gate](../patterns/permission.md)
+- [Tool trust gate](../patterns/tool-trust.md)
+- [Verification gate](../patterns/verification.md)
+- [Runtime accountability gate](../patterns/runtime-accountability.md)

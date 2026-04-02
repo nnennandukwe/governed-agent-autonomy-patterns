@@ -2,29 +2,31 @@
 
 ## Control Plane Overview
 
-This diagram shows the full control plane: planning, permissioning, trust review, verification, and visibility all sit between the operator and raw execution power.
+This diagram shows the full five-gate control plane: planning, permission, tool trust, verification, and runtime accountability all sit between the operator and raw execution power.
 
 ![Governed autonomy control plane](./assets/diagrams/control-plane-overview.png)
+
+In the visual set, the fifth gate is rendered as a telemetry and quota gate. In the repo taxonomy, that gate is called `runtime accountability`.
 
 Portable mermaid version:
 
 ```mermaid
 flowchart TD
-  U["Operator"] --> P["Planner"]
-  P --> A["Plan Approval"]
-  A --> E["Execution Path"]
+  U["User Request"] --> P["Plan Gate"]
+  P --> A["Approval"]
+  A --> E["Execution Target"]
   E --> G["Permission Gate"]
-  G --> T["Tools and Commands"]
-  G --> R["Tool Trust Review"]
-  R --> T
-  E --> V["Independent Verifier"]
-  V --> D["Evidence + Verdict"]
+  G --> T["Tool Trust Gate"]
+  T --> I["Implementation"]
+  I --> V["Independent Verification"]
+  V --> C["Completion"]
 
-  P --> S["Visibility Surfaces"]
-  A --> S
-  G --> S
-  R --> S
-  V --> S
+  E --> R["Runtime Accountability Gate"]
+  I --> R
+  V --> R
+  R --> O{"Threshold Crossed?"}
+  O -- "No" --> C
+  O -- "Yes" --> X["Alert, Ask, Or Stop"]
 ```
 
 ## Primitive vs Governed Autonomy
@@ -61,18 +63,6 @@ flowchart LR
   O -- "Deny" --> X["Block"]
 ```
 
-## Verification Flow
-
-This diagram shows the separation between implementation and verification. The verifier is a different role with a different job.
-
-```mermaid
-flowchart LR
-  I["Implementer"] --> C["Changed Artifact"]
-  C --> V["Independent Verifier"]
-  V --> E["Evidence-Bearing Checks"]
-  E --> R["Verdict"]
-```
-
 ## Tool Trust Flow
 
 This diagram shows that new servers, tools, and risky settings should not become trusted just because they exist.
@@ -86,19 +76,29 @@ flowchart LR
   D -- "Needs Revision" --> R["Revise And Re-review"]
 ```
 
-## Observability And Quota Governance
+## Verification Flow
 
-This diagram shows the runtime accountability layer around agent execution: trace context, model and tool events, usage collection, and policy decisions when thresholds are crossed.
+This diagram shows the separation between implementation and verification. The verifier is a different role with a different job.
+
+```mermaid
+flowchart LR
+  I["Implementer"] --> C["Changed Artifact"]
+  C --> V["Independent Verifier"]
+  V --> E["Evidence-Bearing Checks"]
+  E --> R["Verdict"]
+```
+
+## Runtime Accountability Gate
+
+This diagram shows the runtime-accountability layer around agent execution: trace context, model and tool events, usage collection, quota evaluation, and policy decisions when thresholds are crossed.
 
 ![Agent observability and quota governance](./assets/diagrams/agent-observability-and-quota-governance.png)
 
-## Cross-Cutting Visibility Map
-
-This diagram shows the surfaces that keep the whole control plane observable. Without these, even good controls become hard to trust.
+Supporting mermaid version:
 
 ```mermaid
 flowchart TD
-  P["Planning Events"] --> V["Visibility Layer"]
+  P["Planning Events"] --> V["Runtime Accountability Layer"]
   G["Permission Decisions"] --> V
   T["Trust Reviews"] --> V
   R["Verification Verdicts"] --> V
@@ -106,26 +106,28 @@ flowchart TD
 
   V --> L["Logs"]
   V --> N["Notifications"]
-  V --> S["Approval States"]
+  V --> S["Execution State"]
   V --> A["Audit Trail"]
 ```
 
 ## Governed Publish Pipeline
 
-This diagram shows how the same control-plane patterns apply to package release. The publish path should be approved, policy-bound, artifact-aware, and independently verified.
+This diagram shows how the same five gates apply to package release. The publish path should be reviewable, policy-bound, artifact-aware, independently verified, and operationally accountable after publish.
 
 ![Governance from code generation to release](./assets/diagrams/governance-code-generation-to-release.png)
+
+In the release visual, `telemetry` is the runtime-accountability gate applied to shipped artifacts, provenance, and release-state visibility.
 
 Portable mermaid version:
 
 ```mermaid
 flowchart LR
-  T["Release Tag"] --> P["Release Plan"]
-  P --> B["CI Build"]
-  B --> I["Artifact Inventory"]
-  I --> A{"Approval?"}
-  A -- "No" --> R["Revise Or Block"]
-  A -- "Yes" --> U["Controlled Publish"]
-  U --> V["Post-publish Verification"]
-  V --> L["Audit Trail"]
+  R["Request"] --> P["Plan"]
+  P --> C["Code Change"]
+  C --> B["Build Artifact"]
+  B --> V1["Verification (Pre-publish)"]
+  V1 --> U["Publish Or Deploy"]
+  U --> V2["Verification (Post-publish)"]
+  V2 --> A["Runtime Accountability"]
+  A --> S["Shipped Artifact"]
 ```

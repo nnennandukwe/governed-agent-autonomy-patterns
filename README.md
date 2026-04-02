@@ -2,13 +2,13 @@
 
 AI coding systems need a control plane, not just a better model.
 
-This repo is a public, docs-first reference for teams that want agentic coding without chaos. It focuses on the patterns that protect code integrity while still preserving speed: `plan`, `permission`, `verification`, and `tool trust`.
+This repo is a public, docs-first reference for teams that want agentic coding without chaos. It focuses on the five gates that protect code integrity while still preserving speed: `plan`, `permission`, `tool trust`, `verification`, and `runtime accountability`.
 
 The core reframe is simple: boundaries are not bottlenecks. Good boundaries are how teams get sustainable velocity.
 
 ## Why this repo exists
 
-Most discussion about AI coding systems still centers on generation speed. That misses the harder problem. The risk is not that agents can write code quickly. The risk is that they can write and execute changes quickly without enough planning, review, verification, or trust controls.
+Most discussion about AI coding systems still centers on generation speed. That misses the harder problem. The risk is not that agents can write code quickly. The risk is that they can write and execute changes quickly without enough planning, review, verification, trust controls, and runtime accountability.
 
 This repo packages a reusable framework for evaluating and designing governed agent autonomy. It is meant to be easy to repurpose into:
 
@@ -20,20 +20,23 @@ This repo packages a reusable framework for evaluating and designing governed ag
 
 The same control-plane logic applies after code generation too. Packaging and publish workflows are part of code integrity, not a separate concern.
 
-## The four patterns
+## The Five Gates
 
-| Pattern | Purpose | Core question |
+| Gate | Purpose | Core question |
 | --- | --- | --- |
 | `plan` | Separate exploration from execution | Can the system pause, inspect, and propose before it mutates code? |
 | `permission` | Gate risky actions with explicit policy | Can the system distinguish safe, risky, and disallowed behavior? |
-| `verification` | Keep implementation and validation independent | Does a separate verifier produce evidence instead of self-grading? |
 | `tool trust` | Review risky tools and settings before enablement | Are external capabilities explicitly approved before the agent can rely on them? |
+| `verification` | Keep implementation and validation independent | Does a separate verifier produce evidence instead of self-grading? |
+| `runtime accountability` | Make execution state, usage, and spend governable | Can operators see what the system is doing, where it is running, and what it is costing while it runs? |
 
-`Visibility` is cross-cutting. If approvals, rejections, status changes, and risk decisions are not visible, the rest of the control plane becomes performative.
+Visibility still matters, but it is not a floating concept here. In this repo, visibility becomes operational through the runtime accountability gate: execution state, traceability, quota decisions, cost attribution, and audit surfaces that let operators supervise autonomous work.
 
 ## Architecture At A Glance
 
 ![Governed autonomy control plane](docs/assets/diagrams/control-plane-overview.png)
+
+In the visual set, the fifth gate is rendered as a telemetry and quota gate. In this repo, that control surface is named `runtime accountability` because it governs state, usage, spend, and threshold-based intervention together.
 
 This control plane keeps generation power inside explicit operational boundaries. The point is not to stop work. The point is to make safe work easy and unsafe work obvious.
 
@@ -45,28 +48,31 @@ If you are an engineering leader:
 
 - use the [scorecard](docs/scorecard.md) to evaluate tools or internal platforms
 - use the [diagrams](docs/diagrams.md) to explain why controls accelerate safe adoption
-- use the pattern pages to define rollout expectations for teams
+- use the gate pages to define rollout expectations for teams
 
 If you are a platform or developer tooling team:
 
-- start with the [pattern pages](docs/patterns/plan.md)
+- start with the [gate pages](docs/patterns/plan.md)
+- review [runtime accountability](docs/patterns/runtime-accountability.md) if you operate remote or budgeted workflows
 - review the [governed publish pipeline](docs/applications/governed-publish-pipeline.md) if you own release automation
 - copy the [examples](examples/plan/planning-prompt.md) into internal docs or prototypes
 - adapt the scorecard into design review gates or vendor questionnaires
 
 If you are a practitioner or staff engineer:
 
-- use the pattern docs as a checklist for what to demand from agentic workflows
-- use the examples as a starting point for policy files, verifier contracts, and approval records
+- use the gate docs as a checklist for what to demand from agentic workflows
+- use the examples as a starting point for policy files, verifier contracts, approval records, and runtime-accountability templates
 
 ## What’s In Here
 
 - [Scorecard](docs/scorecard.md): evaluate integrity support instead of speed alone
 - [Diagrams](docs/diagrams.md): portable visuals for talks, posts, and internal docs
-- [Plan pattern](docs/patterns/plan.md): pre-mutation planning and explicit approval
-- [Permission pattern](docs/patterns/permission.md): allow, ask, deny, and dangerous overrides
-- [Verification pattern](docs/patterns/verification.md): independent validation with evidence
-- [Tool trust pattern](docs/patterns/tool-trust.md): explicit approval for external tools and risky settings
+- [Plan gate](docs/patterns/plan.md): pre-mutation planning and explicit approval
+- [Permission gate](docs/patterns/permission.md): allow, ask, deny, and dangerous overrides
+- [Tool trust gate](docs/patterns/tool-trust.md): explicit approval for external tools and risky settings
+- [Verification gate](docs/patterns/verification.md): independent validation with evidence
+- [Runtime accountability gate](docs/patterns/runtime-accountability.md): execution-state visibility, quota checks, and spend attribution
+- [Runtime accountability templates](examples/runtime-accountability/execution-state-record.md): copyable records for execution state, threshold rules, cost attribution, and overage approval
 - [Governed publish pipeline](docs/applications/governed-publish-pipeline.md): apply the framework to packaging and release workflows
 - [Examples](examples/plan/planning-prompt.md): copyable templates and tiny dependency-free demos
 
@@ -84,22 +90,22 @@ If you want a quick evaluation path:
 
 1. Read the [scorecard](docs/scorecard.md).
 2. Skim the [diagrams](docs/diagrams.md).
-3. Go deeper on the weakest pattern in your current workflow.
+3. Go deeper on the weakest gate in your current workflow.
 
 If you want an implementation path:
 
 1. Start with [plan](docs/patterns/plan.md).
 2. Add [permission](docs/patterns/permission.md).
-3. Add [verification](docs/patterns/verification.md).
-4. Add [tool trust](docs/patterns/tool-trust.md).
-5. Make visibility explicit across all four.
+3. Add [tool trust](docs/patterns/tool-trust.md).
+4. Add [verification](docs/patterns/verification.md).
+5. Add [runtime accountability](docs/patterns/runtime-accountability.md).
 6. Apply the same controls to packaging and release with the [governed publish pipeline](docs/applications/governed-publish-pipeline.md).
 
 If you want material to repurpose:
 
 1. Pull the control-plane diagram from [diagrams](docs/diagrams.md).
 2. Pull the evaluation criteria from the [scorecard](docs/scorecard.md).
-3. Pull one adapted receipt from each pattern page.
+3. Pull one adapted receipt from each gate page.
 
 ## Repurposing Guide
 
@@ -108,7 +114,7 @@ This repo is structured so the same core material can be lifted into multiple fo
 - `README` becomes a talk opening, landing page, or long-form article backbone.
 - `scorecard` becomes a buyer guide, internal rubric, or platform review worksheet.
 - `diagrams` become presentation slides, blog visuals, or onboarding illustrations.
-- `pattern pages` become policy docs, team standards, or technical teardown sections.
+- `gate pages` become policy docs, team standards, or technical teardown sections.
 - `examples` become copyable templates for pilots and internal prototypes.
 
 ## Design Principle
