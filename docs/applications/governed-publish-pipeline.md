@@ -6,6 +6,10 @@ The wrong lesson from a release incident is "automate more." That is too vague t
 
 This page shows how the repo's four core patterns apply to package release.
 
+A visual version of that release checklist lives below.
+
+![Release integrity checklist](../assets/release-integrity-checklist.png)
+
 ## Why This Matters
 
 Teams often build better controls around code generation than around packaging. That leaves a gap. A system can plan well, code carefully, and still ship the wrong artifact if the release path is manual, opaque, or weakly verified.
