@@ -10,7 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { digestDirectory } from '@governed-autonomy/coding-agent';
+import {
+  canonicalizeAllowedPathPattern,
+  digestDirectory,
+} from '@governed-autonomy/coding-agent';
 
 import type { ExperimentTask } from './types.js';
 
@@ -50,6 +53,17 @@ export async function loadAndValidateCorpus(
       || metadata.publicTestCommand.length === 0
     ) {
       throw new Error(`Invalid task metadata at ${taskRoot}/task.json.`);
+    }
+    for (const allowedPath of metadata.allowedPaths as string[]) {
+      try {
+        canonicalizeAllowedPathPattern(allowedPath);
+      } catch (error) {
+        throw new Error(
+          `Invalid allowedPaths entry in ${taskRoot}/task.json: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
     const goldPatch = await readFile(
       path.join(taskRoot, 'gold.patch'),

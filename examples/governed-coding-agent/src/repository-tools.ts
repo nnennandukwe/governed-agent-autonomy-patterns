@@ -14,22 +14,20 @@ import type {
   ToolCallResult,
   ToolDefinition,
 } from './types.js';
+import { canonicalizeWorkspaceRelativePath } from './workspace-paths.js';
 
 export function resolveWorkspacePath(
   workspaceRoot: string,
   requestedPath: string,
 ): string {
-  if (path.isAbsolute(requestedPath)) {
-    throw new Error(`Workspace path must be relative: ${requestedPath}`);
-  }
-
-  const segments = requestedPath.split(/[\\/]+/);
+  const canonicalPath = canonicalizeWorkspaceRelativePath(requestedPath);
+  const segments = canonicalPath.split('/');
   if (segments.includes('.git')) {
     throw new Error(`Workspace path uses reserved .git metadata: ${requestedPath}`);
   }
 
   const resolvedRoot = path.resolve(workspaceRoot);
-  const resolvedPath = path.resolve(resolvedRoot, requestedPath);
+  const resolvedPath = path.resolve(resolvedRoot, canonicalPath);
   if (
     resolvedPath !== resolvedRoot
     && !resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)
@@ -132,7 +130,9 @@ function patchPaths(patch: string): string[] {
   for (const line of patch.split('\n')) {
     const match = /^(?:---|\+\+\+) (?:[ab]\/)?(.+)$/.exec(line);
     if (match?.[1] && match[1] !== '/dev/null') {
-      paths.add(match[1].split('\t')[0] ?? match[1]);
+      paths.add(canonicalizeWorkspaceRelativePath(
+        match[1].split('\t')[0] ?? match[1],
+      ));
     }
   }
   if (paths.size === 0) {

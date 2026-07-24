@@ -7,6 +7,10 @@ import {
 } from './gates.js';
 import { EvidenceLedger } from './ledger.js';
 import { LifecycleMachine } from './lifecycle.js';
+import {
+  canonicalizeAllowedPathPattern,
+  canonicalizeWorkspaceRelativePath,
+} from './workspace-paths.js';
 import type {
   ApprovalKind,
   ApprovalActor,
@@ -135,12 +139,15 @@ function patchPaths(arguments_: Record<string, unknown>): string[] {
   return [...paths];
 }
 
-function matchesAllowedPath(pathname: string, pattern: string): boolean {
-  if (pattern.endsWith('/**')) {
-    const prefix = pattern.slice(0, -3);
-    return pathname === prefix || pathname.startsWith(`${prefix}/`);
+function matchesAllowedPath(
+  pathname: string,
+  pattern: ReturnType<typeof canonicalizeAllowedPathPattern>,
+): boolean {
+  if (pattern.recursive) {
+    return pathname === pattern.pathname
+      || pathname.startsWith(`${pattern.pathname}/`);
   }
-  return pathname === pattern;
+  return pathname === pattern.pathname;
 }
 
 function actionScope(
@@ -150,16 +157,32 @@ function actionScope(
   if (call.name !== 'repo.apply_patch') {
     return { requestedPaths: [], originallyAllowed: true };
   }
-  const requestedPaths = patchPaths(call.arguments);
-  return {
-    requestedPaths,
-    originallyAllowed: (
-      requestedPaths.length > 0
-      && requestedPaths.every(pathname => (
-        allowedPaths.some(pattern => matchesAllowedPath(pathname, pattern))
-      ))
-    ),
-  };
+  try {
+    const requestedPaths = patchPaths(call.arguments).map(
+      canonicalizeWorkspaceRelativePath,
+    );
+    const canonicalAllowedPaths = allowedPaths.map(
+      canonicalizeAllowedPathPattern,
+    );
+    return {
+      requestedPaths,
+      originallyAllowed: (
+        requestedPaths.length > 0
+        && requestedPaths.every(pathname => (
+          canonicalAllowedPaths.some(
+            pattern => matchesAllowedPath(pathname, pattern),
+          )
+        ))
+      ),
+    };
+  } catch (error) {
+    throw new TrialStop(
+      'policy_stopped',
+      `Protected action blocked: ${
+        error instanceof Error ? error.message : String(error)
+      }. Recovery: use canonical workspace-relative patch paths within the frozen allowedPaths scope.`,
+    );
+  }
 }
 
 function validatePlan(value: Record<string, unknown>): void {

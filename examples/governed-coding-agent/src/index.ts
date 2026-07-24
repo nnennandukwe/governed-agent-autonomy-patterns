@@ -17,5 +17,10 @@ export {
   verifyProviderModelAvailability,
   type ProviderReadinessRequest,
 } from './provider-readiness.js';
+export {
+  canonicalizeAllowedPathPattern,
+  canonicalizeWorkspaceRelativePath,
+  type CanonicalAllowedPathPattern,
+} from './workspace-paths.js';
 export * from './types.js';
 export { DockerVerificationAdapter } from './verifier.js';

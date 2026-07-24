@@ -18,6 +18,10 @@ import {
   resolveWorkspacePath,
 } from '../src/repository-tools.js';
 import type { TrialReceipt } from '../src/types.js';
+import {
+  canonicalizeAllowedPathPattern,
+  canonicalizeWorkspaceRelativePath,
+} from '../src/workspace-paths.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 
@@ -34,12 +38,36 @@ test('workspace paths stay inside the declared repository root', async t => {
     /escapes the workspace/,
   );
   assert.throws(
+    () => resolveWorkspacePath(root, 'src/../package.json'),
+    /safe workspace-relative path/,
+  );
+  assert.throws(
+    () => resolveWorkspacePath(root, 'src\\..\\package.json'),
+    /safe workspace-relative path/,
+  );
+  assert.throws(
     () => resolveWorkspacePath(root, '/etc/passwd'),
+    /must be relative/,
+  );
+  assert.throws(
+    () => resolveWorkspacePath(root, 'C:\\Windows\\system.ini'),
+    /must be relative/,
+  );
+  assert.throws(
+    () => resolveWorkspacePath(root, 'C:Windows\\system.ini'),
     /must be relative/,
   );
   assert.throws(
     () => resolveWorkspacePath(root, '.git/config'),
     /reserved \.git/,
+  );
+  assert.equal(
+    canonicalizeWorkspaceRelativePath('src\\nested//value.js'),
+    'src/nested/value.js',
+  );
+  assert.deepEqual(
+    canonicalizeAllowedPathPattern('src\\**'),
+    { pathname: 'src', recursive: true },
   );
   t.after(async () => {
     const { rm } = await import('node:fs/promises');
@@ -79,6 +107,27 @@ test('repository tools apply checked patches and reject shell or symlink escapes
     assert.equal(result.status, 0, result.stderr);
   }
   const tools = createRepositoryTools(root);
+
+  const deniedTraversalPatch = await tools.call('repo.apply_patch', {
+    patch: [
+      'diff --git a/src/../package.json b/src/../package.json',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/src/../package.json',
+      '@@ -0,0 +1 @@',
+      '+{"private":true}',
+      '',
+    ].join('\n'),
+  });
+  assert.equal(deniedTraversalPatch.isError, true);
+  assert.match(
+    deniedTraversalPatch.content,
+    /safe workspace-relative path/,
+  );
+  await assert.rejects(
+    () => readFile(path.join(root, 'package.json'), 'utf8'),
+    /ENOENT/,
+  );
 
   const patchResult = await tools.call('repo.apply_patch', {
     patch: [

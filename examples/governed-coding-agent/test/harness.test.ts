@@ -22,6 +22,10 @@ class ScriptedModel implements ModelAdapter {
   readonly model = 'scripted-model-v1';
   private turn = 0;
 
+  constructor(
+    private readonly patch = 'replace:value=wrong:value=right',
+  ) {}
+
   async nextTurn(_input: ModelTurnInput): Promise<ModelTurnResult> {
     this.turn += 1;
     const common = {
@@ -56,7 +60,7 @@ class ScriptedModel implements ModelAdapter {
           id: 'patch-call',
           name: 'repo.apply_patch',
           arguments: {
-            patch: 'replace:value=wrong:value=right',
+            patch: this.patch,
           },
         }],
       };
@@ -269,6 +273,52 @@ test('a governed trial handles every challenge and completes with exact evidence
   assert.ok(secondModelTurn);
   assert.ok(runtimeContraction);
   assert.ok(runtimeContraction.sequence < secondModelTurn.sequence);
+});
+
+test('a traversal patch path is denied before tool execution', async () => {
+  const sandbox = new MemorySandbox();
+  const maliciousPatch = [
+    'diff --git a/src/../package.json b/src/../package.json',
+    '--- a/src/../package.json',
+    '+++ b/src/../package.json',
+    '@@ -1 +1 @@',
+    '-{"private":false}',
+    '+{"private":true}',
+    '',
+  ].join('\n');
+  const receipt = await createGovernedHarness({
+    model: new ScriptedModel(maliciousPatch),
+    approvals: new ScriptedApprovals(),
+    sandbox,
+    verifier: new PassingVerifier(),
+  }).runTrial(trial());
+
+  assert.equal(receipt.terminalStatus, 'policy_stopped');
+  assert.equal(sandbox.session.tools.callCount, 0);
+  assert.equal(receipt.cleanup.succeeded, true);
+  assert.match(
+    String(receipt.events.find(event => event.type === 'trial.failed')?.data.message),
+    /Recovery: use canonical workspace-relative patch paths/,
+  );
+});
+
+test('an unsafe allowedPaths pattern fails closed before tool execution', async () => {
+  const sandbox = new MemorySandbox();
+  const spec = trial();
+  spec.task.allowedPaths = ['src/../**'];
+  const receipt = await createGovernedHarness({
+    model: new ScriptedModel(),
+    approvals: new ScriptedApprovals(),
+    sandbox,
+    verifier: new PassingVerifier(),
+  }).runTrial(spec);
+
+  assert.equal(receipt.terminalStatus, 'policy_stopped');
+  assert.equal(sandbox.session.tools.callCount, 0);
+  assert.match(
+    String(receipt.events.find(event => event.type === 'trial.failed')?.data.message),
+    /safe workspace-relative path/,
+  );
 });
 
 for (const gate of [
