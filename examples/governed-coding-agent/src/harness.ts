@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { digestObject } from './canonical.js';
 import {
   evaluateGate,
@@ -135,12 +137,30 @@ function patchPaths(arguments_: Record<string, unknown>): string[] {
   return [...paths];
 }
 
-function matchesAllowedPath(pathname: string, pattern: string): boolean {
-  if (pattern.endsWith('/**')) {
-    const prefix = pattern.slice(0, -3);
-    return pathname === prefix || pathname.startsWith(`${prefix}/`);
+function canonicalPatchPath(value: string): string | null {
+  const normalized = path.posix.normalize(value.replaceAll('\\', '/'));
+  if (
+    path.posix.isAbsolute(normalized)
+    || normalized === '..'
+    || normalized.startsWith('../')
+    || normalized.includes('/../')
+  ) {
+    return null;
   }
-  return pathname === pattern;
+  return normalized;
+}
+
+function matchesAllowedPath(pathname: string, pattern: string): boolean {
+  const canonicalPathname = canonicalPatchPath(pathname);
+  const wildcard = pattern.endsWith('/**');
+  const patternValue = wildcard ? pattern.slice(0, -3) : pattern;
+  const canonicalPattern = canonicalPatchPath(patternValue);
+  if (canonicalPathname === null || canonicalPattern === null) return false;
+  if (wildcard) {
+    return canonicalPathname === canonicalPattern
+      || canonicalPathname.startsWith(`${canonicalPattern}/`);
+  }
+  return canonicalPathname === canonicalPattern;
 }
 
 function actionScope(
