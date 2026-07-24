@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.boundarybench/
+.qodo/
+*.log
