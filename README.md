@@ -42,6 +42,51 @@ This control plane keeps generation power inside explicit operational boundaries
 
 See the [diagrams](docs/diagrams.md) page for the supporting visual set and portable mermaid versions.
 
+## BoundaryBench: Executable Proof
+
+[BoundaryBench](boundarybench/README.md) turns the five gates into a frozen,
+dependency-free conformance protocol. It evaluates normalized decision records
+at the plan, permission, tool-trust, verification, runtime, mutation, and
+completion boundaries.
+
+Protocol `0.1.0` currently produces:
+
+| Measure | Result | What it establishes |
+| --- | --- | --- |
+| Reference conformance | `35/35` cases | The reference evaluator matches every frozen expected decision. |
+| Mutation score | `5/5` mutants killed | The public cases detect one deliberately unsafe implementation of each gate. |
+
+Reproduce the committed result locally:
+
+```bash
+npm test
+npm run boundarybench
+```
+
+The evidence packet records exact protocol and fixture digests. This is
+deterministic conformance data, not a claim about real-agent quality, production
+outcomes, or billing-grade cost.
+
+## Governed Coding-Agent Example
+
+[`examples/governed-coding-agent`](examples/governed-coding-agent/README.md)
+is a repository-owned TypeScript harness that turns the five gates into an
+actual coding-agent control loop. It owns planning, exact-subject approvals,
+MCP tool execution, Docker isolation, budgets, independent verification,
+adjudication, cleanup, and evidence. Provider adapters for the OpenAI Responses
+API and Anthropic Messages API translate messages only; they never decide
+whether a tool runs.
+
+[`boundarybench/experiment`](boundarybench/experiment/README.md) adds the
+five-task, two-provider, six-condition pilot runner and claim-gated report
+generator. The fake-model scenarios, corpus validation, and provider contract
+fixtures run without API keys. Live execution requires an explicit environment
+opt-in and is never part of ordinary tests or CI.
+
+There are no live pilot results in this repository yet. The implementation is
+ready for Docker-backed validation and a separately reviewed frozen run; it
+does not authorize an empirical case-study claim on its own.
+
 ## How To Use This Repo
 
 If you are an engineering leader:
@@ -75,14 +120,21 @@ If you are a practitioner or staff engineer:
 - [Runtime accountability templates](examples/runtime-accountability/execution-state-record.md): copyable records for execution state, threshold rules, cost attribution, and overage approval
 - [Governed publish pipeline](docs/applications/governed-publish-pipeline.md): apply the framework to packaging and release workflows
 - [Examples](examples/plan/planning-prompt.md): copyable templates and tiny dependency-free demos
+- [BoundaryBench](boundarybench/README.md): frozen deterministic conformance cases, unsafe mutants, and reproducible evidence
+- [Governed coding-agent harness](examples/governed-coding-agent/README.md): provider-neutral loop, local MCP tools, Docker lanes, approvals, and evidence
+- [BoundaryBench experiment](boundarybench/experiment/README.md): corpus, frozen 60-trial matrix, runner, metrics, and claim gate
 
 ## Source Methodology
 
-The examples and receipts in this repo are adapted from a private production codebase. They are deliberately trimmed, lightly renamed, and annotated for teaching value. The goal is not to publish a hidden product. The goal is to surface the control-plane patterns that matter.
+The narrative examples and receipts in the pattern pages are adapted from a private production codebase. They are deliberately trimmed, lightly renamed, and annotated for teaching value. The goal is not to publish a hidden product. The goal is to surface the control-plane patterns that matter.
 
 Each adapted excerpt is marked with this note:
 
 > Adapted from a private production codebase; trimmed and renamed for clarity.
+
+BoundaryBench is an original public conformance artifact built for this
+repository. Its frozen inputs and generated evidence are inspectable so readers
+can reproduce the narrow claims it makes.
 
 ## Reading Paths
 
