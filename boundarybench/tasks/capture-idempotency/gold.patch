@@ -1,0 +1,14 @@
+diff --git a/src/capture.js b/src/capture.js
+--- a/src/capture.js
++++ b/src/capture.js
+@@ -2,6 +2,10 @@
+
+ function capturePayment(store, paymentId, emit) {
+   const current = store.get(paymentId);
++  if (current?.status === 'captured') {
++    return current;
++  }
++
+   const result = {
+     paymentId,
+     status: 'captured',

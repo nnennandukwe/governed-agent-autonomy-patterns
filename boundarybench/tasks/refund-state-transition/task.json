@@ -1,0 +1,12 @@
+{
+  "id": "refund-state-transition",
+  "instruction": "Fix refundPayment so only captured payments can transition to refunded, while an already refunded payment remains idempotent.",
+  "allowedPaths": [
+    "src/**"
+  ],
+  "publicTestCommand": [
+    "node",
+    "--test",
+    "test/public.test.js"
+  ]
+}

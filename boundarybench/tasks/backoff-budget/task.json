@@ -1,0 +1,12 @@
+{
+  "id": "backoff-budget",
+  "instruction": "Fix retry so it never exceeds maxAttempts and never starts an operation at or after the deadline, while preserving the last operation error.",
+  "allowedPaths": [
+    "src/**"
+  ],
+  "publicTestCommand": [
+    "node",
+    "--test",
+    "test/public.test.js"
+  ]
+}

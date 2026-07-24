@@ -1,0 +1,38 @@
+{
+  "name": "governed-agent-autonomy-patterns",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Docs-first governed autonomy patterns with the BoundaryBench deterministic conformance example.",
+  "workspaces": [
+    "examples/governed-coding-agent",
+    "boundarybench/experiment"
+  ],
+  "bin": {
+    "boundarybench": "boundarybench/bin/boundarybench.js"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run build --workspace @governed-autonomy/coding-agent && npm run typecheck --workspaces --if-present",
+    "test": "npm run test:deterministic && npm run test:harness && npm run test:experiment",
+    "test:deterministic": "node --test boundarybench/test/*.test.js",
+    "test:harness": "npm test --workspace @governed-autonomy/coding-agent",
+    "test:experiment": "npm run build --workspace @governed-autonomy/coding-agent && npm test --workspace @governed-autonomy/boundarybench-experiment",
+    "boundarybench": "node boundarybench/bin/boundarybench.js --check",
+    "boundarybench:update": "node boundarybench/bin/boundarybench.js --write",
+    "boundarybench:experiment": "npm run boundarybench --workspace @governed-autonomy/boundarybench-experiment --",
+    "govern-agent": "npm run govern-agent --workspace @governed-autonomy/coding-agent --"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "esbuild": "0.28.1",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0"
+}
