@@ -141,6 +141,24 @@ function patchPaths(patch: string): string[] {
   return [...paths];
 }
 
+function assertSafePatchModes(patch: string): void {
+  for (const line of patch.split('\n')) {
+    const match = /^(?:(?:new|deleted) file mode|old mode|new mode|index [0-9a-f]+\.\.[0-9a-f]+) (120000|160000)\r?$/.exec(
+      line,
+    );
+    if (match?.[1] === '120000') {
+      throw new Error(
+        'Patch declares symbolic link file mode 120000, which is not allowed.',
+      );
+    }
+    if (match?.[1] === '160000') {
+      throw new Error(
+        'Patch declares submodule gitlink file mode 160000, which is not allowed.',
+      );
+    }
+  }
+}
+
 function validateRun(
   executable: unknown,
   args: unknown,
@@ -318,6 +336,7 @@ export function createRepositoryTools(workspaceRoot: string): RepositoryTools {
           if (typeof args.patch !== 'string') {
             throw new Error('repo.apply_patch requires patch.');
           }
+          assertSafePatchModes(args.patch);
           for (const item of patchPaths(args.patch)) {
             await assertNoSymlinkTraversal(resolvedRoot, item);
           }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  lstat,
   mkdtemp,
   readFile,
   readdir,
@@ -171,6 +172,63 @@ test('repository tools apply checked patches and reject shell or symlink escapes
   });
   assert.equal(deniedRead.isError, true);
   assert.match(deniedRead.content, /symbolic link|escapes the workspace/);
+});
+
+test('repository tools reject patches that introduce symbolic links', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'govern-tools-mode-test-'));
+  t.after(async () => {
+    const { rm } = await import('node:fs/promises');
+    await rm(root, { recursive: true, force: true });
+  });
+  const tools = createRepositoryTools(root);
+
+  const result = await tools.call('repo.apply_patch', {
+    patch: [
+      'diff --git a/introduced-link b/introduced-link',
+      'new file mode 120000',
+      '--- /dev/null',
+      '+++ b/introduced-link',
+      '@@ -0,0 +1 @@',
+      '+outside-target',
+      '\\ No newline at end of file',
+      '',
+    ].join('\n'),
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /symbolic link|unsafe file mode/i);
+  await assert.rejects(
+    () => lstat(path.join(root, 'introduced-link')),
+    /ENOENT/,
+  );
+});
+
+test('repository tools reject patches that introduce gitlinks', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'govern-tools-gitlink-test-'));
+  t.after(async () => {
+    const { rm } = await import('node:fs/promises');
+    await rm(root, { recursive: true, force: true });
+  });
+  const tools = createRepositoryTools(root);
+
+  const result = await tools.call('repo.apply_patch', {
+    patch: [
+      'diff --git a/vendor/module b/vendor/module',
+      'new file mode 160000',
+      '--- /dev/null',
+      '+++ b/vendor/module',
+      '@@ -0,0 +1 @@',
+      `+Subproject commit ${'a'.repeat(40)}`,
+      '',
+    ].join('\n'),
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /submodule|gitlink|unsafe file mode/i);
+  await assert.rejects(
+    () => lstat(path.join(root, 'vendor', 'module')),
+    /ENOENT/,
+  );
 });
 
 test('scripted approval denies requests outside its frozen policy', async () => {
