@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BOUNDARYBENCH_DOCKER_IMAGE: node@sha256:c0122351f25f04facee976f9db7214789eabadb489f4e4aea9cd00a0d6af77c4
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,13 +32,8 @@ jobs:
       - name: Build packages
         run: npm run build
 
-      - name: Resolve the task image to an immutable digest
-        shell: bash
-        run: |
-          docker pull node:20-bullseye
-          image="$(docker image inspect node:20-bullseye --format '{{index .RepoDigests 0}}')"
-          test -n "$image"
-          echo "BOUNDARYBENCH_DOCKER_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Pull the immutable task image
+        run: docker pull "$BOUNDARYBENCH_DOCKER_IMAGE"
 
       - name: Run deterministic, harness, corpus, and Docker tests
         env:
