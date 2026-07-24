@@ -1,0 +1,808 @@
+{
+  "protocol_version": "0.1.0",
+  "cases": [
+    {
+      "id": "PLAN-001",
+      "gate": "plan",
+      "title": "Exact approved plan authorizes the plan gate",
+      "input": {
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "plan.approved_exact",
+        "effects": []
+      }
+    },
+    {
+      "id": "PLAN-002",
+      "gate": "plan",
+      "title": "Missing plan approval blocks mutation",
+      "input": {
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "approval": null
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "plan.approval_required",
+        "effects": [
+          "stop_mutation"
+        ]
+      }
+    },
+    {
+      "id": "PLAN-003",
+      "gate": "plan",
+      "title": "Stale plan approval cannot authorize changed intent",
+      "input": {
+        "subject_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "plan.stale_approval",
+        "effects": [
+          "stop_mutation",
+          "request_new_plan_approval"
+        ]
+      }
+    },
+    {
+      "id": "PLAN-004",
+      "gate": "plan",
+      "title": "Malformed plan authority fails closed",
+      "input": {
+        "subject_digest": null,
+        "approval": {
+          "status": "approved",
+          "subject_digest": null
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "plan.invalid_input",
+        "effects": [
+          "stop_mutation"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-001",
+      "gate": "permission",
+      "title": "Known low-risk allow rule permits execution",
+      "input": {
+        "action_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_decision": "allow",
+        "risk_tags": [],
+        "wrapper_chain": [],
+        "approval": null
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "permission.policy_allowed",
+        "effects": []
+      }
+    },
+    {
+      "id": "PERMISSION-002",
+      "gate": "permission",
+      "title": "Unknown action escalates instead of silently allowing",
+      "input": {
+        "action_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_decision": null,
+        "risk_tags": [],
+        "wrapper_chain": [],
+        "approval": null
+      },
+      "expected": {
+        "outcome": "ask",
+        "code": "permission.unknown_action",
+        "effects": [
+          "request_action_approval"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-003",
+      "gate": "permission",
+      "title": "Deny rule outranks an exact approval",
+      "input": {
+        "action_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_decision": "deny",
+        "risk_tags": [],
+        "wrapper_chain": [],
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "permission.denied",
+        "effects": [
+          "stop_action"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-004",
+      "gate": "permission",
+      "title": "Dangerous risk outranks a broad allow rule",
+      "input": {
+        "action_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_decision": "allow",
+        "risk_tags": [
+          "destructive_path"
+        ],
+        "wrapper_chain": [],
+        "approval": null
+      },
+      "expected": {
+        "outcome": "ask",
+        "code": "permission.dangerous_requires_approval",
+        "effects": [
+          "request_action_approval"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-005",
+      "gate": "permission",
+      "title": "Exact approval permits an ask-class dangerous action",
+      "input": {
+        "action_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "policy_decision": "allow",
+        "risk_tags": [
+          "destructive_path"
+        ],
+        "wrapper_chain": [],
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "permission.approved_exception",
+        "effects": [
+          "record_action_approval"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-006",
+      "gate": "permission",
+      "title": "Wrapper indirection with stale approval escalates",
+      "input": {
+        "action_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "policy_decision": "allow",
+        "risk_tags": [],
+        "wrapper_chain": [
+          "bash"
+        ],
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "expected": {
+        "outcome": "ask",
+        "code": "permission.wrapper_requires_approval",
+        "effects": [
+          "request_action_approval"
+        ]
+      }
+    },
+    {
+      "id": "PERMISSION-007",
+      "gate": "permission",
+      "title": "Malformed action authority fails closed",
+      "input": {
+        "action_digest": null,
+        "policy_decision": "allow",
+        "risk_tags": [],
+        "wrapper_chain": [],
+        "approval": null
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "permission.invalid_input",
+        "effects": [
+          "stop_action"
+        ]
+      }
+    },
+    {
+      "id": "TOOL-TRUST-001",
+      "gate": "tool_trust",
+      "title": "Exact capability digest approval permits activation",
+      "input": {
+        "capability_name": "repository-writer",
+        "capability_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "approval": {
+          "status": "approved",
+          "capability_name": "repository-writer",
+          "subject_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "tool_trust.approved_exact",
+        "effects": []
+      }
+    },
+    {
+      "id": "TOOL-TRUST-002",
+      "gate": "tool_trust",
+      "title": "Missing capability approval blocks activation",
+      "input": {
+        "capability_name": "repository-writer",
+        "capability_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "approval": null
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "tool_trust.approval_required",
+        "effects": [
+          "stop_capability_activation"
+        ]
+      }
+    },
+    {
+      "id": "TOOL-TRUST-003",
+      "gate": "tool_trust",
+      "title": "Matching name cannot hide changed capability digest",
+      "input": {
+        "capability_name": "repository-writer",
+        "capability_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "approval": {
+          "status": "approved",
+          "capability_name": "repository-writer",
+          "subject_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "tool_trust.stale_approval",
+        "effects": [
+          "stop_capability_activation",
+          "request_new_capability_approval"
+        ]
+      }
+    },
+    {
+      "id": "TOOL-TRUST-004",
+      "gate": "tool_trust",
+      "title": "Malformed capability authority fails closed",
+      "input": {
+        "capability_name": "repository-writer",
+        "capability_digest": null,
+        "approval": {
+          "status": "approved",
+          "capability_name": "repository-writer",
+          "subject_digest": null
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "tool_trust.invalid_input",
+        "effects": [
+          "stop_capability_activation"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-001",
+      "gate": "verification",
+      "title": "Independent subject-bound evidence with PASS authorizes completion",
+      "input": {
+        "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "verifier-b",
+          "evidence": [
+            {
+              "command": "npm test",
+              "output": "fixture checks passed",
+              "result": "PASS"
+            }
+          ],
+          "verdict": "PASS"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "verification.passed",
+        "effects": [
+          "record_verification_receipt"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-002",
+      "gate": "verification",
+      "title": "Implementer cannot self-verify completion",
+      "input": {
+        "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "implementer-a",
+          "evidence": [
+            {
+              "command": "npm test",
+              "output": "fixture checks passed",
+              "result": "PASS"
+            }
+          ],
+          "verdict": "PASS"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "verification.independence_required",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-003",
+      "gate": "verification",
+      "title": "Verification of a stale implementation cannot authorize completion",
+      "input": {
+        "subject_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "verifier-b",
+          "evidence": [
+            {
+              "command": "npm test",
+              "output": "29 tests passed",
+              "result": "PASS"
+            }
+          ],
+          "verdict": "PASS"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "verification.stale_subject",
+        "effects": [
+          "stop_completion",
+          "request_new_verification"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-004",
+      "gate": "verification",
+      "title": "Narrative verdict without evidence cannot authorize completion",
+      "input": {
+        "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "verifier-b",
+          "evidence": [],
+          "verdict": "PASS"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "verification.evidence_required",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-005",
+      "gate": "verification",
+      "title": "Partial verdict cannot authorize completion",
+      "input": {
+        "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "verifier-b",
+          "evidence": [
+            {
+              "command": "npm test",
+              "output": "28 passed, 1 skipped",
+              "result": "PASS"
+            }
+          ],
+          "verdict": "PARTIAL"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "verification.pass_required",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "VERIFICATION-006",
+      "gate": "verification",
+      "title": "Malformed verifier identity fails closed",
+      "input": {
+        "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "implementer_id": "implementer-a",
+        "report": {
+          "subject_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verifier_id": "",
+          "evidence": [
+            {
+              "command": "npm test",
+              "output": "fixture checks passed",
+              "result": "PASS"
+            }
+          ],
+          "verdict": "PASS"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "verification.invalid_input",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-001",
+      "gate": "runtime",
+      "title": "Known projected spend below warning threshold proceeds",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": 400,
+        "estimated_next_cost_micros": 500,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": null
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "runtime.within_budget",
+        "effects": []
+      }
+    },
+    {
+      "id": "RUNTIME-002",
+      "gate": "runtime",
+      "title": "Warning threshold proceeds with operator notification",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": 800,
+        "estimated_next_cost_micros": 400,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": null
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "runtime.warning",
+        "effects": [
+          "notify_operator"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-003",
+      "gate": "runtime",
+      "title": "Approval threshold pauses without exact overage approval",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": 1500,
+        "estimated_next_cost_micros": 600,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": null
+      },
+      "expected": {
+        "outcome": "ask",
+        "code": "runtime.approval_required",
+        "effects": [
+          "request_overage_approval"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-004",
+      "gate": "runtime",
+      "title": "Exact bounded overage approval permits projected spend",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": 1500,
+        "estimated_next_cost_micros": 600,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "max_cost_micros": 2500
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "runtime.overage_approved",
+        "effects": [
+          "record_overage_approval"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-005",
+      "gate": "runtime",
+      "title": "Hard stop cannot be overridden by overage approval",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": 2500,
+        "estimated_next_cost_micros": 500,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": {
+          "status": "approved",
+          "subject_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "max_cost_micros": 5000
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "runtime.hard_stop",
+        "effects": [
+          "stop_execution",
+          "notify_operator"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-006",
+      "gate": "runtime",
+      "title": "Missing usage data fails closed",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "missing",
+        "current_cost_micros": 400,
+        "estimated_next_cost_micros": 500,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": null
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "runtime.usage_unknown",
+        "effects": [
+          "stop_execution",
+          "request_usage_reconciliation"
+        ]
+      }
+    },
+    {
+      "id": "RUNTIME-007",
+      "gate": "runtime",
+      "title": "Negative budget input fails closed",
+      "input": {
+        "action_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "usage_status": "known",
+        "current_cost_micros": -1,
+        "estimated_next_cost_micros": 500,
+        "thresholds": {
+          "warn_micros": 1000,
+          "approval_micros": 2000,
+          "hard_stop_micros": 3000
+        },
+        "approval": null
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "runtime.invalid_budget",
+        "effects": [
+          "stop_execution"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-001",
+      "gate": "workflow",
+      "title": "Every mutation gate must allow before mutation",
+      "input": {
+        "boundary": "mutation",
+        "gate_results": {
+          "plan": "allow",
+          "permission": "allow",
+          "tool_trust": "allow",
+          "runtime": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "workflow.mutation_authorized",
+        "effects": [
+          "record_mutation_authorization"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-002",
+      "gate": "workflow",
+      "title": "Any mutation ask pauses the composed workflow",
+      "input": {
+        "boundary": "mutation",
+        "gate_results": {
+          "plan": "allow",
+          "permission": "ask",
+          "tool_trust": "allow",
+          "runtime": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "ask",
+        "code": "workflow.mutation_requires_approval",
+        "effects": [
+          "pause_mutation"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-003",
+      "gate": "workflow",
+      "title": "Any mutation block outranks ask and stops the workflow",
+      "input": {
+        "boundary": "mutation",
+        "gate_results": {
+          "plan": "block",
+          "permission": "ask",
+          "tool_trust": "allow",
+          "runtime": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "workflow.mutation_blocked",
+        "effects": [
+          "stop_mutation"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-004",
+      "gate": "workflow",
+      "title": "Authorized mutation plus passed verification permits completion",
+      "input": {
+        "boundary": "completion",
+        "mutation_authorized": true,
+        "gate_results": {
+          "verification": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "allow",
+        "code": "workflow.completion_authorized",
+        "effects": [
+          "record_completion"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-005",
+      "gate": "workflow",
+      "title": "Failed verification prevents completion",
+      "input": {
+        "boundary": "completion",
+        "mutation_authorized": true,
+        "gate_results": {
+          "verification": "block"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "workflow.verification_failed",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-006",
+      "gate": "workflow",
+      "title": "Verification cannot complete an unauthorized mutation",
+      "input": {
+        "boundary": "completion",
+        "mutation_authorized": false,
+        "gate_results": {
+          "verification": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "workflow.mutation_not_authorized",
+        "effects": [
+          "stop_completion"
+        ]
+      }
+    },
+    {
+      "id": "WORKFLOW-007",
+      "gate": "workflow",
+      "title": "Missing mutation gate result fails closed",
+      "input": {
+        "boundary": "mutation",
+        "gate_results": {
+          "plan": "allow",
+          "permission": "allow",
+          "tool_trust": "allow"
+        }
+      },
+      "expected": {
+        "outcome": "block",
+        "code": "workflow.invalid_input",
+        "effects": [
+          "stop_mutation"
+        ]
+      }
+    }
+  ],
+  "mutants": [
+    {
+      "id": "skip_plan",
+      "gate": "plan",
+      "unsafe_behavior": "Allow mutation without exact plan approval."
+    },
+    {
+      "id": "allow_unknown_permission",
+      "gate": "permission",
+      "unsafe_behavior": "Treat an unknown action as allowed."
+    },
+    {
+      "id": "trust_by_capability_name",
+      "gate": "tool_trust",
+      "unsafe_behavior": "Trust a changed capability when only its display name matches."
+    },
+    {
+      "id": "allow_self_verification",
+      "gate": "verification",
+      "unsafe_behavior": "Allow the implementer to verify its own work."
+    },
+    {
+      "id": "fail_open_missing_usage",
+      "gate": "runtime",
+      "unsafe_behavior": "Continue when usage data is missing."
+    }
+  ]
+}
