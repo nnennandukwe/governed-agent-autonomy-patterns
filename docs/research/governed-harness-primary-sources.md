@@ -38,6 +38,11 @@ choices, not an experimental result or a private build plan.
   the Terra model page does not publish a distinct dated snapshot ID.
   [GPT-5.6 Terra model page](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
   [GPT-5.6 guidance](https://developers.openai.com/api/docs/guides/latest-model)
+- The Terra model page prices ordinary input, cache reads, cache writes, and
+  output separately. BoundaryBench records all four raw token categories and
+  binds their per-million-token rates into the experiment manifest.
+  [GPT-5.6 Terra pricing](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
+  [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
 **Design inference**
 
@@ -77,6 +82,12 @@ Terra identifier as a dated snapshot.
   `max_tokens`.
   [Claude Sonnet 5](https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5),
   [Anthropic effort control](https://platform.claude.com/docs/en/build-with-claude/effort)
+- Anthropic publishes distinct input, cache-read, cache-write, and output
+  prices. Sonnet 5's introductory rates run through August 31, 2026 and its
+  standard rates begin September 1, so an experiment must bind and enforce a
+  dated price snapshot rather than silently carrying rates across that
+  boundary.
+  [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 
 **Design inference**
 

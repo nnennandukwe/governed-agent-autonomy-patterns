@@ -24,6 +24,7 @@ import {
 
 import { loadAndValidateCorpus } from './corpus.js';
 import { verifyFrozenManifest } from './manifest.js';
+import { assertPricingSnapshotCurrent } from './pricing.js';
 import type { FrozenExperimentManifest } from './types.js';
 
 export interface RunExperimentOptions {
@@ -31,6 +32,7 @@ export interface RunExperimentOptions {
   outputRoot: string;
   environment?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  now?: Date;
 }
 
 export function remainingRunCells(
@@ -66,6 +68,10 @@ export async function runExperiment(
       'Frozen manifest digest does not match its contents. Recovery: do not run it; freeze a new manifest.',
     );
   }
+  assertPricingSnapshotCurrent(
+    manifest.pricingSnapshot,
+    options.now ?? new Date(),
+  );
   for (const provider of manifest.providers) {
     const key = provider.name === 'openai'
       ? environment.OPENAI_API_KEY

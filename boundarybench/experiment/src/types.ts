@@ -13,7 +13,17 @@ export interface ExperimentProvider {
   pricing: {
     inputPerMillion: number;
     cachedInputPerMillion: number;
+    cacheWritePerMillion: number;
     outputPerMillion: number;
+  };
+}
+
+export interface PricingSnapshot {
+  checkedAt: string;
+  validThrough: string;
+  sources: {
+    openai: string;
+    anthropic: string;
   };
 }
 
@@ -33,6 +43,7 @@ export interface ExperimentDraft {
   harnessCommit: string;
   seed: string;
   providers: ExperimentProvider[];
+  pricingSnapshot: PricingSnapshot;
   tasks: ExperimentTask[];
   conditions: TrialCondition[];
   challengeSchedule: GateName[];

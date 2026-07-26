@@ -6,9 +6,19 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { loadAndValidateCorpus } from './corpus.js';
+import { assertPricingSnapshotCurrent } from './pricing.js';
 import type { ExperimentDraft } from './types.js';
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const isoDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(value => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return (
+      !Number.isNaN(parsed.getTime())
+      && parsed.toISOString().slice(0, 10) === value
+    );
+  }, 'Use a real calendar date in YYYY-MM-DD format.');
 const provider = z.discriminatedUnion('name', [
   z.object({
     name: z.literal('openai'),
@@ -17,6 +27,7 @@ const provider = z.discriminatedUnion('name', [
     pricing: z.object({
       inputPerMillion: z.number().nonnegative(),
       cachedInputPerMillion: z.number().nonnegative(),
+      cacheWritePerMillion: z.number().nonnegative(),
       outputPerMillion: z.number().nonnegative(),
     }).strict(),
   }).strict(),
@@ -27,6 +38,7 @@ const provider = z.discriminatedUnion('name', [
     pricing: z.object({
       inputPerMillion: z.number().nonnegative(),
       cachedInputPerMillion: z.number().nonnegative(),
+      cacheWritePerMillion: z.number().nonnegative(),
       outputPerMillion: z.number().nonnegative(),
     }).strict(),
   }).strict(),
@@ -36,6 +48,14 @@ export const experimentConfigSchema = z.object({
   schemaVersion: z.literal('boundarybench.experiment-config.v0.1.0'),
   seed: z.string().min(1),
   providers: z.array(provider).length(2),
+  pricingSnapshot: z.object({
+    checkedAt: isoDate,
+    validThrough: isoDate,
+    sources: z.object({
+      openai: z.string().url(),
+      anthropic: z.string().url(),
+    }).strict(),
+  }).strict(),
   conditions: z.array(z.enum([
     'governed',
     'record_only_plan',
@@ -81,6 +101,13 @@ export const experimentConfigSchema = z.object({
   ),
   reportVersion: z.literal('0.1.0'),
 }).strict().superRefine((value, context) => {
+  if (value.pricingSnapshot.checkedAt > value.pricingSnapshot.validThrough) {
+    context.addIssue({
+      code: 'custom',
+      path: ['pricingSnapshot'],
+      message: 'checkedAt must be on or before validThrough.',
+    });
+  }
   if (!value.sandbox.image.endsWith(`@${value.sandbox.imageDigest}`)) {
     context.addIssue({
       code: 'custom',
@@ -111,6 +138,7 @@ export async function loadExperimentDraft(
   const config = experimentConfigSchema.parse(
     JSON.parse(await readFile(configPath, 'utf8')),
   );
+  assertPricingSnapshotCurrent(config.pricingSnapshot);
   const protocolBytes = await readFile(
     path.join(repositoryRoot, 'boundarybench', 'protocol', 'v0.1.0.json'),
   );

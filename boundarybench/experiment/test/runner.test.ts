@@ -37,6 +37,7 @@ function minimalDraft(): ExperimentDraft {
         pricing: {
           inputPerMillion: 2.5,
           cachedInputPerMillion: 0.25,
+          cacheWritePerMillion: 3.125,
           outputPerMillion: 15,
         },
       },
@@ -45,12 +46,21 @@ function minimalDraft(): ExperimentDraft {
         model: 'claude-sonnet-5',
         effort: 'medium',
         pricing: {
-          inputPerMillion: 3,
-          cachedInputPerMillion: 0.3,
-          outputPerMillion: 15,
+          inputPerMillion: 2,
+          cachedInputPerMillion: 0.2,
+          cacheWritePerMillion: 2.5,
+          outputPerMillion: 10,
         },
       },
     ],
+    pricingSnapshot: {
+      checkedAt: '2026-07-26',
+      validThrough: '2026-08-31',
+      sources: {
+        openai: 'https://developers.openai.com/api/docs/models/gpt-5.6-terra',
+        anthropic: 'https://platform.claude.com/docs/en/about-claude/pricing',
+      },
+    },
     tasks: Array.from({ length: 5 }, (_, index) => ({
       id: `task-${index}`,
       instruction: 'fix',
@@ -124,6 +134,36 @@ test('live experiment execution requires an explicit environment opt-in', async 
   );
 });
 
+test('an expired price snapshot stops execution before credentials or spend', async () => {
+  const manifest = freezeExperiment(minimalDraft());
+  await assert.rejects(
+    () => runExperiment(manifest, {
+      repositoryRoot: process.cwd(),
+      outputRoot: path.join(tmpdir(), 'never-written'),
+      environment: {
+        BOUNDARYBENCH_LIVE: '1',
+      },
+      now: new Date('2026-09-01T00:00:00.000Z'),
+    }),
+    /price snapshot expired.*freeze a new manifest/i,
+  );
+});
+
+test('a price snapshot remains current through its inclusive end date', async () => {
+  const manifest = freezeExperiment(minimalDraft());
+  await assert.rejects(
+    () => runExperiment(manifest, {
+      repositoryRoot: process.cwd(),
+      outputRoot: path.join(tmpdir(), 'never-written'),
+      environment: {
+        BOUNDARYBENCH_LIVE: '1',
+      },
+      now: new Date('2026-08-31T23:59:59.999Z'),
+    }),
+    /openai credentials are missing/i,
+  );
+});
+
 test('root experiment commands resolve relative paths from the repository root', () => {
   const result = spawnSync(
     'npm',
@@ -160,6 +200,10 @@ test('report generation writes the claim boundary and machine-readable summary',
   const markdown = await readFile(path.join(root, 'report.md'), 'utf8');
   assert.match(markdown, /Exploratory pilot/);
   assert.match(markdown, /does not establish real-world safety/i);
+  assert.match(
+    markdown,
+    /Price snapshot.*2026-07-26.*valid through.*2026-08-31/i,
+  );
   const updatePacket = await readFile(
     path.join(root, 'case-study-update-packet.md'),
     'utf8',

@@ -46,6 +46,7 @@ function draft(): ExperimentDraft {
         pricing: {
           inputPerMillion: 2.5,
           cachedInputPerMillion: 0.25,
+          cacheWritePerMillion: 3.125,
           outputPerMillion: 15,
         },
       },
@@ -54,12 +55,21 @@ function draft(): ExperimentDraft {
         model: 'claude-sonnet-5',
         effort: 'medium',
         pricing: {
-          inputPerMillion: 3,
-          cachedInputPerMillion: 0.3,
-          outputPerMillion: 15,
+          inputPerMillion: 2,
+          cachedInputPerMillion: 0.2,
+          cacheWritePerMillion: 2.5,
+          outputPerMillion: 10,
         },
       },
     ],
+    pricingSnapshot: {
+      checkedAt: '2026-07-26',
+      validThrough: '2026-08-31',
+      sources: {
+        openai: 'https://developers.openai.com/api/docs/models/gpt-5.6-terra',
+        anthropic: 'https://platform.claude.com/docs/en/about-claude/pricing',
+      },
+    },
     tasks: Array.from({ length: 5 }, (_, index) => ({
       id: `task-${index + 1}`,
       instruction: `Fix task ${index + 1}.`,

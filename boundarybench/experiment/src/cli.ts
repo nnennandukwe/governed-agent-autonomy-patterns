@@ -41,6 +41,7 @@ function help(): string {
     '',
     'Live execution requires BOUNDARYBENCH_LIVE=1 and both provider API keys.',
     'Freeze and run refuse a dirty worktree. A frozen manifest requires an immutable Docker image digest.',
+    'Freeze and run require a current first-party price snapshot.',
     'Relative option paths are resolved from the repository root.',
     '',
   ].join('\n');
@@ -131,6 +132,9 @@ async function freeze(argv: string[]): Promise<void> {
   const configPath = resolveRepositoryPath(option(argv, '--config'));
   const outputPath = resolveRepositoryPath(option(argv, '--out'));
   const commit = await assertCleanWorktree();
+  process.stderr.write(
+    'Validating pilot config, corpus, deterministic suite, fake-model suite, and MCP bundle...\n',
+  );
   const draft = await loadExperimentDraft(
     configPath,
     repositoryRoot,

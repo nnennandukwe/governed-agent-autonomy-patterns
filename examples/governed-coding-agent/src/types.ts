@@ -48,6 +48,7 @@ export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
   estimatedCostMicros: number;
 }
 
