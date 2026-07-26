@@ -93,10 +93,12 @@ async function assertCleanWorktree(): Promise<string> {
 
 async function readManifest(file: string): Promise<FrozenExperimentManifest> {
   const value = JSON.parse(await readFile(file, 'utf8')) as FrozenExperimentManifest;
-  if (
-    value.schemaVersion !== 'boundarybench.experiment.v0.1.0'
-    || !verifyFrozenManifest(value)
-  ) {
+  if (value.schemaVersion !== 'boundarybench.experiment.v0.2.0') {
+    throw new Error(
+      `Unsupported manifest schema version: ${value.schemaVersion ?? 'missing'}. Recovery: freeze a new manifest.`,
+    );
+  }
+  if (!verifyFrozenManifest(value)) {
     throw new Error(
       'Manifest is malformed or its digest does not match. Recovery: freeze a new manifest.',
     );

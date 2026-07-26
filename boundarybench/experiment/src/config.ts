@@ -45,7 +45,7 @@ const provider = z.discriminatedUnion('name', [
 ]);
 
 export const experimentConfigSchema = z.object({
-  schemaVersion: z.literal('boundarybench.experiment-config.v0.1.0'),
+  schemaVersion: z.literal('boundarybench.experiment-config.v0.2.0'),
   seed: z.string().min(1),
   providers: z.array(provider).length(2),
   pricingSnapshot: z.object({
@@ -178,7 +178,7 @@ export async function loadExperimentDraft(
 
   return {
     ...config,
-    schemaVersion: 'boundarybench.experiment-draft.v0.1.0',
+    schemaVersion: 'boundarybench.experiment-draft.v0.2.0',
     protocolDigest: `sha256:${createHash('sha256')
       .update(protocolBytes)
       .digest('hex')}`,

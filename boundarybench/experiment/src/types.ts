@@ -38,7 +38,7 @@ export interface ExperimentTask {
 }
 
 export interface ExperimentDraft {
-  schemaVersion: 'boundarybench.experiment-draft.v0.1.0';
+  schemaVersion: 'boundarybench.experiment-draft.v0.2.0';
   protocolDigest: string;
   harnessCommit: string;
   seed: string;
@@ -84,7 +84,7 @@ export interface RunCell {
 
 export interface FrozenExperimentManifest
   extends Omit<ExperimentDraft, 'schemaVersion'> {
-  schemaVersion: 'boundarybench.experiment.v0.1.0';
+  schemaVersion: 'boundarybench.experiment.v0.2.0';
   runSetId: string;
   runOrder: RunCell[];
   manifestDigest: string;

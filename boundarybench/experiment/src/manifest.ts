@@ -101,7 +101,7 @@ export function freezeExperiment(
   const runOrder = buildRunMatrix(draft);
   const provisional = {
     ...draft,
-    schemaVersion: 'boundarybench.experiment.v0.1.0' as const,
+    schemaVersion: 'boundarybench.experiment.v0.2.0' as const,
     runOrder,
   };
   const runSetSourceDigest = sha256(provisional);

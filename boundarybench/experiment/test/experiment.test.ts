@@ -34,7 +34,7 @@ const conditions: TrialCondition[] = [
 
 function draft(): ExperimentDraft {
   return {
-    schemaVersion: 'boundarybench.experiment-draft.v0.1.0',
+    schemaVersion: 'boundarybench.experiment-draft.v0.2.0',
     protocolDigest: digest,
     harnessCommit: '48fe5b5added9aa27d694d59e3681ea7e7e34407',
     seed: 'boundarybench-pilot-v0.1.0',
