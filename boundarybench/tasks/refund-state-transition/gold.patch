@@ -1,0 +1,16 @@
+diff --git a/src/refund.js b/src/refund.js
+--- a/src/refund.js
++++ b/src/refund.js
+@@ -5,6 +5,12 @@
+     return payment;
+   }
+
++  if (payment.status !== 'captured') {
++    throw new Error(
++      'Only captured payments can be refunded.',
++    );
++  }
++
+   return {
+     ...payment,
+     status: 'refunded',

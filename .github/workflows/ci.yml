@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  BOUNDARYBENCH_DOCKER_IMAGE: node@sha256:c0122351f25f04facee976f9db7214789eabadb489f4e4aea9cd00a0d6af77c4
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frozen dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Pull the immutable task image
+        run: docker pull "$BOUNDARYBENCH_DOCKER_IMAGE"
+
+      - name: Run deterministic, harness, corpus, and Docker tests
+        env:
+          BOUNDARYBENCH_DOCKER_TEST: "1"
+        run: npm test
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate

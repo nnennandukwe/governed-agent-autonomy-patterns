@@ -1,0 +1,32 @@
+{
+  "name": "@governed-autonomy/coding-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A repository-owned coding-agent harness governed by the BoundaryBench five-gate protocol.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "govern-agent": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/mcp-server.ts --bundle --platform=node --format=esm --outfile=dist/mcp-server.bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "govern-agent": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.114.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "openai": "6.48.0",
+    "zod": "4.4.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0"
+}
