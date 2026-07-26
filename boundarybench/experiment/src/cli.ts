@@ -25,6 +25,10 @@ import type { FrozenExperimentManifest } from './types.js';
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
+function resolveRepositoryPath(value: string): string {
+  return path.resolve(repositoryRoot, value);
+}
+
 function help(): string {
   return [
     'BoundaryBench exploratory experiment',
@@ -37,6 +41,7 @@ function help(): string {
     '',
     'Live execution requires BOUNDARYBENCH_LIVE=1 and both provider API keys.',
     'Freeze and run refuse a dirty worktree. A frozen manifest requires an immutable Docker image digest.',
+    'Relative option paths are resolved from the repository root.',
     '',
   ].join('\n');
 }
@@ -123,8 +128,8 @@ async function readRunSetReceipts(
 }
 
 async function freeze(argv: string[]): Promise<void> {
-  const configPath = path.resolve(process.cwd(), option(argv, '--config'));
-  const outputPath = path.resolve(process.cwd(), option(argv, '--out'));
+  const configPath = resolveRepositoryPath(option(argv, '--config'));
+  const outputPath = resolveRepositoryPath(option(argv, '--out'));
   const commit = await assertCleanWorktree();
   const draft = await loadExperimentDraft(
     configPath,
@@ -144,11 +149,11 @@ async function freeze(argv: string[]): Promise<void> {
 }
 
 async function run(argv: string[]): Promise<void> {
-  const manifestPath = path.resolve(process.cwd(), option(argv, '--manifest'));
+  const manifestPath = resolveRepositoryPath(option(argv, '--manifest'));
   const outputIndex = argv.indexOf('--output');
   const outputRoot = outputIndex < 0
     ? path.join(repositoryRoot, '.boundarybench', 'runs')
-    : path.resolve(process.cwd(), option(argv, '--output'));
+    : resolveRepositoryPath(option(argv, '--output'));
   const manifest = await readManifest(manifestPath);
   const receipts = await runExperiment(manifest, {
     repositoryRoot,
@@ -162,7 +167,7 @@ async function run(argv: string[]): Promise<void> {
 }
 
 async function report(argv: string[]): Promise<void> {
-  const runSetRoot = path.resolve(process.cwd(), option(argv, '--run-set'));
+  const runSetRoot = resolveRepositoryPath(option(argv, '--run-set'));
   const manifest = await readManifest(path.join(runSetRoot, 'manifest.json'));
   const receipts = await readRunSetReceipts(runSetRoot, manifest);
   const summary = await writeRunSetReport(runSetRoot, manifest, receipts);
