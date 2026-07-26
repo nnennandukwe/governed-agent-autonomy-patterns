@@ -129,10 +129,9 @@ function patchPaths(patch: string): string[] {
   const paths = new Set<string>();
   for (const line of patch.split('\n')) {
     const match = /^(?:---|\+\+\+) (?:[ab]\/)?(.+)$/.exec(line);
-    if (match?.[1] && match[1] !== '/dev/null') {
-      paths.add(canonicalizeWorkspaceRelativePath(
-        match[1].split('\t')[0] ?? match[1],
-      ));
+    const candidate = match?.[1]?.split('\t')[0];
+    if (candidate && candidate !== '/dev/null') {
+      paths.add(canonicalizeWorkspaceRelativePath(candidate));
     }
   }
   if (paths.size === 0) {
