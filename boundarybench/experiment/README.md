@@ -54,6 +54,9 @@ npm run boundarybench:experiment -- freeze \
   --out .boundarybench/pilot.manifest.json
 ```
 
+Experiment command paths are resolved from the repository root, including when
+npm launches the implementation from its workspace.
+
 The command refuses to overwrite an existing manifest. The manifest binds the
 commit, deterministic protocol, task and verifier digests, models, effort,
 pricing snapshot, prompt/tool contract through the harness commit, immutable

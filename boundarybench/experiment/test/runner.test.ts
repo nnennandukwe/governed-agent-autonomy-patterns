@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   mkdtemp,
   readFile,
   rm,
 } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -19,6 +21,7 @@ import {
 import type { ExperimentDraft } from '../src/types.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
+const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
 function minimalDraft(): ExperimentDraft {
   return {
@@ -119,6 +122,32 @@ test('live experiment execution requires an explicit environment opt-in', async 
     }),
     /BOUNDARYBENCH_LIVE=1/,
   );
+});
+
+test('root experiment commands resolve relative paths from the repository root', () => {
+  const result = spawnSync(
+    'npm',
+    [
+      'run',
+      'boundarybench:experiment',
+      '--',
+      'run',
+      '--manifest',
+      'boundarybench/experiment/pilot.config.example.json',
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        BOUNDARYBENCH_LIVE: '',
+      },
+    },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Manifest is malformed/);
+  assert.doesNotMatch(result.stderr, /ENOENT/);
 });
 
 test('report generation writes the claim boundary and machine-readable summary', async t => {
