@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "boundarybench.experiment-config.v0.1.0",
+  "schemaVersion": "boundarybench.experiment-config.v0.2.0",
   "seed": "boundarybench-pilot-v0.1.0",
   "providers": [
     {

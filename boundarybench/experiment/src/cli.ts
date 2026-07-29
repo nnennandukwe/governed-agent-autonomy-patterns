@@ -13,8 +13,8 @@ import type { TrialReceipt } from '@governed-autonomy/coding-agent';
 import { loadExperimentDraft } from './config.js';
 import { loadAndValidateCorpus } from './corpus.js';
 import {
+  assertFrozenManifest,
   freezeExperiment,
-  verifyFrozenManifest,
 } from './manifest.js';
 import { writeRunSetReport } from './report.js';
 import {
@@ -92,15 +92,8 @@ async function assertCleanWorktree(): Promise<string> {
 }
 
 async function readManifest(file: string): Promise<FrozenExperimentManifest> {
-  const value = JSON.parse(await readFile(file, 'utf8')) as FrozenExperimentManifest;
-  if (
-    value.schemaVersion !== 'boundarybench.experiment.v0.1.0'
-    || !verifyFrozenManifest(value)
-  ) {
-    throw new Error(
-      'Manifest is malformed or its digest does not match. Recovery: freeze a new manifest.',
-    );
-  }
+  const value = JSON.parse(await readFile(file, 'utf8')) as unknown;
+  assertFrozenManifest(value);
   return value;
 }
 

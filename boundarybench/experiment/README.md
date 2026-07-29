@@ -30,6 +30,10 @@ npm run boundarybench:experiment -- validate-corpus
 
 ## Freeze
 
+The current experiment artifact chain is config `v0.2.0` → draft `v0.2.0` →
+manifest `v0.2.0`. Version `v0.1.0` artifacts predate price-snapshot evidence
+and are rejected with recovery guidance rather than migrated implicitly.
+
 Freezing requires:
 
 - a clean worktree and the exact current commit

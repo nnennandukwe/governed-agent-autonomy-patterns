@@ -8,6 +8,10 @@ import { z } from 'zod';
 import { loadAndValidateCorpus } from './corpus.js';
 import { assertPricingSnapshotCurrent } from './pricing.js';
 import type { ExperimentDraft } from './types.js';
+import {
+  EXPERIMENT_CONFIG_SCHEMA_VERSION,
+  EXPERIMENT_DRAFT_SCHEMA_VERSION,
+} from './versions.js';
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const isoDate = z.string()
@@ -45,7 +49,7 @@ const provider = z.discriminatedUnion('name', [
 ]);
 
 export const experimentConfigSchema = z.object({
-  schemaVersion: z.literal('boundarybench.experiment-config.v0.1.0'),
+  schemaVersion: z.literal(EXPERIMENT_CONFIG_SCHEMA_VERSION),
   seed: z.string().min(1),
   providers: z.array(provider).length(2),
   pricingSnapshot: z.object({
@@ -130,13 +134,29 @@ export const experimentConfigSchema = z.object({
 
 export type ExperimentConfig = z.infer<typeof experimentConfigSchema>;
 
+export function parseExperimentConfig(value: unknown): ExperimentConfig {
+  const actual = (
+    typeof value === 'object'
+    && value !== null
+    && 'schemaVersion' in value
+  )
+    ? String(value.schemaVersion)
+    : 'missing';
+  if (actual !== EXPERIMENT_CONFIG_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported experiment config schema version "${actual}". Expected "${EXPERIMENT_CONFIG_SCHEMA_VERSION}". Recovery: create a new config from the current example.`,
+    );
+  }
+  return experimentConfigSchema.parse(value);
+}
+
 export async function loadExperimentDraft(
   configPath: string,
   repositoryRoot: string,
   harnessCommit: string,
 ): Promise<ExperimentDraft> {
-  const config = experimentConfigSchema.parse(
-    JSON.parse(await readFile(configPath, 'utf8')),
+  const config = parseExperimentConfig(
+    JSON.parse(await readFile(configPath, 'utf8')) as unknown,
   );
   assertPricingSnapshotCurrent(config.pricingSnapshot);
   const protocolBytes = await readFile(
@@ -178,7 +198,7 @@ export async function loadExperimentDraft(
 
   return {
     ...config,
-    schemaVersion: 'boundarybench.experiment-draft.v0.1.0',
+    schemaVersion: EXPERIMENT_DRAFT_SCHEMA_VERSION,
     protocolDigest: `sha256:${createHash('sha256')
       .update(protocolBytes)
       .digest('hex')}`,

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { TrialReceipt } from '@governed-autonomy/coding-agent';
 
-import { verifyFrozenManifest } from './manifest.js';
+import { assertFrozenManifest } from './manifest.js';
 import { summarizeRunSet } from './metrics.js';
 import { verifyTrialReceipt } from './runner.js';
 import type {
@@ -16,9 +16,7 @@ export async function writeRunSetReport(
   manifest: FrozenExperimentManifest,
   receipts: TrialReceipt[],
 ): Promise<RunSetSummary> {
-  if (!verifyFrozenManifest(manifest)) {
-    throw new Error('Cannot report a manifest with an invalid content digest.');
-  }
+  assertFrozenManifest(manifest);
   const invalidReceipt = receipts.find(
     receipt => !verifyTrialReceipt(receipt),
   );
