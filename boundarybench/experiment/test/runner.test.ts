@@ -169,6 +169,22 @@ test('a price snapshot remains current through its inclusive end date', async ()
   );
 });
 
+test('price snapshot validity follows UTC at a non-UTC midnight boundary', async () => {
+  const manifest = freezeExperiment(minimalDraft());
+  await assert.rejects(
+    () => runExperiment(manifest, {
+      repositoryRoot: process.cwd(),
+      outputRoot: path.join(tmpdir(), 'never-written'),
+      environment: {
+        BOUNDARYBENCH_LIVE: '1',
+      },
+      // Still August 31 in New York, but already September 1 in UTC.
+      now: new Date('2026-08-31T20:30:00-04:00'),
+    }),
+    /price snapshot expired.*freeze a new manifest/i,
+  );
+});
+
 test('root experiment commands resolve relative paths from the repository root', () => {
   const result = spawnSync(
     'npm',

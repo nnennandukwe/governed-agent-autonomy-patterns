@@ -70,11 +70,13 @@ report version, and passing deterministic and fake-model test-output digests at
 that commit.
 
 The price table records ordinary input, cache-read input, cache-write input,
-and output rates separately. The example snapshot was checked on July 26, 2026
-and is valid through Anthropic's introductory-price end date of August 31,
-2026. Freeze and live execution fail closed after that date until an operator
-checks both first-party sources and creates a new manifest. The example also
-contains a non-digest image placeholder so it cannot be frozen accidentally.
+and output rates separately. `pricingSnapshot.checkedAt` and
+`pricingSnapshot.validThrough` are UTC calendar dates whose interval is
+inclusive. The example snapshot was checked on July 26, 2026 and is valid
+through Anthropic's introductory-price end date of August 31, 2026. Freeze and
+live execution fail closed after that UTC date until an operator checks both
+first-party sources and creates a new manifest. The example also contains a
+non-digest image placeholder so it cannot be frozen accidentally.
 
 ## Preflight and run
 

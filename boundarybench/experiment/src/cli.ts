@@ -42,6 +42,7 @@ function help(): string {
     'Live execution requires BOUNDARYBENCH_LIVE=1 and both provider API keys.',
     'Freeze and run refuse a dirty worktree. A frozen manifest requires an immutable Docker image digest.',
     'Freeze and run require a current first-party price snapshot.',
+    'Pricing checkedAt and validThrough are inclusive UTC calendar dates.',
     'Relative option paths are resolved from the repository root.',
     '',
   ].join('\n');
