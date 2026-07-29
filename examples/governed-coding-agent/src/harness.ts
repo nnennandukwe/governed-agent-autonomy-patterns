@@ -56,6 +56,7 @@ function zeroUsage(): Usage {
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
     estimatedCostMicros: 0,
   };
 }
@@ -65,6 +66,10 @@ function addUsage(total: Usage, next: Usage): void {
   total.outputTokens += next.outputTokens;
   total.cachedInputTokens = (
     (total.cachedInputTokens ?? 0) + (next.cachedInputTokens ?? 0)
+  );
+  total.cacheWriteInputTokens = (
+    (total.cacheWriteInputTokens ?? 0)
+    + (next.cacheWriteInputTokens ?? 0)
   );
   total.estimatedCostMicros += next.estimatedCostMicros;
 }
@@ -607,6 +612,8 @@ export function createGovernedHarness(
               input_tokens: turn.usage.inputTokens,
               output_tokens: turn.usage.outputTokens,
               cached_input_tokens: turn.usage.cachedInputTokens ?? 0,
+              cache_write_input_tokens:
+                turn.usage.cacheWriteInputTokens ?? 0,
             },
           });
           append('model.turn', {

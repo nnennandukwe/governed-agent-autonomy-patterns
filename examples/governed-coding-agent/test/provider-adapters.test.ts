@@ -47,7 +47,10 @@ test('OpenAI adapter uses a stateless manual Responses tool loop', async () => {
           usage: {
             input_tokens: 100,
             output_tokens: 20,
-            input_tokens_details: { cached_tokens: 10 },
+            input_tokens_details: {
+              cached_tokens: 10,
+              cache_write_tokens: 4,
+            },
           },
         };
       },
@@ -58,6 +61,7 @@ test('OpenAI adapter uses a stateless manual Responses tool loop', async () => {
     pricing: {
       inputPerMillion: 2.5,
       cachedInputPerMillion: 0.25,
+      cacheWritePerMillion: 3.125,
       outputPerMillion: 15,
     },
   });
@@ -74,10 +78,13 @@ test('OpenAI adapter uses a stateless manual Responses tool loop', async () => {
   }]);
   assert.equal(first.requestId, 'req_openai_1');
   assert.equal(first.usage.cachedInputTokens, 10);
+  assert.equal(first.usage.cacheWriteInputTokens, 4);
+  assert.equal(first.usage.estimatedCostMicros, 530);
   assert.deepEqual(first.providerUsage, {
     input_tokens: 100,
     output_tokens: 20,
     cached_input_tokens: 10,
+    cache_write_input_tokens: 4,
   });
   assert.ok(first.continuation);
 
@@ -134,9 +141,10 @@ test('Anthropic adapter owns a manual Messages tool_use/tool_result loop', async
   const adapter = new AnthropicMessagesAdapter({
     client,
     pricing: {
-      inputPerMillion: 3,
-      cachedInputPerMillion: 0.3,
-      outputPerMillion: 15,
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      cacheWritePerMillion: 2.5,
+      outputPerMillion: 10,
     },
   });
 
@@ -154,7 +162,9 @@ test('Anthropic adapter owns a manual Messages tool_use/tool_result loop', async
   }]);
   assert.equal(first.requestId, 'req_anthropic_1');
   assert.equal(first.usage.cachedInputTokens, 5);
+  assert.equal(first.usage.cacheWriteInputTokens, 7);
   assert.equal(first.usage.inputTokens, 102);
+  assert.equal(first.usage.estimatedCostMicros, 499);
   assert.deepEqual(first.providerUsage, {
     input_tokens: 90,
     output_tokens: 30,
@@ -228,5 +238,56 @@ test('provider adapters fail closed when usage accounting is missing', async () 
   await assert.rejects(
     () => anthropic.nextTurn(input()),
     /usage.*fails closed/i,
+  );
+});
+
+test('provider adapters fail closed when cache usage categories are invalid', async () => {
+  const openai = new OpenAIResponsesAdapter({
+    client: {
+      responses: {
+        async create() {
+          return {
+            id: 'openai-invalid-cache-usage',
+            output: [],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 1,
+              input_tokens_details: {
+                cached_tokens: 80,
+                cache_write_tokens: 30,
+              },
+            },
+          };
+        },
+      },
+    },
+  });
+  const anthropic = new AnthropicMessagesAdapter({
+    client: {
+      messages: {
+        async create() {
+          return {
+            id: 'anthropic-invalid-cache-usage',
+            role: 'assistant',
+            content: [],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 1,
+              cache_creation_input_tokens: -1,
+              cache_read_input_tokens: 0,
+            },
+          };
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => openai.nextTurn(input()),
+    /cache usage categories.*fails? closed/i,
+  );
+  await assert.rejects(
+    () => anthropic.nextTurn(input()),
+    /cache usage categories.*fails? closed/i,
   );
 });

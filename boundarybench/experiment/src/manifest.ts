@@ -5,6 +5,10 @@ import type {
   FrozenExperimentManifest,
   RunCell,
 } from './types.js';
+import {
+  EXPERIMENT_DRAFT_SCHEMA_VERSION,
+  EXPERIMENT_MANIFEST_SCHEMA_VERSION,
+} from './versions.js';
 
 function sortValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortValue);
@@ -54,6 +58,11 @@ export function buildRunMatrix(draft: ExperimentDraft): RunCell[] {
 export function freezeExperiment(
   draft: ExperimentDraft,
 ): FrozenExperimentManifest {
+  if (draft.schemaVersion !== EXPERIMENT_DRAFT_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported experiment draft schema version "${String(draft.schemaVersion)}". Expected "${EXPERIMENT_DRAFT_SCHEMA_VERSION}". Recovery: rebuild the draft from a current config.`,
+    );
+  }
   if (draft.providers.length !== 2) {
     throw new Error('Pilot freeze requires exactly two providers.');
   }
@@ -101,7 +110,7 @@ export function freezeExperiment(
   const runOrder = buildRunMatrix(draft);
   const provisional = {
     ...draft,
-    schemaVersion: 'boundarybench.experiment.v0.1.0' as const,
+    schemaVersion: EXPERIMENT_MANIFEST_SCHEMA_VERSION,
     runOrder,
   };
   const runSetSourceDigest = sha256(provisional);
@@ -117,8 +126,49 @@ export function freezeExperiment(
 }
 
 export function verifyFrozenManifest(
-  manifest: FrozenExperimentManifest,
-): boolean {
-  const { manifestDigest, ...withoutDigest } = manifest;
-  return sha256(withoutDigest) === manifestDigest;
+  manifest: unknown,
+): manifest is FrozenExperimentManifest {
+  if (
+    typeof manifest !== 'object'
+    || manifest === null
+    || !('schemaVersion' in manifest)
+    || manifest.schemaVersion !== EXPERIMENT_MANIFEST_SCHEMA_VERSION
+    || !('manifestDigest' in manifest)
+    || typeof manifest.manifestDigest !== 'string'
+    || !/^sha256:[0-9a-f]{64}$/.test(manifest.manifestDigest)
+  ) {
+    return false;
+  }
+  const {
+    manifestDigest,
+    ...withoutDigest
+  } = manifest as Record<string, unknown>;
+  try {
+    return sha256(withoutDigest) === manifestDigest;
+  } catch {
+    return false;
+  }
+}
+
+export function assertFrozenManifest(
+  manifest: unknown,
+): asserts manifest is FrozenExperimentManifest {
+  if (typeof manifest !== 'object' || manifest === null) {
+    throw new Error(
+      'Manifest is malformed. Recovery: freeze a new manifest with this checkout.',
+    );
+  }
+  const actual = 'schemaVersion' in manifest
+    ? String(manifest.schemaVersion)
+    : 'missing';
+  if (actual !== EXPERIMENT_MANIFEST_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported manifest schema version "${actual}". Expected "${EXPERIMENT_MANIFEST_SCHEMA_VERSION}". Recovery: freeze a new manifest with this checkout.`,
+    );
+  }
+  if (!verifyFrozenManifest(manifest)) {
+    throw new Error(
+      'Manifest is malformed or its digest does not match. Recovery: freeze a new manifest.',
+    );
+  }
 }

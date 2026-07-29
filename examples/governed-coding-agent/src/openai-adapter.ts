@@ -12,6 +12,7 @@ export interface OpenAIAdapterOptions {
   pricing?: {
     inputPerMillion: number;
     cachedInputPerMillion: number;
+    cacheWritePerMillion: number;
     outputPerMillion: number;
   };
   client?: unknown;
@@ -28,6 +29,7 @@ interface OpenAIResponseLike {
     output_tokens?: number;
     input_tokens_details?: {
       cached_tokens?: number;
+      cache_write_tokens?: number;
     };
   };
 }
@@ -76,12 +78,17 @@ function estimatedMicros(
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
+  cacheWriteInputTokens: number,
   pricing: Required<OpenAIAdapterOptions>['pricing'],
 ): number {
-  const uncached = Math.max(0, inputTokens - cachedInputTokens);
+  const uncached = Math.max(
+    0,
+    inputTokens - cachedInputTokens - cacheWriteInputTokens,
+  );
   return Math.round(
     uncached * pricing.inputPerMillion
     + cachedInputTokens * pricing.cachedInputPerMillion
+    + cacheWriteInputTokens * pricing.cacheWritePerMillion
     + outputTokens * pricing.outputPerMillion,
   );
 }
@@ -97,6 +104,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
     this.pricing = options.pricing ?? {
       inputPerMillion: 2.5,
       cachedInputPerMillion: 0.25,
+      cacheWritePerMillion: 3.125,
       outputPerMillion: 15,
     };
     this.client = options.client
@@ -154,6 +162,20 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
     const cachedInputTokens = (
       response.usage?.input_tokens_details?.cached_tokens ?? 0
     );
+    const cacheWriteInputTokens = (
+      response.usage?.input_tokens_details?.cache_write_tokens ?? 0
+    );
+    if (
+      !Number.isSafeInteger(cachedInputTokens)
+      || cachedInputTokens < 0
+      || !Number.isSafeInteger(cacheWriteInputTokens)
+      || cacheWriteInputTokens < 0
+      || cachedInputTokens + cacheWriteInputTokens > inputTokens
+    ) {
+      throw new Error(
+        'OpenAI cache usage categories were invalid; runtime accounting fails closed.',
+      );
+    }
     const requestId = response._request_id ?? response.id;
     if (!requestId) {
       throw new Error(
@@ -175,10 +197,12 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
         inputTokens,
         outputTokens,
         cachedInputTokens,
+        cacheWriteInputTokens,
         estimatedCostMicros: estimatedMicros(
           inputTokens,
           outputTokens,
           cachedInputTokens,
+          cacheWriteInputTokens,
           this.pricing,
         ),
       },
@@ -186,6 +210,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cached_input_tokens: cachedInputTokens,
+        cache_write_input_tokens: cacheWriteInputTokens,
       },
       continuation: {
         kind: 'openai-responses-v1',

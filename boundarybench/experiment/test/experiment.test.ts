@@ -10,6 +10,7 @@ import type {
 import {
   buildRunMatrix,
   freezeExperiment,
+  verifyFrozenManifest,
 } from '../src/manifest.js';
 import { summarizeRunSet } from '../src/metrics.js';
 import { loadAndValidateCorpus } from '../src/corpus.js';
@@ -34,7 +35,7 @@ const conditions: TrialCondition[] = [
 
 function draft(): ExperimentDraft {
   return {
-    schemaVersion: 'boundarybench.experiment-draft.v0.1.0',
+    schemaVersion: 'boundarybench.experiment-draft.v0.2.0',
     protocolDigest: digest,
     harnessCommit: '48fe5b5added9aa27d694d59e3681ea7e7e34407',
     seed: 'boundarybench-pilot-v0.1.0',
@@ -46,6 +47,7 @@ function draft(): ExperimentDraft {
         pricing: {
           inputPerMillion: 2.5,
           cachedInputPerMillion: 0.25,
+          cacheWritePerMillion: 3.125,
           outputPerMillion: 15,
         },
       },
@@ -54,12 +56,21 @@ function draft(): ExperimentDraft {
         model: 'claude-sonnet-5',
         effort: 'medium',
         pricing: {
-          inputPerMillion: 3,
-          cachedInputPerMillion: 0.3,
-          outputPerMillion: 15,
+          inputPerMillion: 2,
+          cachedInputPerMillion: 0.2,
+          cacheWritePerMillion: 2.5,
+          outputPerMillion: 10,
         },
       },
     ],
+    pricingSnapshot: {
+      checkedAt: '2026-07-26',
+      validThrough: '2026-08-31',
+      sources: {
+        openai: 'https://developers.openai.com/api/docs/models/gpt-5.6-terra',
+        anthropic: 'https://platform.claude.com/docs/en/about-claude/pricing',
+      },
+    },
     tasks: Array.from({ length: 5 }, (_, index) => ({
       id: `task-${index + 1}`,
       instruction: `Fix task ${index + 1}.`,
@@ -136,9 +147,28 @@ test('freezing binds the matrix and all effective inputs to one digest', () => {
   const second = freezeExperiment(draft());
 
   assert.deepEqual(first, second);
+  assert.equal(
+    first.schemaVersion,
+    'boundarybench.experiment.v0.2.0',
+  );
   assert.equal(first.runOrder.length, 60);
   assert.match(first.runSetId, /^pilot-[0-9a-f]{12}$/);
   assert.match(first.manifestDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(verifyFrozenManifest(first), true);
+  assert.equal(verifyFrozenManifest({
+    ...first,
+    runSetId: 'pilot-tampered',
+  }), false);
+});
+
+test('legacy draft versions are rejected before manifest construction', () => {
+  assert.throws(
+    () => freezeExperiment({
+      ...draft(),
+      schemaVersion: 'boundarybench.experiment-draft.v0.1.0',
+    } as unknown as ExperimentDraft),
+    /unsupported experiment draft schema version.*v0\.1\.0.*expected.*v0\.2\.0/i,
+  );
 });
 
 function receipt(

@@ -23,7 +23,8 @@ import {
 } from '@governed-autonomy/coding-agent';
 
 import { loadAndValidateCorpus } from './corpus.js';
-import { verifyFrozenManifest } from './manifest.js';
+import { assertFrozenManifest } from './manifest.js';
+import { assertPricingSnapshotCurrent } from './pricing.js';
 import type { FrozenExperimentManifest } from './types.js';
 
 export interface RunExperimentOptions {
@@ -31,6 +32,7 @@ export interface RunExperimentOptions {
   outputRoot: string;
   environment?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  now?: Date;
 }
 
 export function remainingRunCells(
@@ -55,17 +57,17 @@ export async function runExperiment(
   manifest: FrozenExperimentManifest,
   options: RunExperimentOptions,
 ): Promise<TrialReceipt[]> {
+  assertFrozenManifest(manifest);
   const environment = options.environment ?? process.env;
   if (environment.BOUNDARYBENCH_LIVE !== '1') {
     throw new Error(
       'Live execution is disabled. Recovery: review the frozen manifest, then set BOUNDARYBENCH_LIVE=1 explicitly.',
     );
   }
-  if (!verifyFrozenManifest(manifest)) {
-    throw new Error(
-      'Frozen manifest digest does not match its contents. Recovery: do not run it; freeze a new manifest.',
-    );
-  }
+  assertPricingSnapshotCurrent(
+    manifest.pricingSnapshot,
+    options.now ?? new Date(),
+  );
   for (const provider of manifest.providers) {
     const key = provider.name === 'openai'
       ? environment.OPENAI_API_KEY

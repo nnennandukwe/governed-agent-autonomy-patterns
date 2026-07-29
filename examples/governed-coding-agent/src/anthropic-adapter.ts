@@ -12,6 +12,7 @@ export interface AnthropicAdapterOptions {
   pricing?: {
     inputPerMillion: number;
     cachedInputPerMillion: number;
+    cacheWritePerMillion: number;
     outputPerMillion: number;
   };
   client?: unknown;
@@ -71,12 +72,17 @@ function estimatedMicros(
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
+  cacheWriteInputTokens: number,
   pricing: Required<AnthropicAdapterOptions>['pricing'],
 ): number {
-  const uncached = Math.max(0, inputTokens - cachedInputTokens);
+  const uncached = Math.max(
+    0,
+    inputTokens - cachedInputTokens - cacheWriteInputTokens,
+  );
   return Math.round(
     uncached * pricing.inputPerMillion
     + cachedInputTokens * pricing.cachedInputPerMillion
+    + cacheWriteInputTokens * pricing.cacheWritePerMillion
     + outputTokens * pricing.outputPerMillion,
   );
 }
@@ -90,9 +96,10 @@ export class AnthropicMessagesAdapter implements ModelAdapter {
   constructor(options: AnthropicAdapterOptions = {}) {
     this.model = options.model ?? 'claude-sonnet-5';
     this.pricing = options.pricing ?? {
-      inputPerMillion: 3,
-      cachedInputPerMillion: 0.3,
-      outputPerMillion: 15,
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      cacheWritePerMillion: 2.5,
+      outputPerMillion: 10,
     };
     this.client = options.client
       ? options.client as AnthropicClientLike
@@ -165,9 +172,24 @@ export class AnthropicMessagesAdapter implements ModelAdapter {
     const cachedInputTokens = (
       response.usage?.cache_read_input_tokens ?? 0
     );
+    if (
+      !Number.isSafeInteger(cacheCreationInputTokens)
+      || cacheCreationInputTokens < 0
+      || !Number.isSafeInteger(cachedInputTokens)
+      || cachedInputTokens < 0
+    ) {
+      throw new Error(
+        'Anthropic cache usage categories were invalid; runtime accounting fails closed.',
+      );
+    }
     const inputTokens = (
       baseInputTokens + cacheCreationInputTokens + cachedInputTokens
     );
+    if (!Number.isSafeInteger(inputTokens)) {
+      throw new Error(
+        'Anthropic cache usage categories exceeded safe accounting limits; runtime accounting fails closed.',
+      );
+    }
     const requestId = response._request_id ?? response.id;
     if (!requestId) {
       throw new Error(
@@ -182,10 +204,12 @@ export class AnthropicMessagesAdapter implements ModelAdapter {
         inputTokens,
         outputTokens,
         cachedInputTokens,
+        cacheWriteInputTokens: cacheCreationInputTokens,
         estimatedCostMicros: estimatedMicros(
           inputTokens,
           outputTokens,
           cachedInputTokens,
+          cacheCreationInputTokens,
           this.pricing,
         ),
       },

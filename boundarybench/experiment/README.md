@@ -30,6 +30,10 @@ npm run boundarybench:experiment -- validate-corpus
 
 ## Freeze
 
+The current experiment artifact chain is config `v0.2.0` -> draft `v0.2.0` ->
+manifest `v0.2.0`. Version `v0.1.0` artifacts predate price-snapshot evidence
+and are rejected with recovery guidance rather than migrated implicitly.
+
 Freezing requires:
 
 - a clean worktree and the exact current commit
@@ -37,6 +41,7 @@ Freezing requires:
 - an immutable `name@sha256:<digest>` Node 20 image reference
 - five validated corpus tasks
 - the exact two provider model IDs and all declared limits
+- a first-party price snapshot whose validity window includes the freeze date
 
 Copy
 [`pilot.config.example.json`](./pilot.config.example.json) into
@@ -64,15 +69,21 @@ image, conditions, seeded order, challenge schedule, limits, redaction policy,
 report version, and passing deterministic and fake-model test-output digests at
 that commit.
 
-The example config deliberately contains a non-digest placeholder so it cannot
-be frozen accidentally.
+The price table records ordinary input, cache-read input, cache-write input,
+and output rates separately. `pricingSnapshot.checkedAt` and
+`pricingSnapshot.validThrough` are UTC calendar dates whose interval is
+inclusive. The example snapshot was checked on July 26, 2026 and is valid
+through Anthropic's introductory-price end date of August 31, 2026. Freeze and
+live execution fail closed after that UTC date until an operator checks both
+first-party sources and creates a new manifest. The example also contains a
+non-digest image placeholder so it cannot be frozen accidentally.
 
 ## Preflight and run
 
 Review the complete manifest before enabling live execution. The runner then
 checks the clean commit, exact model availability, host credentials, Docker
-daemon, MCP bundle, pinned image, and aggregate cost circuit breaker before the
-first model request.
+daemon, MCP bundle, pinned image, unexpired price snapshot, and aggregate cost
+circuit breaker before the first model request.
 
 ```bash
 export OPENAI_API_KEY='...'

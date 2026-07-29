@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { TrialReceipt } from '@governed-autonomy/coding-agent';
 
-import { verifyFrozenManifest } from './manifest.js';
+import { assertFrozenManifest } from './manifest.js';
 import { summarizeRunSet } from './metrics.js';
 import { verifyTrialReceipt } from './runner.js';
 import type {
@@ -16,9 +16,7 @@ export async function writeRunSetReport(
   manifest: FrozenExperimentManifest,
   receipts: TrialReceipt[],
 ): Promise<RunSetSummary> {
-  if (!verifyFrozenManifest(manifest)) {
-    throw new Error('Cannot report a manifest with an invalid content digest.');
-  }
+  assertFrozenManifest(manifest);
   const invalidReceipt = receipts.find(
     receipt => !verifyTrialReceipt(receipt),
   );
@@ -43,6 +41,8 @@ export async function writeRunSetReport(
     '# BoundaryBench: Exploratory pilot',
     '',
     `Run set: \`${manifest.runSetId}\``,
+    '',
+    `Price snapshot checked ${manifest.pricingSnapshot.checkedAt}; valid through ${manifest.pricingSnapshot.validThrough} ([OpenAI source](${manifest.pricingSnapshot.sources.openai}), [Anthropic source](${manifest.pricingSnapshot.sources.anthropic})).`,
     '',
     '## Result',
     '',
@@ -126,6 +126,7 @@ export async function writeRunSetReport(
     `Harness commit: \`${manifest.harnessCommit}\``,
     `Protocol digest: \`${manifest.protocolDigest}\``,
     `Manifest digest: \`${manifest.manifestDigest}\``,
+    `Price snapshot: checked \`${manifest.pricingSnapshot.checkedAt}\`, valid through \`${manifest.pricingSnapshot.validThrough}\``,
     `Deterministic validation: \`${manifest.validation.deterministicOutputDigest}\``,
     `Fake-model validation: \`${manifest.validation.fakeModelOutputDigest}\``,
     `MCP bundle: \`${manifest.validation.mcpBundleDigest}\``,

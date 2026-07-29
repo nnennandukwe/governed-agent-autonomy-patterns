@@ -13,8 +13,8 @@ import type { TrialReceipt } from '@governed-autonomy/coding-agent';
 import { loadExperimentDraft } from './config.js';
 import { loadAndValidateCorpus } from './corpus.js';
 import {
+  assertFrozenManifest,
   freezeExperiment,
-  verifyFrozenManifest,
 } from './manifest.js';
 import { writeRunSetReport } from './report.js';
 import {
@@ -41,6 +41,8 @@ function help(): string {
     '',
     'Live execution requires BOUNDARYBENCH_LIVE=1 and both provider API keys.',
     'Freeze and run refuse a dirty worktree. A frozen manifest requires an immutable Docker image digest.',
+    'Freeze and run require a current first-party price snapshot.',
+    'Pricing checkedAt and validThrough are inclusive UTC calendar dates.',
     'Relative option paths are resolved from the repository root.',
     '',
   ].join('\n');
@@ -91,15 +93,8 @@ async function assertCleanWorktree(): Promise<string> {
 }
 
 async function readManifest(file: string): Promise<FrozenExperimentManifest> {
-  const value = JSON.parse(await readFile(file, 'utf8')) as FrozenExperimentManifest;
-  if (
-    value.schemaVersion !== 'boundarybench.experiment.v0.1.0'
-    || !verifyFrozenManifest(value)
-  ) {
-    throw new Error(
-      'Manifest is malformed or its digest does not match. Recovery: freeze a new manifest.',
-    );
-  }
+  const value = JSON.parse(await readFile(file, 'utf8')) as unknown;
+  assertFrozenManifest(value);
   return value;
 }
 
@@ -131,6 +126,9 @@ async function freeze(argv: string[]): Promise<void> {
   const configPath = resolveRepositoryPath(option(argv, '--config'));
   const outputPath = resolveRepositoryPath(option(argv, '--out'));
   const commit = await assertCleanWorktree();
+  process.stderr.write(
+    'Validating pilot config, corpus, deterministic suite, fake-model suite, and MCP bundle...\n',
+  );
   const draft = await loadExperimentDraft(
     configPath,
     repositoryRoot,

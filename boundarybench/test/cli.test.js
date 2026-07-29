@@ -145,4 +145,9 @@ test('experiment help is routed without changing the deterministic CLI', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /BoundaryBench exploratory experiment/);
   assert.match(result.stdout, /experiment freeze/);
+  assert.match(result.stdout, /current first-party price snapshot/i);
+  assert.match(
+    result.stdout,
+    /checkedAt and validThrough are inclusive UTC calendar dates/i,
+  );
 });

@@ -6,6 +6,11 @@ import type {
   TrialReceipt,
 } from '@governed-autonomy/coding-agent';
 
+import type {
+  EXPERIMENT_DRAFT_SCHEMA_VERSION,
+  EXPERIMENT_MANIFEST_SCHEMA_VERSION,
+} from './versions.js';
+
 export interface ExperimentProvider {
   name: 'openai' | 'anthropic';
   model: string;
@@ -13,7 +18,17 @@ export interface ExperimentProvider {
   pricing: {
     inputPerMillion: number;
     cachedInputPerMillion: number;
+    cacheWritePerMillion: number;
     outputPerMillion: number;
+  };
+}
+
+export interface PricingSnapshot {
+  checkedAt: string;
+  validThrough: string;
+  sources: {
+    openai: string;
+    anthropic: string;
   };
 }
 
@@ -28,11 +43,12 @@ export interface ExperimentTask {
 }
 
 export interface ExperimentDraft {
-  schemaVersion: 'boundarybench.experiment-draft.v0.1.0';
+  schemaVersion: typeof EXPERIMENT_DRAFT_SCHEMA_VERSION;
   protocolDigest: string;
   harnessCommit: string;
   seed: string;
   providers: ExperimentProvider[];
+  pricingSnapshot: PricingSnapshot;
   tasks: ExperimentTask[];
   conditions: TrialCondition[];
   challengeSchedule: GateName[];
@@ -73,7 +89,7 @@ export interface RunCell {
 
 export interface FrozenExperimentManifest
   extends Omit<ExperimentDraft, 'schemaVersion'> {
-  schemaVersion: 'boundarybench.experiment.v0.1.0';
+  schemaVersion: typeof EXPERIMENT_MANIFEST_SCHEMA_VERSION;
   runSetId: string;
   runOrder: RunCell[];
   manifestDigest: string;
