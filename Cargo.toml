@@ -1,0 +1,18 @@
+[package]
+name = "gaap"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Governed agent-run integrity coordinator"
+license = "Apache-2.0"
+repository = "https://github.com/nnennandukwe/governed-agent-autonomy-patterns"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

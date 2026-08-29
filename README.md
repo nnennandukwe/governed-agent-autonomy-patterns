@@ -1,174 +1,137 @@
 # Governed Agent Autonomy Patterns
 
-AI coding systems need a control plane, not just a better model.
+GAAP is a Rust library and CLI that evaluates normalized plan, permission,
+tool-trust, verification, runtime, mutation, and completion decisions for an
+agent run.
 
-This repo is a public, docs-first reference for teams that want agentic coding without chaos. It focuses on the five gates that protect code integrity while still preserving speed: `plan`, `permission`, `tool trust`, `verification`, and `runtime accountability`.
+The current executable slice provides the integrity coordinator that a future
+agent loop will call before protected effects. It does not yet execute models,
+tools, repository mutations, sandboxes, or verifiers.
 
-The core reframe is simple: boundaries are not bottlenecks. Good boundaries are how teams get sustainable velocity.
+## Current Interfaces And Evidence
 
-## Why this repo exists
-
-Most discussion about AI coding systems still centers on generation speed. That misses the harder problem. The risk is not that agents can write code quickly. The risk is that they can write and execute changes quickly without enough planning, review, verification, trust controls, and runtime accountability.
-
-This repo packages a reusable framework for evaluating and designing governed agent autonomy. It is meant to be easy to repurpose into:
-
-- talk and workshop material
-- blog posts and teardown pieces
-- internal platform standards
-- procurement and evaluation checklists
-- lightweight team rollout guides
-
-The same control-plane logic applies after code generation too. Packaging and publish workflows are part of code integrity, not a separate concern.
-
-## The Five Gates
-
-| Gate | Purpose | Core question |
+| Path or interface | Current behavior | Developer use |
 | --- | --- | --- |
-| `plan` | Separate exploration from execution | Can the system pause, inspect, and propose before it mutates code? |
-| `permission` | Gate risky actions with explicit policy | Can the system distinguish safe, risky, and disallowed behavior? |
-| `tool trust` | Review risky tools and settings before enablement | Are external capabilities explicitly approved before the agent can rely on them? |
-| `verification` | Keep implementation and validation independent | Does a separate verifier produce evidence instead of self-grading? |
-| `runtime accountability` | Make execution state, usage, and spend governable | Can operators see what the system is doing, where it is running, and what it is costing while it runs? |
+| [`RunCoordinator::evaluate(gate, input)`](./src/lib.rs) | Accepts a typed `Gate` and normalized JSON input, then returns an `allow`, `ask`, or `block` decision with a code and effects. | Put one deterministic decision module behind future provider, tool, and runtime adapters. |
+| `gaap run-invariant` | Reads a RunInvariant request from stdin and writes one response to stdout. | Test the Rust coordinator without importing its crate or depending on Rust. |
+| [`evidence/run-invariant-subject-v0.1.0.json`](./evidence/run-invariant-subject-v0.1.0.json) | Records the Rust subject's exact 35/35 result and request digest. | Reproduce the current external conformance claim. |
+| [`docs/patterns`](./docs/patterns) | Defines the five integrity gates and their operating intent. | Design the larger agent-run lifecycle and review other systems. |
+| [`docs/scorecard.md`](./docs/scorecard.md) | Lists evaluation criteria for governed autonomy. | Review a platform, internal harness, or vendor workflow. |
 
-Visibility still matters, but it is not a floating concept here. In this repo, visibility becomes operational through the runtime accountability gate: execution state, traceability, quota decisions, cost attribution, and audit surfaces that let operators supervise autonomous work.
+The Rust module is the implementation under test. The conformance protocol and
+fixture corpus live in the separate
+[`run-invariant`](https://github.com/nnennandukwe/run-invariant) repository.
+GAAP does not import or vendor RunInvariant.
 
-## Architecture At A Glance
+## Status
 
-![Governed autonomy control plane](docs/assets/diagrams/control-plane-overview.png)
+Implemented and tested now:
 
-In the visual set, the fifth gate is rendered as a telemetry and quota gate. In this repo, that control surface is named `runtime accountability` because it governs state, usage, spend, and threshold-based intervention together.
+- a Rust `RunCoordinator` with one public evaluation interface;
+- plan approval bound to the exact plan digest;
+- deny precedence and explicit approval for risky or unknown actions;
+- capability approval bound to an exact capability digest;
+- independent, subject-bound, evidence-bearing verification;
+- fail-closed usage accounting and bounded overage approval;
+- separate mutation and completion authorization;
+- a language-neutral RunInvariant process adapter; and
+- a 35/35 black-box conformance packet for the frozen protocol.
 
-This control plane keeps generation power inside explicit operational boundaries. The point is not to stop work. The point is to make safe work easy and unsafe work obvious.
+Not implemented yet:
 
-See the [diagrams](docs/diagrams.md) page for the supporting visual set and portable mermaid versions.
+- an open-ended model and tool execution loop;
+- OpenAI, Anthropic, MCP, or other provider adapters;
+- repository mutation interception;
+- approval persistence, revocation, or delegated authority;
+- sandbox, budget-meter, verifier, or evidence-ledger adapters; and
+- crash recovery or resumable run state.
 
-## BoundaryBench: Executable Proof
+The conformance packet proves normalized decision compatibility for the frozen
+cases. It does not prove those missing runtime properties or certify GAAP for
+production use.
 
-[BoundaryBench](boundarybench/README.md) turns the five gates into a frozen,
-dependency-free conformance protocol. It evaluates normalized decision records
-at the plan, permission, tool-trust, verification, runtime, mutation, and
-completion boundaries.
+## Build And Test
 
-Protocol `0.1.0` currently produces:
-
-| Measure | Result | What it establishes |
-| --- | --- | --- |
-| Reference conformance | `35/35` cases | The reference evaluator matches every frozen expected decision. |
-| Mutation score | `5/5` mutants killed | The public cases detect one deliberately unsafe implementation of each gate. |
-
-Reproduce the committed result locally:
+GAAP pins Rust `1.96.0`. Install Rust with `rustup`, then run:
 
 ```bash
-npm test
-npm run boundarybench
+git clone https://github.com/nnennandukwe/governed-agent-autonomy-patterns.git
+cd governed-agent-autonomy-patterns
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked
 ```
 
-The evidence packet records exact protocol and fixture digests. This is
-deterministic conformance data, not a claim about real-agent quality, production
-outcomes, or billing-grade cost.
+Inspect the CLI:
 
-## Governed Coding-Agent Example
+```bash
+cargo run --locked -- --help
+```
 
-[`examples/governed-coding-agent`](examples/governed-coding-agent/README.md)
-is a repository-owned TypeScript harness that turns the five gates into an
-actual coding-agent control loop. It owns planning, exact-subject approvals,
-MCP tool execution, Docker isolation, budgets, independent verification,
-adjudication, cleanup, and evidence. Provider adapters for the OpenAI Responses
-API and Anthropic Messages API translate messages only; they never decide
-whether a tool runs.
+## Reproduce External Conformance
 
-[`boundarybench/experiment`](boundarybench/experiment/README.md) adds the
-five-task, two-provider, six-condition pilot runner and claim-gated report
-generator. The fake-model scenarios, corpus validation, and provider contract
-fixtures run without API keys. Live execution requires an explicit environment
-opt-in and is never part of ordinary tests or CI.
+RunInvariant `0.2.0` starts GAAP as an opaque child process. Clone both
+repositories into the same parent directory:
 
-There are no live pilot results in this repository yet. The implementation is
-ready for Docker-backed validation and a separately reviewed frozen run; it
-does not authorize an empirical case-study claim on its own.
+```bash
+git clone https://github.com/nnennandukwe/run-invariant.git
+git clone https://github.com/nnennandukwe/governed-agent-autonomy-patterns.git
+cd governed-agent-autonomy-patterns
+cargo build --locked
+cd ../run-invariant
+node bin/run-invariant.js subject -- \
+  ../governed-agent-autonomy-patterns/target/debug/gaap run-invariant
+```
 
-## How To Use This Repo
+The expected bounded result is:
 
-If you are an engineering leader:
+```text
+Subject: gaap 0.1.0 (rust)
+Subject conformance: 35/35 cases
+```
 
-- use the [scorecard](docs/scorecard.md) to evaluate tools or internal platforms
-- use the [diagrams](docs/diagrams.md) to explain why controls accelerate safe adoption
-- use the gate pages to define rollout expectations for teams
+RunInvariant sends case IDs, gate names, and normalized inputs without case
+titles or expected decisions. GAAP rejects unknown subject schemas, decision
+protocol digests, and fixture digests. Its response is bound to the exact input
+bytes with `request_sha256`.
 
-If you are a platform or developer tooling team:
+The committed packet is derived output. CI recomputes it using the pinned
+RunInvariant commit and fails if the packet changes.
 
-- start with the [gate pages](docs/patterns/plan.md)
-- review [runtime accountability](docs/patterns/runtime-accountability.md) if you operate remote or budgeted workflows
-- review the [governed publish pipeline](docs/applications/governed-publish-pipeline.md) if you own release automation
-- copy the [examples](examples/plan/planning-prompt.md) into internal docs or prototypes
-- adapt the scorecard into design review gates or vendor questionnaires
+## Architecture Direction
 
-If you are a practitioner or staff engineer:
+The `RunCoordinator` is the deep module at the integrity seam. Both the
+RunInvariant adapter and the future agent loop call the same interface; neither
+provider-specific message types nor transport details enter the coordinator.
 
-- use the gate docs as a checklist for what to demand from agentic workflows
-- use the examples as a starting point for policy files, verifier contracts, approval records, and runtime-accountability templates
+The next runtime slice must own lifecycle advancement around the coordinator:
+plan, authorize mutation, execute through explicit adapters, account for
+resources, obtain independent verification for the current artifact digest,
+and authorize completion only if no later mutation invalidated that evidence.
 
-## What’s In Here
+Architecture decisions:
 
-- [Scorecard](docs/scorecard.md): evaluate integrity support instead of speed alone
-- [Diagrams](docs/diagrams.md): portable visuals for talks, posts, and internal docs
-- [Plan gate](docs/patterns/plan.md): pre-mutation planning and explicit approval
-- [Permission gate](docs/patterns/permission.md): allow, ask, deny, and dangerous overrides
-- [Tool trust gate](docs/patterns/tool-trust.md): explicit approval for external tools and risky settings
-- [Verification gate](docs/patterns/verification.md): independent validation with evidence
-- [Runtime accountability gate](docs/patterns/runtime-accountability.md): execution-state visibility, quota checks, and spend attribution
-- [Runtime accountability templates](examples/runtime-accountability/execution-state-record.md): copyable records for execution state, threshold rules, cost attribution, and overage approval
-- [Governed publish pipeline](docs/applications/governed-publish-pipeline.md): apply the framework to packaging and release workflows
-- [Examples](examples/plan/planning-prompt.md): copyable templates and tiny dependency-free demos
-- [BoundaryBench](boundarybench/README.md): frozen deterministic conformance cases, unsafe mutants, and reproducible evidence
-- [Governed coding-agent harness](examples/governed-coding-agent/README.md): provider-neutral loop, local MCP tools, Docker lanes, approvals, and evidence
-- [BoundaryBench experiment](boundarybench/experiment/README.md): corpus, frozen 60-trial matrix, runner, metrics, and claim gate
+- [`0001: Own the agent loop`](./docs/adr/0001-own-the-agent-loop.md)
+- [`0002: Use an external conformance seam`](./docs/adr/0002-run-invariant-process-seam.md)
 
-## Source Methodology
+## Pattern Library
 
-The narrative examples and receipts in the pattern pages are adapted from a private production codebase. They are deliberately trimmed, lightly renamed, and annotated for teaching value. The goal is not to publish a hidden product. The goal is to surface the control-plane patterns that matter.
+The implementation is accompanied by material that can be used independently:
 
-Each adapted excerpt is marked with this note:
+- [Plan](./docs/patterns/plan.md)
+- [Permission](./docs/patterns/permission.md)
+- [Tool trust](./docs/patterns/tool-trust.md)
+- [Verification](./docs/patterns/verification.md)
+- [Runtime accountability](./docs/patterns/runtime-accountability.md)
+- [Governed publish pipeline](./docs/applications/governed-publish-pipeline.md)
+- [Scorecard](./docs/scorecard.md)
+- [Diagrams](./docs/diagrams.md)
 
-> Adapted from a private production codebase; trimmed and renamed for clarity.
+The retired Node/TypeScript harness, BoundaryBench, and exploratory pilot remain
+available from the
+[`legacy-ts-boundarybench-v0.1.0`](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/tree/legacy-ts-boundarybench-v0.1.0)
+tag. BoundaryBench's frozen conformance history now lives in RunInvariant.
 
-BoundaryBench is an original public conformance artifact built for this
-repository. Its frozen inputs and generated evidence are inspectable so readers
-can reproduce the narrow claims it makes.
+## License
 
-## Reading Paths
-
-If you want a quick evaluation path:
-
-1. Read the [scorecard](docs/scorecard.md).
-2. Skim the [diagrams](docs/diagrams.md).
-3. Go deeper on the weakest gate in your current workflow.
-
-If you want an implementation path:
-
-1. Start with [plan](docs/patterns/plan.md).
-2. Add [permission](docs/patterns/permission.md).
-3. Add [tool trust](docs/patterns/tool-trust.md).
-4. Add [verification](docs/patterns/verification.md).
-5. Add [runtime accountability](docs/patterns/runtime-accountability.md).
-6. Apply the same controls to packaging and release with the [governed publish pipeline](docs/applications/governed-publish-pipeline.md).
-
-If you want material to repurpose:
-
-1. Pull the control-plane diagram from [diagrams](docs/diagrams.md).
-2. Pull the evaluation criteria from the [scorecard](docs/scorecard.md).
-3. Pull one adapted receipt from each gate page.
-
-## Repurposing Guide
-
-This repo is structured so the same core material can be lifted into multiple formats with minimal rewriting.
-
-- `README` becomes a talk opening, landing page, or long-form article backbone.
-- `scorecard` becomes a buyer guide, internal rubric, or platform review worksheet.
-- `diagrams` become presentation slides, blog visuals, or onboarding illustrations.
-- `gate pages` become policy docs, team standards, or technical teardown sections.
-- `examples` become copyable templates for pilots and internal prototypes.
-
-## Design Principle
-
-Agentic coding systems should not be judged only by how much code they can produce. They should be judged by whether they help teams preserve code integrity while moving quickly enough to matter.
+GAAP is licensed under the [Apache License 2.0](./LICENSE).
