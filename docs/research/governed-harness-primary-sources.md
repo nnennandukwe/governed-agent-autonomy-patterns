@@ -3,8 +3,11 @@
 Checked against first-party documentation and source on July 23, 2026.
 
 This note records the external contracts and evaluation precedents used by the
-governed coding-agent example. It is provenance for public implementation
-choices, not an experimental result or a private build plan.
+retired Node/TypeScript coding-agent prototype. That implementation is
+preserved at the `legacy-ts-boundarybench-v0.1.0` tag and is no longer on
+`main`. The current Rust slice has no provider, MCP, or container adapter.
+This note is historical design provenance, not current implementation
+documentation, an experimental result, or a private build plan.
 
 ## Provider-Owned Inference, Harness-Owned Control
 
@@ -39,8 +42,9 @@ choices, not an experimental result or a private build plan.
   [GPT-5.6 Terra model page](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
   [GPT-5.6 guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - The Terra model page prices ordinary input, cache reads, cache writes, and
-  output separately. BoundaryBench records all four raw token categories and
-  binds their per-million-token rates into the experiment manifest.
+  output separately. The retired BoundaryBench experiment recorded all four
+  raw token categories and bound their per-million-token rates into its
+  experiment manifest.
   [GPT-5.6 Terra pricing](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
   [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
@@ -121,8 +125,8 @@ configurations, not evidence of equivalent compute.
 
 **Design inference**
 
-Use the stable v1 import paths. This repository pins
-`@modelcontextprotocol/sdk@1.29.0` and overrides its transitive
+The retired TypeScript prototype used the stable v1 import paths. It pinned
+`@modelcontextprotocol/sdk@1.29.0` and overrode its transitive
 `@hono/node-server` dependency to the patched `2.0.11` release because the July
 23 dependency audit reported a path-traversal advisory in the SDK's declared
 1.x range. The harness uses only the stable stdio client/server surface.
@@ -189,8 +193,9 @@ governance result.
 
 **Design inference**
 
-The first BoundaryBench live-model matrix is a single-attempt exploratory
-pilot, not a confirmatory estimate of model reliability. Report every attempted
+The retired BoundaryBench live-model matrix specified a single-attempt
+exploratory pilot, not a confirmatory estimate of model reliability. A future
+experiment should report every attempted
 trial, including provider, timeout, refusal, infrastructure, and budget
 failures. Do not silently rerun a failed cell or report a best-of result.
 Separate development runs from frozen pilot runs and label raw counts as
@@ -202,5 +207,6 @@ multiple independent runs per task-condition cell, and a predeclared analysis.
 These sources support the feasibility of a harness-owned provider loop, local
 stdio MCP tools, per-trial container isolation, evidence-rich evaluation, and
 transparent reporting. They do not establish that this repository's five gates
-work. Only the frozen BoundaryBench conformance suite and subsequently reviewed
-experimental evidence can support that project-specific claim.
+work. The current bounded claim is supported by the frozen RunInvariant
+decision corpus and committed Rust subject packet. Provider-loop, integration,
+and production claims require separate reviewed evidence.

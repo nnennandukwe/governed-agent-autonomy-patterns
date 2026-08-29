@@ -10,38 +10,45 @@ permissions:
   contents: read
 
 env:
-  BOUNDARYBENCH_DOCKER_IMAGE: node@sha256:c0122351f25f04facee976f9db7214789eabadb489f4e4aea9cd00a0d6af77c4
+  RUN_INVARIANT_COMMIT: e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --locked
+
+      - name: Build subject binary
+        run: cargo build --locked
+
+      - name: Check out pinned RunInvariant
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nnennandukwe/run-invariant
+          ref: ${{ env.RUN_INVARIANT_COMMIT }}
+          path: .run-invariant
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
-          cache: npm
 
-      - name: Install frozen dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build packages
-        run: npm run build
-
-      - name: Pull the immutable task image
-        run: docker pull "$BOUNDARYBENCH_DOCKER_IMAGE"
-
-      - name: Run deterministic, harness, corpus, and Docker tests
-        env:
-          BOUNDARYBENCH_DOCKER_TEST: "1"
-        run: npm test
-
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Dependency audit
-        run: npm audit --audit-level=moderate
+      - name: Reproduce Rust subject evidence
+        run: |
+          node .run-invariant/bin/run-invariant.js subject --json -- \
+            ./target/debug/gaap run-invariant \
+            > /tmp/run-invariant-subject.json
+          diff -u \
+            evidence/run-invariant-subject-v0.1.0.json \
+            /tmp/run-invariant-subject.json

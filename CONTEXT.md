@@ -1,12 +1,19 @@
-# Governed Coding Agent Evaluation
+# Governed Agent Run Integrity
 
-This context names the concepts used to distinguish the coding agent from the protocol that evaluates its authority and evidence.
+This context names the target runtime concepts and distinguishes the Rust
+harness from the external protocol that evaluates its decisions. Concepts for
+trials and live execution describe the intended harness; they are not all
+implemented by the current `RunCoordinator` slice.
 
 ## Language
 
 **Harness**:
 The runtime that owns a coding agent's lifecycle, authority checks, tool execution, resource limits, and evidence.
 _Avoid_: Wrapper, provider agent
+
+**Run coordinator**:
+The Rust module that returns the decision required before a protected effect.
+_Avoid_: Provider adapter, policy wrapper
 
 **Gate**:
 A deterministic decision point that returns `allow`, `ask`, or `block` for a protected effect.
@@ -48,6 +55,12 @@ _Avoid_: Verification receipt
 The content-addressed record of one trial's frozen inputs, events, decisions, usage, artifacts, and terminal result.
 _Avoid_: Log, transcript
 
-**BoundaryBench**:
-The deterministic protocol and experimental runner that evaluate the harness.
+**Conformance subject**:
+An executable implementation evaluated through the RunInvariant stdin/stdout
+process interface.
+_Avoid_: Test fixture, imported evaluator
+
+**RunInvariant**:
+The separate implementation-independent protocol, fixture corpus, and runner
+that evaluate a conformance subject.
 _Avoid_: Coding agent, harness
