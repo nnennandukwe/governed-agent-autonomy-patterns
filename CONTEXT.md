@@ -15,12 +15,24 @@ _Avoid_: Wrapper, provider agent
 The Rust module that returns the decision required before a protected effect.
 _Avoid_: Provider adapter, policy wrapper
 
+**Agent Run Request**:
+The immutable, versioned input that binds one Agent Run to its exact subject, requested capability, constraints, policy identities, resource budget, approval context, and verification requirements.
+_Avoid_: Provider request, workflow run request
+
+**Agent Run**:
+One bounded execution governed through GAAP's integrity decisions that produces exactly one Terminal Run Receipt.
+_Avoid_: ThreadLoop Workflow Run, provider session
+
+**Terminal Run Receipt**:
+The content-addressed record of an Agent Run's terminal status, decisions, observed effects, evidence, resource usage, and exact resulting subject.
+_Avoid_: Log, transcript, Trial result
+
 **Gate**:
 A deterministic decision point that returns `allow`, `ask`, or `block` for a protected effect.
 _Avoid_: Guardrail, suggestion
 
 **Trial**:
-One frozen execution of one task, provider, model, and condition that produces exactly one terminal receipt.
+One frozen experimental execution of one task, provider, model, and condition that contributes to an Evidence Packet.
 _Avoid_: Session, sample, attempt
 
 **Condition**:

@@ -9,6 +9,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod contracts;
+
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const DANGEROUS_RISK_TAGS: &[&str] = &["destructive_flag", "destructive_path"];
 
