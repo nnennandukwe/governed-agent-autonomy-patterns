@@ -102,17 +102,15 @@ prove who produced a receipt; authenticity and signatures are later work.
 `seal_terminal_receipt` and `verify_terminal_receipt` require a
 completed run to demonstrate all of the following:
 
-1. Plan approval evidence appears in the ledger and matches approval context
-   from the request.
-2. Every tool execution and mutation references an earlier decision with the
+1. Every tool execution and mutation references an earlier decision with the
    same protected-effect digest and an `allow` outcome.
-3. `ask` and `block` never authorize an observed effect.
-4. The resulting subject equals the last observed mutation result.
-5. Passing verification comes from a different actor, carries all required
+2. `ask` and `block` never authorize an observed effect.
+3. The resulting subject equals the last observed mutation result.
+4. Passing verification comes from a different actor, carries all required
    evidence types, and targets the latest subject after its last mutation.
-6. A later `workflow.completion_authorized` decision is bound to that same
+5. A later `workflow.completion_authorized` decision is bound to that same
    verified subject.
-7. Final cumulative usage matches the receipt body and remains within the
+6. Final cumulative usage matches the receipt body and remains within the
    request budget.
 
 A later mutation invalidates earlier verification for completion. Non-completed

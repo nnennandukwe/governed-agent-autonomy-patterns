@@ -355,8 +355,6 @@ fn validate_receipt_body(
     let mut latest_usage: Option<ResourceUsage> = None;
     let mut completion_decision: Option<RecordedDecision> = None;
     let mut decisions = BTreeMap::<String, RecordedDecision>::new();
-    let mut plan_digests = BTreeSet::<String>::new();
-    let mut plan_approval_seen = false;
     let mut interruption_seen = false;
 
     for (index, event) in body.events.iter().enumerate() {
@@ -395,16 +393,9 @@ fn validate_receipt_body(
             }
             RunEvent::PlanRecorded { plan_digest, .. } => {
                 validate_digest(plan_digest, &format!("{path}.plan_digest"))?;
-                plan_digests.insert(plan_digest.clone());
             }
             RunEvent::ApprovalRecorded { approval, .. } => {
                 validate_approval(approval, &path)?;
-                if approval.scope == "plan"
-                    && plan_digests.contains(&approval.subject_digest)
-                    && request.approval_context.contains(approval)
-                {
-                    plan_approval_seen = true;
-                }
             }
             RunEvent::ProtectedEffectDecision {
                 sequence,
@@ -472,10 +463,18 @@ fn validate_receipt_body(
                     decision_id,
                     protected_effect_digest,
                     event.sequence(),
+                    &current_subject,
                     &path,
                 )?;
                 validate_digest(action_digest, &format!("{path}.action_digest"))?;
                 validate_digest(capability_digest, &format!("{path}.capability_digest"))?;
+                if capability_digest != &request.requested_capability.digest {
+                    return Err(ContractError::new(
+                        ContractErrorCode::RequestMismatch,
+                        format!("{path}.capability_digest"),
+                        "tool execution capability does not match the Agent Run Request",
+                    ));
+                }
                 validate_evidence_set(evidence, &path)?;
                 if !evidence
                     .iter()
@@ -501,6 +500,7 @@ fn validate_receipt_body(
                     decision_id,
                     protected_effect_digest,
                     *sequence,
+                    &current_subject,
                     &path,
                 )?;
                 validate_digest(
@@ -650,7 +650,6 @@ fn validate_receipt_body(
             last_mutation_sequence,
             latest_passing_verification,
             completion_decision,
-            plan_approval_seen,
         )?;
     } else if completion_decision.is_some() {
         return Err(ContractError::new(
@@ -670,15 +669,7 @@ fn validate_completed_receipt(
     last_mutation_sequence: u64,
     latest_passing_verification: Option<(u64, String)>,
     completion_decision: Option<RecordedDecision>,
-    plan_approval_seen: bool,
 ) -> Result<(), ContractError> {
-    if !plan_approval_seen {
-        return Err(ContractError::new(
-            ContractErrorCode::InvalidContract,
-            "events",
-            "completion requires plan approval evidence from the request context",
-        ));
-    }
     if !usage_within_budget(usage, &request.resource_budget) {
         return Err(ContractError::new(
             ContractErrorCode::InvalidContract,
@@ -728,6 +719,7 @@ fn validate_authorization(
     decision_id: &str,
     protected_effect_digest: &str,
     effect_sequence: u64,
+    current_subject: &str,
     path: &str,
 ) -> Result<(), ContractError> {
     validate_non_empty(decision_id, &format!("{path}.decision_id"))?;
@@ -744,6 +736,7 @@ fn validate_authorization(
     };
     if decision.sequence >= effect_sequence
         || decision.protected_effect_digest != protected_effect_digest
+        || decision.subject_digest != current_subject
         || decision.outcome != Outcome::Allow
     {
         return Err(ContractError::new(
@@ -817,7 +810,10 @@ fn valid_transition(from: AgentRunStatus, to: AgentRunStatus) -> bool {
     if from.is_terminal() || from == to {
         return false;
     }
-    if to.is_terminal() {
+    if matches!(
+        to,
+        AgentRunStatus::Blocked | AgentRunStatus::Failed | AgentRunStatus::Interrupted
+    ) {
         return true;
     }
     matches!(
@@ -835,7 +831,10 @@ fn valid_transition(from: AgentRunStatus, to: AgentRunStatus) -> bool {
                 AgentRunStatus::Executing,
                 AgentRunStatus::AwaitingAuthority | AgentRunStatus::Verifying
             )
-            | (AgentRunStatus::Verifying, AgentRunStatus::Executing)
+            | (
+                AgentRunStatus::Verifying,
+                AgentRunStatus::Executing | AgentRunStatus::Completed
+            )
     )
 }
 
