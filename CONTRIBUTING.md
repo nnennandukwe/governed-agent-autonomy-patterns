@@ -14,6 +14,7 @@ cargo test --locked
 cargo build --locked
 cargo run --locked --example generate-contract-schemas -- --check
 cargo run --locked --example generate-contract-examples -- --check
+cargo run --locked --example generate-protected-effect-examples -- --check
 ```
 
 Changes to `RunCoordinator` decisions must also be tested through the pinned
@@ -29,6 +30,11 @@ hand or update it to make a failing implementation appear conformant.
   to an existing version.
 - Version Agent Run contracts when adding or changing a field, lifecycle state,
   event type, evidence type, canonicalization rule, or validation rule.
+- Version Protected Effect contracts independently when adding or changing a
+  field, operation family, scope shape, execution status, evidence type,
+  repeatability class, canonicalization rule, or validation rule.
+- When a closed enum changes, update every exhaustive validator, schema,
+  generator, example, test, and documentation consumer in the same change.
 - Regenerate schemas and examples intentionally; never edit their digests or
   generated schema documents to hide contract drift.
 - Keep implementation evidence separate from claims about a complete agent
