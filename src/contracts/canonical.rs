@@ -1,11 +1,18 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::model::AgentRunRequest;
+use super::model::{AgentRunRequest, TerminalRunReceiptBody};
 use super::validation::{ContractError, ContractErrorCode};
 
+/// Serialize an Agent Run Request using RFC 8785 JSON Canonicalization Scheme.
 pub fn canonical_request_bytes(request: &AgentRunRequest) -> Result<Vec<u8>, ContractError> {
     canonical_bytes(request)
+}
+
+pub(crate) fn canonical_receipt_body_bytes(
+    body: &TerminalRunReceiptBody,
+) -> Result<Vec<u8>, ContractError> {
+    canonical_bytes(body)
 }
 
 pub(crate) fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ContractError> {

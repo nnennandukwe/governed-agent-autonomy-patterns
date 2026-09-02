@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,7 +16,8 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const DANGEROUS_RISK_TAGS: &[&str] = &["destructive_flag", "destructive_path"];
 
 /// A deterministic decision point owned by the run coordinator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Gate {
     /// Approval for the exact current plan before mutation.
     Plan,
@@ -50,7 +52,7 @@ impl FromStr for Gate {
 }
 
 /// The precedence-bearing result of an integrity decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     /// The protected effect may proceed.
@@ -62,7 +64,7 @@ pub enum Outcome {
 }
 
 /// A normalized decision returned at a protected agent-run effect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
     pub outcome: Outcome,
