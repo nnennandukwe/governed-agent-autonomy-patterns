@@ -389,6 +389,24 @@ fn ask_decision_cannot_authorize_a_tool_execution() {
 }
 
 #[test]
+fn block_decision_cannot_authorize_a_tool_execution() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = completed_body(request_digest);
+    let RunEvent::ProtectedEffectDecision { decision, .. } = &mut body.events[4] else {
+        panic!("fifth event should be the tool decision");
+    };
+    decision.outcome = Outcome::Block;
+
+    let error = seal_terminal_receipt(&request, &support, body)
+        .expect_err("block must not authorize execution");
+
+    assert_eq!(error.code(), ContractErrorCode::UnauthorizedEffect);
+    assert_eq!(error.path(), "events[5].decision_id");
+}
+
+#[test]
 fn tool_execution_must_use_the_requested_capability() {
     let request = request();
     let support = ContractSupport::new([policy()]);
@@ -512,6 +530,115 @@ fn completed_is_only_reachable_from_verifying() {
 }
 
 #[test]
+fn lifecycle_allows_authority_and_verification_loops() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = terminal_body(
+        request_digest,
+        AgentRunStatus::Blocked,
+        "authority.required",
+    );
+    body.events = vec![
+        RunEvent::StatusTransition {
+            sequence: 1,
+            from: AgentRunStatus::Accepted,
+            to: AgentRunStatus::Planning,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 2,
+            from: AgentRunStatus::Planning,
+            to: AgentRunStatus::AwaitingAuthority,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 3,
+            from: AgentRunStatus::AwaitingAuthority,
+            to: AgentRunStatus::Planning,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 4,
+            from: AgentRunStatus::Planning,
+            to: AgentRunStatus::Executing,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 5,
+            from: AgentRunStatus::Executing,
+            to: AgentRunStatus::AwaitingAuthority,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 6,
+            from: AgentRunStatus::AwaitingAuthority,
+            to: AgentRunStatus::Executing,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 7,
+            from: AgentRunStatus::Executing,
+            to: AgentRunStatus::Verifying,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 8,
+            from: AgentRunStatus::Verifying,
+            to: AgentRunStatus::Executing,
+            reason: None,
+        },
+        RunEvent::StatusTransition {
+            sequence: 9,
+            from: AgentRunStatus::Executing,
+            to: AgentRunStatus::Verifying,
+            reason: None,
+        },
+        RunEvent::Usage {
+            sequence: 10,
+            usage: zero_usage(),
+        },
+        RunEvent::StatusTransition {
+            sequence: 11,
+            from: AgentRunStatus::Verifying,
+            to: AgentRunStatus::Blocked,
+            reason: Some("authority.required".to_owned()),
+        },
+    ];
+
+    let receipt = seal_terminal_receipt(&request, &support, body)
+        .expect("frozen lifecycle loops should be legal");
+
+    verify_terminal_receipt(&request, &support, &receipt)
+        .expect("looping lifecycle receipt should verify");
+}
+
+#[test]
+fn lifecycle_rejects_a_transition_after_a_terminal_state() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = terminal_body(request_digest, AgentRunStatus::Failed, "execution.failed");
+    let RunEvent::StatusTransition { to, reason, .. } = &mut body.events[2] else {
+        panic!("third event should be a status transition");
+    };
+    *to = AgentRunStatus::Blocked;
+    *reason = Some("authority.required".to_owned());
+    body.events.push(RunEvent::StatusTransition {
+        sequence: 4,
+        from: AgentRunStatus::Blocked,
+        to: AgentRunStatus::Failed,
+        reason: Some("execution.failed".to_owned()),
+    });
+
+    let error = seal_terminal_receipt(&request, &support, body)
+        .expect_err("terminal states must reject later transitions");
+
+    assert_eq!(error.code(), ContractErrorCode::InvalidTransition);
+    assert_eq!(error.path(), "events[3]");
+}
+
+#[test]
 fn tampered_receipt_body_does_not_verify() {
     let request = request();
     let support = ContractSupport::new([policy()]);
@@ -585,6 +712,32 @@ fn raw_contracts_reject_unknown_terminal_and_evidence_types() {
 }
 
 #[test]
+fn raw_receipt_rejects_an_unknown_event_type() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let receipt = seal_terminal_receipt(
+        &request,
+        &support,
+        terminal_body(
+            request_digest,
+            AgentRunStatus::Blocked,
+            "authority.required",
+        ),
+    )
+    .expect("blocked receipt should seal");
+    let mut receipt_json = serde_json::to_value(receipt).expect("receipt should serialize");
+    receipt_json["body"]["events"][0]["event_type"] = serde_json::json!("provider_message");
+
+    let error = parse_terminal_run_receipt_json(
+        &serde_json::to_vec(&receipt_json).expect("receipt should serialize"),
+    )
+    .expect_err("unknown event type must fail");
+
+    assert_eq!(error.code(), ContractErrorCode::InvalidJson);
+}
+
+#[test]
 fn receipt_rejects_a_gap_in_event_sequence() {
     let request = request();
     let support = ContractSupport::new([policy()]);
@@ -597,6 +750,36 @@ fn receipt_rejects_a_gap_in_event_sequence() {
 
     assert_eq!(error.code(), ContractErrorCode::InvalidContract);
     assert_eq!(error.path(), "events[5].sequence");
+}
+
+#[test]
+fn receipt_rejects_a_duplicate_event_sequence() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = completed_body(request_digest);
+    set_event_sequence(&mut body.events[5], 5);
+
+    let error = seal_terminal_receipt(&request, &support, body)
+        .expect_err("duplicate event sequence must fail");
+
+    assert_eq!(error.code(), ContractErrorCode::InvalidContract);
+    assert_eq!(error.path(), "events[5].sequence");
+}
+
+#[test]
+fn receipt_rejects_reordered_events() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = completed_body(request_digest);
+    body.events.swap(4, 5);
+
+    let error =
+        seal_terminal_receipt(&request, &support, body).expect_err("reordered events must fail");
+
+    assert_eq!(error.code(), ContractErrorCode::InvalidContract);
+    assert_eq!(error.path(), "events[4].sequence");
 }
 
 #[test]
