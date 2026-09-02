@@ -1,0 +1,625 @@
+{
+  "$defs": {
+    "AgentRunStatus": {
+      "description": "Lifecycle states for one Agent Run, including four distinct terminal states.",
+      "enum": [
+        "accepted",
+        "planning",
+        "awaiting_authority",
+        "executing",
+        "verifying",
+        "completed",
+        "blocked",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "ApprovalReference": {
+      "additionalProperties": false,
+      "description": "Existing approval evidence bound to an actor, scope, and exact subject.",
+      "properties": {
+        "actor_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "approval_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceReference"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "actor_id",
+        "scope",
+        "subject_digest",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "A normalized decision returned at a protected agent-run effect.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "effects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        }
+      },
+      "required": [
+        "outcome",
+        "code",
+        "effects"
+      ],
+      "type": "object"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed evidence metadata; raw evidence remains external.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidence_type": {
+          "$ref": "#/$defs/EvidenceType"
+        },
+        "locator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_type",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EvidenceType": {
+      "description": "Closed evidence categories supported by contract version 0.1.0.",
+      "enum": [
+        "approval",
+        "command_output",
+        "artifact",
+        "tool_execution",
+        "verification_attestation",
+        "resource_usage",
+        "interruption"
+      ],
+      "type": "string"
+    },
+    "Gate": {
+      "description": "A deterministic decision point owned by the run coordinator.",
+      "oneOf": [
+        {
+          "const": "plan",
+          "description": "Approval for the exact current plan before mutation.",
+          "type": "string"
+        },
+        {
+          "const": "permission",
+          "description": "Authority for a normalized action before execution.",
+          "type": "string"
+        },
+        {
+          "const": "tool_trust",
+          "description": "Approval for the exact capability before activation.",
+          "type": "string"
+        },
+        {
+          "const": "verification",
+          "description": "Independent evidence for the current subject before completion.",
+          "type": "string"
+        },
+        {
+          "const": "runtime",
+          "description": "Known usage and budget authority before budgeted execution.",
+          "type": "string"
+        },
+        {
+          "const": "workflow",
+          "description": "Aggregate authorization at mutation and completion transitions.",
+          "type": "string"
+        }
+      ]
+    },
+    "Outcome": {
+      "description": "The precedence-bearing result of an integrity decision.",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "The protected effect may proceed.",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "The protected effect requires new authority before it may proceed.",
+          "type": "string"
+        },
+        {
+          "const": "block",
+          "description": "The protected effect must not proceed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ResourceUsage": {
+      "additionalProperties": false,
+      "description": "Cumulative resource usage observed during one Agent Run.",
+      "properties": {
+        "cost_micros": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_calls": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cost_micros",
+        "elapsed_ms",
+        "model_tokens",
+        "tool_calls"
+      ],
+      "type": "object"
+    },
+    "RunEvent": {
+      "description": "One entry in the immutable, sequence-ordered Terminal Run Receipt ledger.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "status_transition",
+              "type": "string"
+            },
+            "from": {
+              "$ref": "#/$defs/AgentRunStatus"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "to": {
+              "$ref": "#/$defs/AgentRunStatus"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "plan_recorded",
+              "type": "string"
+            },
+            "plan_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "plan_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "approval": {
+              "$ref": "#/$defs/ApprovalReference"
+            },
+            "event_type": {
+              "const": "approval_recorded",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "approval"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/Decision"
+            },
+            "decision_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "event_type": {
+              "const": "protected_effect_decision",
+              "type": "string"
+            },
+            "gate": {
+              "$ref": "#/$defs/Gate"
+            },
+            "protected_effect_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "subject_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "decision_id",
+            "gate",
+            "protected_effect_digest",
+            "subject_digest",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "capability_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "decision_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "event_type": {
+              "const": "tool_execution",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "protected_effect_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "decision_id",
+            "protected_effect_digest",
+            "action_digest",
+            "capability_digest",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "after_subject_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "before_subject_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "decision_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "event_type": {
+              "const": "mutation",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "protected_effect_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "decision_id",
+            "protected_effect_digest",
+            "before_subject_digest",
+            "after_subject_digest",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "verification",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReference"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "implementer_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "subject_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "verdict": {
+              "$ref": "#/$defs/VerificationVerdict"
+            },
+            "verifier_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "subject_digest",
+            "implementer_id",
+            "verifier_id",
+            "verdict",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "usage",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "usage": {
+              "$ref": "#/$defs/ResourceUsage"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event_type": {
+              "const": "interruption",
+              "type": "string"
+            },
+            "evidence": {
+              "$ref": "#/$defs/EvidenceReference"
+            },
+            "reason": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event_type",
+            "sequence",
+            "reason",
+            "evidence"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TerminalRunReceiptBody": {
+      "additionalProperties": false,
+      "description": "Canonical digest preimage containing the terminal Agent Run evidence.",
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/$defs/RunEvent"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "initial_subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "request_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "request_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resulting_subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "gaap.terminal-run-receipt/0.1.0",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "terminal_status": {
+          "$ref": "#/$defs/AgentRunStatus"
+        },
+        "usage": {
+          "$ref": "#/$defs/ResourceUsage"
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "run_id",
+        "request_digest",
+        "initial_subject_digest",
+        "resulting_subject_digest",
+        "terminal_status",
+        "terminal_reason",
+        "usage",
+        "events"
+      ],
+      "type": "object"
+    },
+    "VerificationVerdict": {
+      "description": "Independent verification result recorded in the receipt ledger.",
+      "enum": [
+        "PASS",
+        "FAIL"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/nnennandukwe/governed-agent-autonomy-patterns/main/schemas/agent-run/v0.1.0/terminal-run-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Content-addressed envelope around a canonical Terminal Run Receipt body.",
+  "properties": {
+    "body": {
+      "$ref": "#/$defs/TerminalRunReceiptBody"
+    },
+    "receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "receipt_digest",
+    "body"
+  ],
+  "title": "GAAP Terminal Run Receipt 0.1.0",
+  "type": "object"
+}

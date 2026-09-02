@@ -1,0 +1,45 @@
+{
+  "receipt_digest": "sha256:e0bedaff33342873738f5d6de9114d7576070a450e06f6a297fe142182750920",
+  "body": {
+    "schema_version": "gaap.terminal-run-receipt/0.1.0",
+    "request_id": "request-001",
+    "run_id": "run-001",
+    "request_digest": "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632",
+    "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "resulting_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "terminal_status": "failed",
+    "terminal_reason": "execution.failed",
+    "usage": {
+      "cost_micros": 0,
+      "elapsed_ms": 0,
+      "model_tokens": 0,
+      "tool_calls": 0
+    },
+    "events": [
+      {
+        "event_type": "status_transition",
+        "sequence": 1,
+        "from": "accepted",
+        "to": "planning",
+        "reason": null
+      },
+      {
+        "event_type": "usage",
+        "sequence": 2,
+        "usage": {
+          "cost_micros": 0,
+          "elapsed_ms": 0,
+          "model_tokens": 0,
+          "tool_calls": 0
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 3,
+        "from": "planning",
+        "to": "failed",
+        "reason": "execution.failed"
+      }
+    ]
+  }
+}

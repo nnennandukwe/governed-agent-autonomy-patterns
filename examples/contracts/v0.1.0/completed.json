@@ -1,0 +1,157 @@
+{
+  "receipt_digest": "sha256:b9efa353c4f803a946be988b669b8f5ffa69ed234d8f39c7a20a9902aaef06c7",
+  "body": {
+    "schema_version": "gaap.terminal-run-receipt/0.1.0",
+    "request_id": "request-001",
+    "run_id": "run-001",
+    "request_digest": "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632",
+    "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "resulting_subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "terminal_status": "completed",
+    "terminal_reason": "workflow.completion_authorized",
+    "usage": {
+      "cost_micros": 200000,
+      "elapsed_ms": 2000,
+      "model_tokens": 2500,
+      "tool_calls": 1
+    },
+    "events": [
+      {
+        "event_type": "status_transition",
+        "sequence": 1,
+        "from": "accepted",
+        "to": "planning",
+        "reason": null
+      },
+      {
+        "event_type": "plan_recorded",
+        "sequence": 2,
+        "plan_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      {
+        "event_type": "approval_recorded",
+        "sequence": 3,
+        "approval": {
+          "approval_id": "approval-001",
+          "actor_id": "maintainer-001",
+          "scope": "plan",
+          "subject_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "evidence": {
+            "evidence_type": "approval",
+            "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "locator": null
+          }
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 4,
+        "from": "planning",
+        "to": "executing",
+        "reason": null
+      },
+      {
+        "event_type": "protected_effect_decision",
+        "sequence": 5,
+        "decision_id": "decision-tool-001",
+        "gate": "permission",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "decision": {
+          "outcome": "allow",
+          "code": "permission.policy_allowed",
+          "effects": []
+        }
+      },
+      {
+        "event_type": "tool_execution",
+        "sequence": 6,
+        "decision_id": "decision-tool-001",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "action_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "capability_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "evidence": [
+          {
+            "evidence_type": "tool_execution",
+            "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "locator": null
+          }
+        ]
+      },
+      {
+        "event_type": "mutation",
+        "sequence": 7,
+        "decision_id": "decision-tool-001",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "before_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "after_subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "evidence": [
+          {
+            "evidence_type": "artifact",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "locator": null
+          }
+        ]
+      },
+      {
+        "event_type": "usage",
+        "sequence": 8,
+        "usage": {
+          "cost_micros": 200000,
+          "elapsed_ms": 2000,
+          "model_tokens": 2500,
+          "tool_calls": 1
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 9,
+        "from": "executing",
+        "to": "verifying",
+        "reason": null
+      },
+      {
+        "event_type": "verification",
+        "sequence": 10,
+        "subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "implementer_id": "executor-001",
+        "verifier_id": "verifier-001",
+        "verdict": "PASS",
+        "evidence": [
+          {
+            "evidence_type": "command_output",
+            "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": null
+          },
+          {
+            "evidence_type": "artifact",
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "locator": null
+          }
+        ]
+      },
+      {
+        "event_type": "protected_effect_decision",
+        "sequence": 11,
+        "decision_id": "decision-completion-001",
+        "gate": "workflow",
+        "protected_effect_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "decision": {
+          "outcome": "allow",
+          "code": "workflow.completion_authorized",
+          "effects": [
+            "record_completion"
+          ]
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 12,
+        "from": "verifying",
+        "to": "completed",
+        "reason": "workflow.completion_authorized"
+      }
+    ]
+  }
+}

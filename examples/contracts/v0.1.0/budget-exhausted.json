@@ -1,0 +1,65 @@
+{
+  "receipt_digest": "sha256:2f47ac68e55202d526538c3acfe45325d94bfe081a562d5743fa333162a87681",
+  "body": {
+    "schema_version": "gaap.terminal-run-receipt/0.1.0",
+    "request_id": "request-001",
+    "run_id": "run-001",
+    "request_digest": "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632",
+    "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "resulting_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "terminal_status": "blocked",
+    "terminal_reason": "runtime.hard_stop",
+    "usage": {
+      "cost_micros": 1000000,
+      "elapsed_ms": 60000,
+      "model_tokens": 100000,
+      "tool_calls": 100
+    },
+    "events": [
+      {
+        "event_type": "status_transition",
+        "sequence": 1,
+        "from": "accepted",
+        "to": "planning",
+        "reason": null
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 2,
+        "from": "planning",
+        "to": "executing",
+        "reason": null
+      },
+      {
+        "event_type": "protected_effect_decision",
+        "sequence": 3,
+        "decision_id": "decision-budget-001",
+        "gate": "runtime",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "decision": {
+          "outcome": "block",
+          "code": "runtime.hard_stop",
+          "effects": []
+        }
+      },
+      {
+        "event_type": "usage",
+        "sequence": 4,
+        "usage": {
+          "cost_micros": 1000000,
+          "elapsed_ms": 60000,
+          "model_tokens": 100000,
+          "tool_calls": 100
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 5,
+        "from": "executing",
+        "to": "blocked",
+        "reason": "runtime.hard_stop"
+      }
+    ]
+  }
+}
