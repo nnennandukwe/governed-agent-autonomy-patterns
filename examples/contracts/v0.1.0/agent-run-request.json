@@ -1,0 +1,54 @@
+{
+  "schema_version": "gaap.agent-run-request/0.1.0",
+  "request_id": "request-001",
+  "run_id": "run-001",
+  "subject": {
+    "kind": "repository",
+    "locator": "https://example.invalid/repository",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "requested_capability": {
+    "name": "change-code",
+    "version": "1",
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "task": {
+    "instructions": "Implement the approved change.",
+    "constraints": [
+      "Do not publish a release."
+    ]
+  },
+  "policies": [
+    {
+      "name": "gaap.run-coordinator",
+      "version": "0.1.0",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "resource_budget": {
+    "max_cost_micros": 1000000,
+    "max_elapsed_ms": 60000,
+    "max_model_tokens": 100000,
+    "max_tool_calls": 100
+  },
+  "approval_context": [
+    {
+      "approval_id": "approval-001",
+      "actor_id": "maintainer-001",
+      "scope": "subject",
+      "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "evidence": {
+        "evidence_type": "approval",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "locator": null
+      }
+    }
+  ],
+  "required_verification": {
+    "independence": "different_actor",
+    "evidence_types": [
+      "command_output",
+      "artifact"
+    ]
+  }
+}

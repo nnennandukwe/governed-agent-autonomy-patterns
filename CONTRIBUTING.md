@@ -12,6 +12,8 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked
+cargo run --locked --example generate-contract-schemas -- --check
+cargo run --locked --example generate-contract-examples -- --check
 ```
 
 Changes to `RunCoordinator` decisions must also be tested through the pinned
@@ -25,6 +27,10 @@ hand or update it to make a failing implementation appear conformant.
 - Treat unknown authority, evidence, usage, and schema versions as failures.
 - Version the external subject protocol instead of adding unrecognized fields
   to an existing version.
+- Version Agent Run contracts when adding or changing a field, lifecycle state,
+  event type, evidence type, canonicalization rule, or validation rule.
+- Regenerate schemas and examples intentionally; never edit their digests or
+  generated schema documents to hide contract drift.
 - Keep implementation evidence separate from claims about a complete agent
   loop or production outcomes.
 

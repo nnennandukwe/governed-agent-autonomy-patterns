@@ -9,9 +9,14 @@ repository = "https://github.com/nnennandukwe/governed-agent-autonomy-patterns"
 publish = false
 
 [dependencies]
+schemars = "1.2.2"
 serde = { version = "1.0", features = ["derive"] }
+serde_jcs = "0.2.0"
 serde_json = "1.0"
 sha2 = "0.10"
+
+[dev-dependencies]
+jsonschema = { version = "0.52.1", default-features = false }
 
 [profile.release]
 lto = "thin"

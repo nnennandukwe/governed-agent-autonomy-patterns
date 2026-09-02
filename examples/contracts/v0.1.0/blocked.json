@@ -1,0 +1,65 @@
+{
+  "receipt_digest": "sha256:826bef2f6e0022c873067f2f0629e0846d8ffc7f745999be5c9233b3014219fb",
+  "body": {
+    "schema_version": "gaap.terminal-run-receipt/0.1.0",
+    "request_id": "request-001",
+    "run_id": "run-001",
+    "request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
+    "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "resulting_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "terminal_status": "blocked",
+    "terminal_reason": "authority.required",
+    "usage": {
+      "cost_micros": 0,
+      "elapsed_ms": 0,
+      "model_tokens": 0,
+      "tool_calls": 0
+    },
+    "events": [
+      {
+        "event_type": "status_transition",
+        "sequence": 1,
+        "from": "accepted",
+        "to": "planning",
+        "reason": null
+      },
+      {
+        "event_type": "protected_effect_decision",
+        "sequence": 2,
+        "decision_id": "decision-authority-001",
+        "gate": "permission",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "decision": {
+          "outcome": "ask",
+          "code": "permission.policy_requires_approval",
+          "effects": []
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 3,
+        "from": "planning",
+        "to": "awaiting_authority",
+        "reason": "authority.required"
+      },
+      {
+        "event_type": "usage",
+        "sequence": 4,
+        "usage": {
+          "cost_micros": 0,
+          "elapsed_ms": 0,
+          "model_tokens": 0,
+          "tool_calls": 0
+        }
+      },
+      {
+        "event_type": "status_transition",
+        "sequence": 5,
+        "from": "awaiting_authority",
+        "to": "blocked",
+        "reason": "authority.required"
+      }
+    ]
+  }
+}

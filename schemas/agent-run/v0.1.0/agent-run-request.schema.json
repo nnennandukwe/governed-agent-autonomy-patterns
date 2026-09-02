@@ -1,0 +1,300 @@
+{
+  "$defs": {
+    "ApprovalReference": {
+      "additionalProperties": false,
+      "description": "Existing approval evidence bound to an actor, scope, and exact subject.",
+      "properties": {
+        "actor_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "approval_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceReference"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "actor_id",
+        "scope",
+        "subject_digest",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "CapabilityIdentity": {
+      "additionalProperties": false,
+      "description": "Requested engineering capability bound to its versioned content digest.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed evidence metadata; raw evidence remains external.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidence_type": {
+          "$ref": "#/$defs/EvidenceType"
+        },
+        "locator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_type",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EvidenceType": {
+      "description": "Closed evidence categories supported by contract version 0.1.0.",
+      "enum": [
+        "approval",
+        "command_output",
+        "artifact",
+        "tool_execution",
+        "verification_attestation",
+        "resource_usage",
+        "interruption"
+      ],
+      "type": "string"
+    },
+    "PolicyIdentity": {
+      "additionalProperties": false,
+      "description": "Exact policy identity accepted by a caller's [`super::ContractSupport`].",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "ResourceBudget": {
+      "additionalProperties": false,
+      "description": "Upper bounds declared for one Agent Run.",
+      "properties": {
+        "max_cost_micros": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_elapsed_ms": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_model_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_cost_micros",
+        "max_elapsed_ms",
+        "max_model_tokens",
+        "max_tool_calls"
+      ],
+      "type": "object"
+    },
+    "Subject": {
+      "additionalProperties": false,
+      "description": "Exact repository or artifact that the Agent Run may inspect or change.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "locator": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "locator",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "SubjectKind": {
+      "description": "Closed subject categories supported by contract version 0.1.0.",
+      "enum": [
+        "repository",
+        "artifact"
+      ],
+      "type": "string"
+    },
+    "TaskSpec": {
+      "additionalProperties": false,
+      "description": "Self-contained task instructions and ordered textual constraints.",
+      "properties": {
+        "constraints": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "instructions": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "instructions",
+        "constraints"
+      ],
+      "type": "object"
+    },
+    "VerificationIndependence": {
+      "description": "Actor-separation rules supported by contract version 0.1.0.",
+      "enum": [
+        "different_actor"
+      ],
+      "type": "string"
+    },
+    "VerificationRequirement": {
+      "additionalProperties": false,
+      "description": "Independent evidence required before an Agent Run may complete.",
+      "properties": {
+        "evidence_types": {
+          "items": {
+            "$ref": "#/$defs/EvidenceType"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "independence": {
+          "$ref": "#/$defs/VerificationIndependence"
+        }
+      },
+      "required": [
+        "independence",
+        "evidence_types"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/nnennandukwe/governed-agent-autonomy-patterns/main/schemas/agent-run/v0.1.0/agent-run-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable input that identifies one governed Agent Run.",
+  "properties": {
+    "approval_context": {
+      "items": {
+        "$ref": "#/$defs/ApprovalReference"
+      },
+      "type": "array"
+    },
+    "policies": {
+      "items": {
+        "$ref": "#/$defs/PolicyIdentity"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "requested_capability": {
+      "$ref": "#/$defs/CapabilityIdentity"
+    },
+    "required_verification": {
+      "$ref": "#/$defs/VerificationRequirement"
+    },
+    "resource_budget": {
+      "$ref": "#/$defs/ResourceBudget"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "gaap.agent-run-request/0.1.0",
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/Subject"
+    },
+    "task": {
+      "$ref": "#/$defs/TaskSpec"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "run_id",
+    "subject",
+    "requested_capability",
+    "task",
+    "policies",
+    "resource_budget",
+    "approval_context",
+    "required_verification"
+  ],
+  "title": "GAAP Agent Run Request 0.1.0",
+  "type": "object"
+}
