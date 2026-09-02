@@ -208,6 +208,13 @@ pub fn validate_request(
         validate_non_empty(&approval.actor_id, &format!("{path}.actor_id"))?;
         validate_non_empty(&approval.scope, &format!("{path}.scope"))?;
         validate_digest(&approval.subject_digest, &format!("{path}.subject_digest"))?;
+      if approval.subject_digest != request.subject.digest {
+          return Err(ContractError::new(
+              ContractErrorCode::RequestMismatch,
+              format!("{path}.subject_digest"),
+              "approval context subject does not match the request subject",
+          ));
+      }
         if approval.evidence.evidence_type != EvidenceType::Approval {
             return Err(ContractError::new(
                 ContractErrorCode::InvalidContract,
@@ -737,7 +744,11 @@ fn validate_authorization(
     if decision.sequence >= effect_sequence
         || decision.protected_effect_digest != protected_effect_digest
         || decision.subject_digest != current_subject
-        || decision.outcome != Outcome::Allow
+        || !matches!(
+              decision.gate,
+              Gate::Permission | Gate::ToolTrust | Gate::Runtime | Gate::Workflow
+          )
+          || decision.outcome != Outcome::Allow
     {
         return Err(ContractError::new(
             ContractErrorCode::UnauthorizedEffect,
