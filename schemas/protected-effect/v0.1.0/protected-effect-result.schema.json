@@ -1,0 +1,490 @@
+{
+  "$defs": {
+    "CapabilityIdentity": {
+      "additionalProperties": false,
+      "description": "Requested engineering capability bound to its versioned content digest.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "A normalized decision returned at a protected agent-run effect.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "effects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        }
+      },
+      "required": [
+        "outcome",
+        "code",
+        "effects"
+      ],
+      "type": "object"
+    },
+    "EffectEvidenceReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed effect evidence metadata; raw evidence remains external.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidence_type": {
+          "$ref": "#/$defs/EffectEvidenceType"
+        },
+        "locator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_type",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EffectEvidenceType": {
+      "description": "Closed evidence categories supported by Protected Effect Result 0.1.0.",
+      "enum": [
+        "exit",
+        "output",
+        "artifact",
+        "mutation",
+        "usage",
+        "executor",
+        "sandbox",
+        "failure",
+        "interruption",
+        "subject_observation",
+        "capability_schema",
+        "unknown_outcome"
+      ],
+      "type": "string"
+    },
+    "EffectExecutionStatus": {
+      "description": "Closed execution outcomes supported by Protected Effect Result 0.1.0.",
+      "enum": [
+        "executed",
+        "awaiting_authority",
+        "denied",
+        "failed",
+        "interrupted",
+        "unknown_outcome"
+      ],
+      "type": "string"
+    },
+    "EffectExit": {
+      "description": "A known process exit, represented without provider-specific status types.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "exit_type": {
+              "const": "code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "exit_type",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "exit_type": {
+              "const": "signal",
+              "type": "string"
+            },
+            "signal": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "exit_type",
+            "signal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EffectUsage": {
+      "additionalProperties": false,
+      "description": "Resource usage attributable only to this protected effect attempt.",
+      "properties": {
+        "cost_micros": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_calls": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cost_micros",
+        "elapsed_ms",
+        "model_tokens",
+        "tool_calls"
+      ],
+      "type": "object"
+    },
+    "ExecutorIdentity": {
+      "additionalProperties": false,
+      "description": "Exact executor identity observed for an attempted protected effect.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Gate": {
+      "description": "A deterministic decision point owned by the run coordinator.",
+      "oneOf": [
+        {
+          "const": "plan",
+          "description": "Approval for the exact current plan before mutation.",
+          "type": "string"
+        },
+        {
+          "const": "permission",
+          "description": "Authority for a normalized action before execution.",
+          "type": "string"
+        },
+        {
+          "const": "tool_trust",
+          "description": "Approval for the exact capability before activation.",
+          "type": "string"
+        },
+        {
+          "const": "verification",
+          "description": "Independent evidence for the current subject before completion.",
+          "type": "string"
+        },
+        {
+          "const": "runtime",
+          "description": "Known usage and budget authority before budgeted execution.",
+          "type": "string"
+        },
+        {
+          "const": "workflow",
+          "description": "Aggregate authorization at mutation and completion transitions.",
+          "type": "string"
+        }
+      ]
+    },
+    "Outcome": {
+      "description": "The precedence-bearing result of an integrity decision.",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "The protected effect may proceed.",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "The protected effect requires new authority before it may proceed.",
+          "type": "string"
+        },
+        {
+          "const": "block",
+          "description": "The protected effect must not proceed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProtectedEffectDecision": {
+      "additionalProperties": false,
+      "description": "The decisive RunCoordinator record bound to an exact effect request and subject.",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "decision_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "effect_request_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "gate": {
+          "$ref": "#/$defs/Gate"
+        },
+        "subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "gate",
+        "effect_request_digest",
+        "subject_digest",
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ProtectedEffectResultBody": {
+      "additionalProperties": false,
+      "description": "Canonical digest preimage containing one protected effect result.",
+      "properties": {
+        "agent_run_request_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/ProtectedEffectDecision"
+        },
+        "effect_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "effect_request_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "effect_sequence": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EffectEvidenceReference"
+          },
+          "type": "array"
+        },
+        "execution_status": {
+          "$ref": "#/$defs/EffectExecutionStatus"
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutorIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectExit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_capability": {
+          "$ref": "#/$defs/CapabilityIdentity"
+        },
+        "observed_post_effect_subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Subject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_pre_effect_subject": {
+          "$ref": "#/$defs/Subject"
+        },
+        "observed_tool_schema_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sandbox_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxProfileIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "const": "gaap.protected-effect-result/0.1.0",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/EffectUsage"
+        }
+      },
+      "required": [
+        "schema_version",
+        "effect_id",
+        "effect_sequence",
+        "run_id",
+        "agent_run_request_digest",
+        "effect_request_digest",
+        "observed_pre_effect_subject",
+        "observed_capability",
+        "decision",
+        "execution_status",
+        "usage",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "SandboxProfileIdentity": {
+      "additionalProperties": false,
+      "description": "Exact sandbox profile requested for any eventual execution.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Subject": {
+      "additionalProperties": false,
+      "description": "Exact repository or artifact that the Agent Run may inspect or change.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "locator": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "locator",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "SubjectKind": {
+      "description": "Closed subject categories supported by contract version 0.1.0.",
+      "enum": [
+        "repository",
+        "artifact"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/nnennandukwe/governed-agent-autonomy-patterns/main/schemas/protected-effect/v0.1.0/protected-effect-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Content-addressed envelope around a canonical Protected Effect Result body.",
+  "properties": {
+    "body": {
+      "$ref": "#/$defs/ProtectedEffectResultBody"
+    },
+    "result_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "result_digest",
+    "body"
+  ],
+  "title": "GAAP Protected Effect Result 0.1.0",
+  "type": "object"
+}

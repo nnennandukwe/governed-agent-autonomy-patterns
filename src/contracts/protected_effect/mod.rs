@@ -4,6 +4,11 @@ mod model;
 mod result_validation;
 mod validation;
 
+pub use super::canonical::{
+    canonical_protected_effect_request_bytes, canonical_protected_effect_result_body_bytes,
+    canonical_resource_budget_digest,
+};
+pub use super::schema::{protected_effect_request_schema, protected_effect_result_schema};
 pub use model::{
     EffectClass, EffectEvidenceReference, EffectEvidenceType, EffectExecutionStatus, EffectExit,
     EffectUsage, ExecutorIdentity, FilesystemAccess, InputMetadataEntry, NetworkProtocol,

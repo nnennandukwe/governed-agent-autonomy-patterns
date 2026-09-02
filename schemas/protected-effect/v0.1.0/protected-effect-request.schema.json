@@ -1,0 +1,479 @@
+{
+  "$defs": {
+    "ApprovalReference": {
+      "additionalProperties": false,
+      "description": "Existing approval evidence bound to an actor, scope, and exact subject.",
+      "properties": {
+        "actor_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "approval_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceReference"
+        },
+        "scope": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "actor_id",
+        "scope",
+        "subject_digest",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "CapabilityIdentity": {
+      "additionalProperties": false,
+      "description": "Requested engineering capability bound to its versioned content digest.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EffectClass": {
+      "description": "Whether the proposed effect is expected to observe or mutate its subject.",
+      "enum": [
+        "observation",
+        "mutation"
+      ],
+      "type": "string"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed evidence metadata; raw evidence remains external.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidence_type": {
+          "$ref": "#/$defs/EvidenceType"
+        },
+        "locator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_type",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "EvidenceType": {
+      "description": "Closed evidence categories supported by contract version 0.1.0.",
+      "enum": [
+        "approval",
+        "command_output",
+        "artifact",
+        "tool_execution",
+        "verification_attestation",
+        "resource_usage",
+        "interruption"
+      ],
+      "type": "string"
+    },
+    "FilesystemAccess": {
+      "description": "Filesystem authority classes supported by the typed scope contract.",
+      "enum": [
+        "read",
+        "create",
+        "modify",
+        "delete"
+      ],
+      "type": "string"
+    },
+    "InputMetadataEntry": {
+      "additionalProperties": false,
+      "description": "Bounded non-secret metadata describing external normalized input.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "NetworkProtocol": {
+      "description": "Network protocols supported by the typed scope contract.",
+      "enum": [
+        "tcp",
+        "udp",
+        "http",
+        "https"
+      ],
+      "type": "string"
+    },
+    "OperationFamily": {
+      "description": "Closed operation families supported by Protected Effect Request 0.1.0.",
+      "enum": [
+        "filesystem",
+        "process",
+        "network",
+        "external_service"
+      ],
+      "type": "string"
+    },
+    "PolicyIdentity": {
+      "additionalProperties": false,
+      "description": "Exact policy identity accepted by a caller's [`super::ContractSupport`].",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Repeatability": {
+      "description": "How the future runtime may reason about repeating an identical request.",
+      "enum": [
+        "repeatable",
+        "idempotent",
+        "non_repeatable"
+      ],
+      "type": "string"
+    },
+    "RequestedScope": {
+      "description": "One exact resource boundary requested by a protected effect.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "access": {
+              "items": {
+                "$ref": "#/$defs/FilesystemAccess"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "recursive": {
+              "type": "boolean"
+            },
+            "root": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "scope_type": {
+              "const": "filesystem",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope_type",
+            "root",
+            "access",
+            "recursive"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "executable": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "scope_type": {
+              "const": "process",
+              "type": "string"
+            },
+            "working_directory": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope_type",
+            "executable",
+            "working_directory"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "host": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "protocol": {
+              "$ref": "#/$defs/NetworkProtocol"
+            },
+            "scope_type": {
+              "const": "network",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope_type",
+            "protocol",
+            "host",
+            "port"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "resource": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "scope_type": {
+              "const": "external_service",
+              "type": "string"
+            },
+            "service": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope_type",
+            "service",
+            "operation",
+            "resource"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SandboxProfileIdentity": {
+      "additionalProperties": false,
+      "description": "Exact sandbox profile requested for any eventual execution.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Subject": {
+      "additionalProperties": false,
+      "description": "Exact repository or artifact that the Agent Run may inspect or change.",
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "locator": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "locator",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "SubjectKind": {
+      "description": "Closed subject categories supported by contract version 0.1.0.",
+      "enum": [
+        "repository",
+        "artifact"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/nnennandukwe/governed-agent-autonomy-patterns/main/schemas/protected-effect/v0.1.0/protected-effect-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One protected effect proposed inside a governed Agent Run.",
+  "properties": {
+    "agent_run_request_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "approval_context": {
+      "items": {
+        "$ref": "#/$defs/ApprovalReference"
+      },
+      "type": "array"
+    },
+    "capability": {
+      "$ref": "#/$defs/CapabilityIdentity"
+    },
+    "effect_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "effect_sequence": {
+      "format": "uint64",
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "expected_effect_class": {
+      "$ref": "#/$defs/EffectClass"
+    },
+    "idempotency_key": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "input_metadata": {
+      "items": {
+        "$ref": "#/$defs/InputMetadataEntry"
+      },
+      "maxItems": 32,
+      "type": "array"
+    },
+    "normalized_operation": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "operation_family": {
+      "$ref": "#/$defs/OperationFamily"
+    },
+    "policies": {
+      "items": {
+        "$ref": "#/$defs/PolicyIdentity"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "repeatability": {
+      "$ref": "#/$defs/Repeatability"
+    },
+    "requested_scopes": {
+      "items": {
+        "$ref": "#/$defs/RequestedScope"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "resource_budget_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "sandbox_profile": {
+      "$ref": "#/$defs/SandboxProfileIdentity"
+    },
+    "schema_version": {
+      "const": "gaap.protected-effect-request/0.1.0",
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/Subject"
+    },
+    "tool_schema_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "effect_id",
+    "effect_sequence",
+    "run_id",
+    "agent_run_request_digest",
+    "subject",
+    "operation_family",
+    "normalized_operation",
+    "capability",
+    "input_digest",
+    "input_metadata",
+    "requested_scopes",
+    "policies",
+    "approval_context",
+    "resource_budget_digest",
+    "sandbox_profile",
+    "idempotency_key",
+    "repeatability",
+    "expected_effect_class"
+  ],
+  "title": "GAAP Protected Effect Request 0.1.0",
+  "type": "object"
+}

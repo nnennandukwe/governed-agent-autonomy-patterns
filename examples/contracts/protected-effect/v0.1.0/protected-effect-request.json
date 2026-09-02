@@ -1,0 +1,88 @@
+{
+  "schema_version": "gaap.protected-effect-request/0.1.0",
+  "effect_id": "effect-001",
+  "effect_sequence": 1,
+  "run_id": "run-001",
+  "agent_run_request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
+  "subject": {
+    "kind": "repository",
+    "locator": "https://example.invalid/repository",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "operation_family": "process",
+  "normalized_operation": "process.spawn",
+  "capability": {
+    "name": "change-code",
+    "version": "1",
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "tool_schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "input_digest": "sha256:c91d43be9e251857fba61b44e0832c48e77eb0ba8f1084fdcdaab2dab799316c",
+  "input_metadata": [
+    {
+      "name": "argument_count",
+      "value": "2"
+    },
+    {
+      "name": "content_type",
+      "value": "application/json"
+    }
+  ],
+  "requested_scopes": [
+    {
+      "scope_type": "process",
+      "executable": "/usr/bin/cargo",
+      "working_directory": "/workspace"
+    },
+    {
+      "scope_type": "filesystem",
+      "root": "/workspace",
+      "access": [
+        "read",
+        "modify"
+      ],
+      "recursive": true
+    },
+    {
+      "scope_type": "network",
+      "protocol": "https",
+      "host": "crates.io",
+      "port": 443
+    },
+    {
+      "scope_type": "external_service",
+      "service": "github",
+      "operation": "pull_request.comment",
+      "resource": "nnennandukwe/governed-agent-autonomy-patterns#22"
+    }
+  ],
+  "policies": [
+    {
+      "name": "gaap.run-coordinator",
+      "version": "0.1.0",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "approval_context": [
+    {
+      "approval_id": "approval-effect-001",
+      "actor_id": "maintainer-001",
+      "scope": "protected_effect",
+      "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "evidence": {
+        "evidence_type": "approval",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "locator": null
+      }
+    }
+  ],
+  "resource_budget_digest": "sha256:8f9d506cc02d9cb1de0f85bdf6ab2e4748ffb529e35ab4b9855b5bc42c8e8da8",
+  "sandbox_profile": {
+    "name": "local-process",
+    "version": "0.1.0",
+    "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "idempotency_key": "run-001/effect-001",
+  "repeatability": "non_repeatable",
+  "expected_effect_class": "mutation"
+}

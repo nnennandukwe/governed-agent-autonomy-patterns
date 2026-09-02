@@ -2,7 +2,7 @@
 
 mod canonical;
 mod model;
-mod protected_effect;
+pub mod protected_effect;
 mod schema;
 mod validation;
 
@@ -27,7 +27,10 @@ pub use protected_effect::{
     seal_protected_effect_result, validate_protected_effect_request,
     validate_protected_effect_result_body, verify_protected_effect_result,
 };
-pub use schema::{agent_run_request_schema, terminal_run_receipt_schema};
+pub use schema::{
+    agent_run_request_schema, protected_effect_request_schema, protected_effect_result_schema,
+    terminal_run_receipt_schema,
+};
 pub use validation::{
     ContractError, ContractErrorCode, ContractSupport, parse_agent_run_request_json,
     parse_terminal_run_receipt_json, seal_terminal_receipt, validate_request,

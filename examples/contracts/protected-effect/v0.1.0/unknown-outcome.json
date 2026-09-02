@@ -1,0 +1,75 @@
+{
+  "result_digest": "sha256:3d7a8895c20b531261a2ed3016559bf1ab9cf48753a06ecf567c870fab749354",
+  "body": {
+    "schema_version": "gaap.protected-effect-result/0.1.0",
+    "effect_id": "effect-001",
+    "effect_sequence": 1,
+    "run_id": "run-001",
+    "agent_run_request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
+    "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+    "observed_pre_effect_subject": {
+      "kind": "repository",
+      "locator": "https://example.invalid/repository",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "observed_capability": {
+      "name": "change-code",
+      "version": "1",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "observed_tool_schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decision": {
+      "decision_id": "decision-001",
+      "gate": "permission",
+      "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+      "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decision": {
+        "outcome": "allow",
+        "code": "permission.policy_allowed",
+        "effects": []
+      }
+    },
+    "execution_status": "unknown_outcome",
+    "observed_post_effect_subject": null,
+    "exit": null,
+    "usage": {
+      "cost_micros": 200000,
+      "elapsed_ms": 2000,
+      "model_tokens": 0,
+      "tool_calls": 1
+    },
+    "executor": {
+      "name": "local-runner",
+      "version": "0.1.0",
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "sandbox_profile": {
+      "name": "local-process",
+      "version": "0.1.0",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "reason": "executor disconnected before reconciliation",
+    "evidence": [
+      {
+        "evidence_type": "usage",
+        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "locator": null
+      },
+      {
+        "evidence_type": "executor",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "locator": null
+      },
+      {
+        "evidence_type": "sandbox",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "locator": null
+      },
+      {
+        "evidence_type": "unknown_outcome",
+        "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "locator": null
+      }
+    ]
+  }
+}
