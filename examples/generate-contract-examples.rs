@@ -131,8 +131,8 @@ fn approval() -> ApprovalReference {
     ApprovalReference {
         approval_id: "approval-001".to_owned(),
         actor_id: "maintainer-001".to_owned(),
-        scope: "plan".to_owned(),
-        subject_digest: digest('d'),
+        scope: "subject".to_owned(),
+        subject_digest: digest('a'),
         evidence: evidence(EvidenceType::Approval, 'e'),
     }
 }
@@ -310,26 +310,35 @@ fn completed(
                     capability_digest: digest('c'),
                     evidence: vec![evidence(EvidenceType::ToolExecution, '9')],
                 },
+                decision(
+                    7,
+                    "decision-mutation-001",
+                    Gate::Workflow,
+                    effect.clone(),
+                    initial.clone(),
+                    Outcome::Allow,
+                    "workflow.mutation_authorized",
+                ),
                 RunEvent::Mutation {
-                    sequence: 7,
-                    decision_id: "decision-tool-001".to_owned(),
+                    sequence: 8,
+                    decision_id: "decision-mutation-001".to_owned(),
                     protected_effect_digest: effect,
                     before_subject_digest: initial,
                     after_subject_digest: resulting.clone(),
                     evidence: vec![evidence(EvidenceType::Artifact, '0')],
                 },
                 RunEvent::Usage {
-                    sequence: 8,
+                    sequence: 9,
                     usage: final_usage,
                 },
                 status(
-                    9,
+                    10,
                     AgentRunStatus::Executing,
                     AgentRunStatus::Verifying,
                     None,
                 ),
                 RunEvent::Verification {
-                    sequence: 10,
+                    sequence: 11,
                     subject_digest: resulting.clone(),
                     implementer_id: "executor-001".to_owned(),
                     verifier_id: "verifier-001".to_owned(),
@@ -340,7 +349,7 @@ fn completed(
                     ],
                 },
                 RunEvent::ProtectedEffectDecision {
-                    sequence: 11,
+                    sequence: 12,
                     decision_id: "decision-completion-001".to_owned(),
                     gate: Gate::Workflow,
                     protected_effect_digest: resulting.clone(),
@@ -352,7 +361,7 @@ fn completed(
                     },
                 },
                 status(
-                    12,
+                    13,
                     AgentRunStatus::Verifying,
                     AgentRunStatus::Completed,
                     Some("workflow.completion_authorized"),
@@ -602,11 +611,11 @@ fn stale_verification(
                 decision(
                     5,
                     "decision-mutation-001",
-                    Gate::Permission,
+                    Gate::Workflow,
                     first_effect.clone(),
                     initial.clone(),
                     Outcome::Allow,
-                    "permission.policy_allowed",
+                    "workflow.mutation_authorized",
                 ),
                 RunEvent::Mutation {
                     sequence: 6,
@@ -642,11 +651,11 @@ fn stale_verification(
                 decision(
                     10,
                     "decision-mutation-002",
-                    Gate::Permission,
+                    Gate::Workflow,
                     second_effect.clone(),
                     verified.clone(),
                     Outcome::Allow,
-                    "permission.policy_allowed",
+                    "workflow.mutation_authorized",
                 ),
                 RunEvent::Mutation {
                     sequence: 11,

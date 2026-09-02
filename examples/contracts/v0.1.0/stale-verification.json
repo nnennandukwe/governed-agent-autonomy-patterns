@@ -1,10 +1,10 @@
 {
-  "receipt_digest": "sha256:bb9bb80e0fe4604ce9f0c3ea7e027b5ff63506482d58bcef6ffa96338646a506",
+  "receipt_digest": "sha256:6e87aa7f72bcb11960af6e6c9591f2f93e1d676ab68d0a1251479da81dca75cb",
   "body": {
     "schema_version": "gaap.terminal-run-receipt/0.1.0",
     "request_id": "request-001",
     "run_id": "run-001",
-    "request_digest": "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632",
+    "request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
     "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "resulting_subject_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
     "terminal_status": "blocked",
@@ -34,8 +34,8 @@
         "approval": {
           "approval_id": "approval-001",
           "actor_id": "maintainer-001",
-          "scope": "plan",
-          "subject_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "scope": "subject",
+          "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "evidence": {
             "evidence_type": "approval",
             "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -54,12 +54,12 @@
         "event_type": "protected_effect_decision",
         "sequence": 5,
         "decision_id": "decision-mutation-001",
-        "gate": "permission",
+        "gate": "workflow",
         "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
         "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "decision": {
           "outcome": "allow",
-          "code": "permission.policy_allowed",
+          "code": "workflow.mutation_authorized",
           "effects": []
         }
       },
@@ -116,12 +116,12 @@
         "event_type": "protected_effect_decision",
         "sequence": 10,
         "decision_id": "decision-mutation-002",
-        "gate": "permission",
+        "gate": "workflow",
         "protected_effect_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
         "subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "decision": {
           "outcome": "allow",
-          "code": "permission.policy_allowed",
+          "code": "workflow.mutation_authorized",
           "effects": []
         }
       },

@@ -1,10 +1,10 @@
 {
-  "receipt_digest": "sha256:b9efa353c4f803a946be988b669b8f5ffa69ed234d8f39c7a20a9902aaef06c7",
+  "receipt_digest": "sha256:75e6a9d03af36f7306e2bd0e56d3d2d217eb662ae6683d525c06c4d021a66c9e",
   "body": {
     "schema_version": "gaap.terminal-run-receipt/0.1.0",
     "request_id": "request-001",
     "run_id": "run-001",
-    "request_digest": "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632",
+    "request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
     "initial_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "resulting_subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "terminal_status": "completed",
@@ -34,8 +34,8 @@
         "approval": {
           "approval_id": "approval-001",
           "actor_id": "maintainer-001",
-          "scope": "plan",
-          "subject_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "scope": "subject",
+          "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "evidence": {
             "evidence_type": "approval",
             "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -79,9 +79,22 @@
         ]
       },
       {
-        "event_type": "mutation",
+        "event_type": "protected_effect_decision",
         "sequence": 7,
-        "decision_id": "decision-tool-001",
+        "decision_id": "decision-mutation-001",
+        "gate": "workflow",
+        "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "decision": {
+          "outcome": "allow",
+          "code": "workflow.mutation_authorized",
+          "effects": []
+        }
+      },
+      {
+        "event_type": "mutation",
+        "sequence": 8,
+        "decision_id": "decision-mutation-001",
         "protected_effect_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
         "before_subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "after_subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -95,7 +108,7 @@
       },
       {
         "event_type": "usage",
-        "sequence": 8,
+        "sequence": 9,
         "usage": {
           "cost_micros": 200000,
           "elapsed_ms": 2000,
@@ -105,14 +118,14 @@
       },
       {
         "event_type": "status_transition",
-        "sequence": 9,
+        "sequence": 10,
         "from": "executing",
         "to": "verifying",
         "reason": null
       },
       {
         "event_type": "verification",
-        "sequence": 10,
+        "sequence": 11,
         "subject_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "implementer_id": "executor-001",
         "verifier_id": "verifier-001",
@@ -132,7 +145,7 @@
       },
       {
         "event_type": "protected_effect_decision",
-        "sequence": 11,
+        "sequence": 12,
         "decision_id": "decision-completion-001",
         "gate": "workflow",
         "protected_effect_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -147,7 +160,7 @@
       },
       {
         "event_type": "status_transition",
-        "sequence": 12,
+        "sequence": 13,
         "from": "verifying",
         "to": "completed",
         "reason": "workflow.completion_authorized"

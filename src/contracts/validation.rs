@@ -208,6 +208,13 @@ pub fn validate_request(
         validate_non_empty(&approval.actor_id, &format!("{path}.actor_id"))?;
         validate_non_empty(&approval.scope, &format!("{path}.scope"))?;
         validate_digest(&approval.subject_digest, &format!("{path}.subject_digest"))?;
+        if approval.subject_digest != request.subject.digest {
+            return Err(ContractError::new(
+                ContractErrorCode::RequestMismatch,
+                format!("{path}.subject_digest"),
+                "request approval does not match the requested subject",
+            ));
+        }
         if approval.evidence.evidence_type != EvidenceType::Approval {
             return Err(ContractError::new(
                 ContractErrorCode::InvalidContract,
@@ -464,6 +471,7 @@ fn validate_receipt_body(
                     protected_effect_digest,
                     event.sequence(),
                     &current_subject,
+                    Gate::Permission,
                     &path,
                 )?;
                 validate_digest(action_digest, &format!("{path}.action_digest"))?;
@@ -501,6 +509,7 @@ fn validate_receipt_body(
                     protected_effect_digest,
                     *sequence,
                     &current_subject,
+                    Gate::Workflow,
                     &path,
                 )?;
                 validate_digest(
@@ -720,6 +729,7 @@ fn validate_authorization(
     protected_effect_digest: &str,
     effect_sequence: u64,
     current_subject: &str,
+    expected_gate: Gate,
     path: &str,
 ) -> Result<(), ContractError> {
     validate_non_empty(decision_id, &format!("{path}.decision_id"))?;
@@ -737,6 +747,7 @@ fn validate_authorization(
     if decision.sequence >= effect_sequence
         || decision.protected_effect_digest != protected_effect_digest
         || decision.subject_digest != current_subject
+        || decision.gate != expected_gate
         || decision.outcome != Outcome::Allow
     {
         return Err(ContractError::new(

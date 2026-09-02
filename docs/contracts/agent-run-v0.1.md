@@ -33,6 +33,9 @@ An `AgentRunRequest` binds immutable run intent to:
 `ContractSupport` is an exact allowlist of supported policy identities. It has
 no wildcard and does not evaluate policy. `validate_request` rejects an
 otherwise well-formed request when any identity is absent from that allowlist.
+Approval context supplied with a request must target that request's exact
+subject digest; approvals recorded later in the ledger remain bound to the
+subject named by their own scope and digest.
 
 ## Lifecycle
 
@@ -102,8 +105,9 @@ prove who produced a receipt; authenticity and signatures are later work.
 `seal_terminal_receipt` and `verify_terminal_receipt` require a
 completed run to demonstrate all of the following:
 
-1. Every tool execution and mutation references an earlier decision with the
-   same protected-effect digest and an `allow` outcome.
+1. Every tool execution references an earlier `permission` decision, and every
+   mutation references an earlier `workflow` decision, with the same
+   protected-effect and subject digests and an `allow` outcome.
 2. `ask` and `block` never authorize an observed effect.
 3. The resulting subject equals the last observed mutation result.
 4. Passing verification comes from a different actor, carries all required

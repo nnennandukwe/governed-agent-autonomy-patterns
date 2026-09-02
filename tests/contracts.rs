@@ -25,8 +25,8 @@ fn approval() -> ApprovalReference {
     ApprovalReference {
         approval_id: "approval-001".to_owned(),
         actor_id: "maintainer-001".to_owned(),
-        scope: "plan".to_owned(),
-        subject_digest: digest('d'),
+        scope: "subject".to_owned(),
+        subject_digest: digest('a'),
         evidence: EvidenceReference {
             evidence_type: EvidenceType::Approval,
             digest: digest('e'),
@@ -150,26 +150,38 @@ fn completed_body(request_digest: String) -> TerminalRunReceiptBody {
                 capability_digest: digest('c'),
                 evidence: vec![evidence(EvidenceType::ToolExecution, '9')],
             },
-            RunEvent::Mutation {
+            RunEvent::ProtectedEffectDecision {
                 sequence: 7,
-                decision_id: "decision-tool-001".to_owned(),
+                decision_id: "decision-mutation-001".to_owned(),
+                gate: Gate::Workflow,
+                protected_effect_digest: protected_effect.clone(),
+                subject_digest: initial_subject.clone(),
+                decision: Decision {
+                    outcome: Outcome::Allow,
+                    code: "workflow.mutation_authorized".to_owned(),
+                    effects: vec!["record_mutation_authorization".to_owned()],
+                },
+            },
+            RunEvent::Mutation {
+                sequence: 8,
+                decision_id: "decision-mutation-001".to_owned(),
                 protected_effect_digest: protected_effect,
                 before_subject_digest: initial_subject,
                 after_subject_digest: resulting_subject.clone(),
                 evidence: vec![evidence(EvidenceType::Artifact, '0')],
             },
             RunEvent::Usage {
-                sequence: 8,
+                sequence: 9,
                 usage: usage(),
             },
             RunEvent::StatusTransition {
-                sequence: 9,
+                sequence: 10,
                 from: AgentRunStatus::Executing,
                 to: AgentRunStatus::Verifying,
                 reason: None,
             },
             RunEvent::Verification {
-                sequence: 10,
+                sequence: 11,
                 subject_digest: resulting_subject.clone(),
                 implementer_id: "executor-001".to_owned(),
                 verifier_id: "verifier-001".to_owned(),
@@ -180,7 +192,7 @@ fn completed_body(request_digest: String) -> TerminalRunReceiptBody {
                 ],
             },
             RunEvent::ProtectedEffectDecision {
-                sequence: 11,
+                sequence: 12,
                 decision_id: "decision-completion-001".to_owned(),
                 gate: Gate::Workflow,
                 protected_effect_digest: resulting_subject.clone(),
@@ -192,7 +204,7 @@ fn completed_body(request_digest: String) -> TerminalRunReceiptBody {
                 },
             },
             RunEvent::StatusTransition {
-                sequence: 12,
+                sequence: 13,
                 from: AgentRunStatus::Verifying,
                 to: AgentRunStatus::Completed,
                 reason: Some("workflow.completion_authorized".to_owned()),
@@ -274,7 +286,7 @@ fn supported_request_returns_a_stable_canonical_digest() {
     assert_eq!(reparsed, request);
     assert_eq!(
         request_digest,
-        "sha256:3d029feed0e1c4d89e58a4920401f2179f6af0fa24f59afeef33393808ed6632"
+        "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89"
     );
 }
 
@@ -299,6 +311,19 @@ fn request_rejects_an_unknown_schema_version() {
 
     assert_eq!(error.code(), ContractErrorCode::UnsupportedSchema);
     assert_eq!(error.path(), "schema_version");
+}
+
+#[test]
+fn request_rejects_approval_for_a_different_subject() {
+    let mut request = request();
+    request.approval_context[0].subject_digest = digest('d');
+    let support = ContractSupport::new([policy()]);
+
+    let error = validate_request(&request, &support)
+        .expect_err("request approval must bind to the requested subject");
+
+    assert_eq!(error.code(), ContractErrorCode::RequestMismatch);
+    assert_eq!(error.path(), "approval_context[0].subject_digest");
 }
 
 #[test]
@@ -407,6 +432,42 @@ fn block_decision_cannot_authorize_a_tool_execution() {
 }
 
 #[test]
+fn unrelated_gate_cannot_authorize_a_tool_execution() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = completed_body(request_digest);
+    let RunEvent::ProtectedEffectDecision { gate, .. } = &mut body.events[4] else {
+        panic!("fifth event should be the tool decision");
+    };
+    *gate = Gate::Verification;
+
+    let error = seal_terminal_receipt(&request, &support, body)
+        .expect_err("verification gate must not authorize tool execution");
+
+    assert_eq!(error.code(), ContractErrorCode::UnauthorizedEffect);
+    assert_eq!(error.path(), "events[5].decision_id");
+}
+
+#[test]
+fn permission_gate_cannot_authorize_a_mutation() {
+    let request = request();
+    let support = ContractSupport::new([policy()]);
+    let request_digest = validate_request(&request, &support).expect("request should be valid");
+    let mut body = completed_body(request_digest);
+    let RunEvent::ProtectedEffectDecision { gate, .. } = &mut body.events[6] else {
+        panic!("seventh event should be the mutation decision");
+    };
+    *gate = Gate::Permission;
+
+    let error = seal_terminal_receipt(&request, &support, body)
+        .expect_err("permission gate must not authorize mutation");
+
+    assert_eq!(error.code(), ContractErrorCode::UnauthorizedEffect);
+    assert_eq!(error.path(), "events[7].decision_id");
+}
+
+#[test]
 fn tool_execution_must_use_the_requested_capability() {
     let request = request();
     let support = ContractSupport::new([policy()]);
@@ -437,9 +498,9 @@ fn mutation_after_verification_makes_completion_stale() {
     let later_subject = digest('6');
     body.resulting_subject_digest = later_subject.clone();
     body.events.insert(
-        10,
+        11,
         RunEvent::ProtectedEffectDecision {
-            sequence: 11,
+            sequence: 12,
             decision_id: "decision-later-mutation-001".to_owned(),
             gate: Gate::Workflow,
             protected_effect_digest: digest('4'),
@@ -452,9 +513,9 @@ fn mutation_after_verification_makes_completion_stale() {
         },
     );
     body.events.insert(
-        11,
+        12,
         RunEvent::Mutation {
-            sequence: 12,
+            sequence: 13,
             decision_id: "decision-later-mutation-001".to_owned(),
             protected_effect_digest: digest('4'),
             before_subject_digest: prior_subject,
@@ -462,14 +523,14 @@ fn mutation_after_verification_makes_completion_stale() {
             evidence: vec![evidence(EvidenceType::Artifact, '5')],
         },
     );
-    for (index, event) in body.events.iter_mut().enumerate().skip(12) {
+    for (index, event) in body.events.iter_mut().enumerate().skip(13) {
         set_event_sequence(event, (index + 1) as u64);
     }
     let RunEvent::ProtectedEffectDecision {
         protected_effect_digest,
         subject_digest,
         ..
-    } = &mut body.events[12]
+    } = &mut body.events[13]
     else {
         panic!("completion decision should follow the later mutation");
     };
@@ -807,9 +868,9 @@ fn completed_receipt_rejects_self_verification() {
         implementer_id,
         verifier_id,
         ..
-    } = &mut body.events[9]
+    } = &mut body.events[10]
     else {
-        panic!("ninth event should be verification");
+        panic!("eleventh event should be verification");
     };
     *verifier_id = implementer_id.clone();
 
@@ -817,7 +878,7 @@ fn completed_receipt_rejects_self_verification() {
         seal_terminal_receipt(&request, &support, body).expect_err("self-verification must fail");
 
     assert_eq!(error.code(), ContractErrorCode::InvalidContract);
-    assert_eq!(error.path(), "events[9].verifier_id");
+    assert_eq!(error.path(), "events[10].verifier_id");
 }
 
 #[test]
@@ -827,8 +888,8 @@ fn completed_receipt_rejects_usage_over_budget() {
     let request_digest = validate_request(&request, &support).expect("request should be valid");
     let mut body = completed_body(request_digest);
     body.usage.cost_micros = request.resource_budget.max_cost_micros + 1;
-    let RunEvent::Usage { usage, .. } = &mut body.events[7] else {
-        panic!("eighth event should record usage");
+    let RunEvent::Usage { usage, .. } = &mut body.events[8] else {
+        panic!("ninth event should record usage");
     };
     usage.cost_micros = body.usage.cost_micros;
 
@@ -866,9 +927,9 @@ fn an_allow_decision_cannot_authorize_an_effect_after_its_subject_changes() {
     let request_digest = validate_request(&request, &support).expect("request should be valid");
     let mut body = completed_body(request_digest);
     body.events.insert(
-        7,
+        8,
         RunEvent::ToolExecution {
-            sequence: 8,
+            sequence: 9,
             decision_id: "decision-tool-001".to_owned(),
             protected_effect_digest: digest('7'),
             action_digest: digest('6'),
@@ -876,7 +937,7 @@ fn an_allow_decision_cannot_authorize_an_effect_after_its_subject_changes() {
             evidence: vec![evidence(EvidenceType::ToolExecution, '5')],
         },
     );
-    for (index, event) in body.events.iter_mut().enumerate().skip(7) {
+    for (index, event) in body.events.iter_mut().enumerate().skip(8) {
         set_event_sequence(event, (index + 1) as u64);
     }
 
@@ -884,7 +945,7 @@ fn an_allow_decision_cannot_authorize_an_effect_after_its_subject_changes() {
         .expect_err("authority bound to the prior subject must be stale");
 
     assert_eq!(error.code(), ContractErrorCode::UnauthorizedEffect);
-    assert_eq!(error.path(), "events[7].decision_id");
+    assert_eq!(error.path(), "events[8].decision_id");
 }
 
 #[test]
@@ -911,8 +972,8 @@ fn mutation_requires_artifact_evidence() {
     let support = ContractSupport::new([policy()]);
     let request_digest = validate_request(&request, &support).expect("request should be valid");
     let mut body = completed_body(request_digest);
-    let RunEvent::Mutation { evidence, .. } = &mut body.events[6] else {
-        panic!("seventh event should be the mutation");
+    let RunEvent::Mutation { evidence, .. } = &mut body.events[7] else {
+        panic!("eighth event should be the mutation");
     };
     evidence[0].evidence_type = EvidenceType::CommandOutput;
 
@@ -920,7 +981,7 @@ fn mutation_requires_artifact_evidence() {
         .expect_err("mutation without artifact evidence must fail");
 
     assert_eq!(error.code(), ContractErrorCode::InvalidContract);
-    assert_eq!(error.path(), "events[6].evidence");
+    assert_eq!(error.path(), "events[7].evidence");
 }
 
 #[test]
