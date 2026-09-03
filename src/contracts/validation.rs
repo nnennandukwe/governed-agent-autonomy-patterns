@@ -869,7 +869,7 @@ pub(crate) fn validate_non_empty(value: &str, path: &str) -> Result<(), Contract
     Ok(())
 }
 
-pub(crate) fn validate_digest(value: &str, path: &str) -> Result<(), ContractError> {
+pub fn validate_digest(value: &str, path: &str) -> Result<(), ContractError> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return Err(invalid_digest(path));
     };

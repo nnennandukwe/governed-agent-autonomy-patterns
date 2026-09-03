@@ -33,6 +33,6 @@ pub use schema::{
 };
 pub use validation::{
     ContractError, ContractErrorCode, ContractSupport, parse_agent_run_request_json,
-    parse_terminal_run_receipt_json, seal_terminal_receipt, validate_request,
+    parse_terminal_run_receipt_json, seal_terminal_receipt, validate_digest, validate_request,
     verify_terminal_receipt,
 };

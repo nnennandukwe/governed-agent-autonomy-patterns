@@ -11,8 +11,8 @@ use crate::contracts::{
     PROTECTED_EFFECT_RESULT_SCHEMA, ProtectedEffectDecision, ProtectedEffectRequest,
     ProtectedEffectResult, ProtectedEffectResultBody, ResourceUsage, RunEvent,
     TERMINAL_RUN_RECEIPT_SCHEMA, TerminalRunReceipt, TerminalRunReceiptBody, VerificationVerdict,
-    seal_protected_effect_result, seal_terminal_receipt, validate_protected_effect_request,
-    validate_request,
+    seal_protected_effect_result, seal_terminal_receipt, validate_digest,
+    validate_protected_effect_request, validate_request,
 };
 use crate::{Decision, Gate, Outcome, RunCoordinator};
 
@@ -318,6 +318,9 @@ where
             }
         };
 
+        if validate_digest(&plan.plan_digest, "plan_digest").is_err() {
+            return self.finish(ledger, AgentRunStatus::Failed, "adapter.plan_invalid");
+        }
         ledger.plan_recorded(plan.plan_digest.clone());
         if let Some(approval) = plan.approval.clone() {
             ledger.approval_recorded(approval);
@@ -368,6 +371,12 @@ where
                     return self.verify_and_finish(ledger);
                 }
                 AgentStep::Cancel(cancellation) => {
+                    if cancellation.reason.trim().is_empty()
+                        || cancellation.evidence.evidence_type != EvidenceType::Interruption
+                        || validate_digest(&cancellation.evidence.digest, "cancellation.evidence.digest").is_err()
+                    {
+                        return self.finish(ledger, AgentRunStatus::Failed, "adapter.cancellation_invalid");
+                    }
                     ledger.interruption(cancellation);
                     return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
                 }
@@ -689,10 +698,10 @@ where
             Gate::Verification,
             &verification_input(&self.config, &ledger.current_subject.digest, &report),
         );
-        ledger.verification(&self.config.implementer_id, &report);
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);
         }
+        ledger.verification(&self.config.implementer_id, &report);
         let completion_decision = self.coordinator.evaluate(
             Gate::Workflow,
             &workflow_completion_input(&verification_decision, ledger.mutation_authorized),
