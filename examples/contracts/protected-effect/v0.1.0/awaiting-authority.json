@@ -1,0 +1,46 @@
+{
+  "result_digest": "sha256:cd99f4ccc4ddd9c06165c9ed91dc0957a2bbb8444c95c850a35c17e42b7dfeca",
+  "body": {
+    "schema_version": "gaap.protected-effect-result/0.1.0",
+    "effect_id": "effect-001",
+    "effect_sequence": 1,
+    "run_id": "run-001",
+    "agent_run_request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
+    "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+    "observed_pre_effect_subject": {
+      "kind": "repository",
+      "locator": "https://example.invalid/repository",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "observed_capability": {
+      "name": "change-code",
+      "version": "1",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "observed_tool_schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decision": {
+      "decision_id": "decision-001",
+      "gate": "permission",
+      "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+      "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decision": {
+        "outcome": "ask",
+        "code": "permission.policy_requires_approval",
+        "effects": []
+      }
+    },
+    "execution_status": "awaiting_authority",
+    "observed_post_effect_subject": null,
+    "exit": null,
+    "usage": {
+      "cost_micros": 0,
+      "elapsed_ms": 0,
+      "model_tokens": 0,
+      "tool_calls": 0
+    },
+    "executor": null,
+    "sandbox_profile": null,
+    "reason": "permission.policy_requires_approval",
+    "evidence": []
+  }
+}

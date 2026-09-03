@@ -28,6 +28,7 @@ pub enum ContractErrorCode {
     StaleVerification,
     RequestMismatch,
     ReceiptTampering,
+    ResultTampering,
 }
 
 /// Contract validation failure with a stable code and document path.

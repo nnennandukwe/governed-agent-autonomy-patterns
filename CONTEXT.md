@@ -23,6 +23,38 @@ _Avoid_: Provider request, workflow run request
 One bounded execution governed through GAAP's integrity decisions that produces exactly one Terminal Run Receipt.
 _Avoid_: ThreadLoop Workflow Run, provider session
 
+**Protected effect**:
+One externally observable operation that must be proposed, decided, and recorded against an exact Agent Run, subject, and capability before a runtime may proceed.
+_Avoid_: Tool call, provider action, authorized action
+
+**Protected Effect Request**:
+The immutable, versioned description of one proposed protected effect, including its parent-run binding, current subject, normalized operation and input digest, requested scopes, identities, and repeatability.
+_Avoid_: Tool invocation, permission grant
+
+**Protected Effect Result**:
+The content-addressed record that binds one exact Protected Effect Request to the decisive RunCoordinator decision, observed identities, execution status, effect-local usage, and effect evidence.
+_Avoid_: Tool response, Terminal Run Receipt
+
+**Execution status**:
+The closed result classification that distinguishes executed, awaiting-authority, denied, failed, interrupted, and unknown-outcome effects without changing the RunCoordinator decision.
+_Avoid_: Decision, lifecycle state
+
+**Observed subject**:
+The repository or artifact identity measured immediately before or after a protected-effect attempt and recorded independently from the subject proposed in the request.
+_Avoid_: Requested subject, assumed workspace
+
+**Schema drift**:
+A denied pre-execution observation that the requested tool-schema digest is no longer current.
+_Avoid_: Parse error, provider incompatibility
+
+**Repeatability**:
+The request's declaration that an identical effect is repeatable, idempotent, or non-repeatable; it informs a future runtime but never initiates retry.
+_Avoid_: Retry policy, execution status
+
+**Effect evidence reference**:
+Content-addressed metadata naming one observed effect fact by closed type, digest, and optional locator without embedding raw output or secrets.
+_Avoid_: Raw output, provider message
+
 **Terminal Run Receipt**:
 The content-addressed record of an Agent Run's terminal status, decisions, observed effects, evidence, resource usage, and exact resulting subject.
 _Avoid_: Log, transcript, Trial result

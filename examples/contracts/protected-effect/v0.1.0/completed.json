@@ -1,0 +1,102 @@
+{
+  "result_digest": "sha256:23f356189b3ecaf152d3cb419cc15b9d7f690f00b1ac936668ea97da39e6f9e8",
+  "body": {
+    "schema_version": "gaap.protected-effect-result/0.1.0",
+    "effect_id": "effect-001",
+    "effect_sequence": 1,
+    "run_id": "run-001",
+    "agent_run_request_digest": "sha256:3f21b4e9c8f22cd93e6d403efe2f9e35881ae46c0aa0b400c91b03727f5e7e89",
+    "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+    "observed_pre_effect_subject": {
+      "kind": "repository",
+      "locator": "https://example.invalid/repository",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "observed_capability": {
+      "name": "change-code",
+      "version": "1",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "observed_tool_schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decision": {
+      "decision_id": "decision-001",
+      "gate": "permission",
+      "effect_request_digest": "sha256:e063f78cbd0cd7eae9dba827ddc6740e0e0fd4ee8d3da2ca9f13841fe31970b5",
+      "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decision": {
+        "outcome": "allow",
+        "code": "permission.policy_allowed",
+        "effects": []
+      }
+    },
+    "execution_status": "executed",
+    "observed_post_effect_subject": {
+      "kind": "repository",
+      "locator": "https://example.invalid/repository",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "exit": {
+      "exit_type": "code",
+      "code": 0
+    },
+    "usage": {
+      "cost_micros": 200000,
+      "elapsed_ms": 2000,
+      "model_tokens": 0,
+      "tool_calls": 1
+    },
+    "executor": {
+      "name": "local-runner",
+      "version": "0.1.0",
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "sandbox_profile": {
+      "name": "local-process",
+      "version": "0.1.0",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "reason": null,
+    "evidence": [
+      {
+        "evidence_type": "usage",
+        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "locator": null
+      },
+      {
+        "evidence_type": "executor",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "locator": null
+      },
+      {
+        "evidence_type": "sandbox",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "locator": null
+      },
+      {
+        "evidence_type": "exit",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "locator": null
+      },
+      {
+        "evidence_type": "output",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "locator": null
+      },
+      {
+        "evidence_type": "artifact",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "locator": null
+      },
+      {
+        "evidence_type": "mutation",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "locator": null
+      },
+      {
+        "evidence_type": "subject_observation",
+        "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "locator": null
+      }
+    ]
+  }
+}

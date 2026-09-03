@@ -3,10 +3,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use gaap::contracts::{agent_run_request_schema, terminal_run_receipt_schema};
+use gaap::contracts::{
+    agent_run_request_schema, protected_effect_request_schema, protected_effect_result_schema,
+    terminal_run_receipt_schema,
+};
 
 const REQUEST_PATH: &str = "schemas/agent-run/v0.1.0/agent-run-request.schema.json";
 const RECEIPT_PATH: &str = "schemas/agent-run/v0.1.0/terminal-run-receipt.schema.json";
+const EFFECT_REQUEST_PATH: &str =
+    "schemas/protected-effect/v0.1.0/protected-effect-request.schema.json";
+const EFFECT_RESULT_PATH: &str =
+    "schemas/protected-effect/v0.1.0/protected-effect-result.schema.json";
 
 fn main() -> ExitCode {
     match run() {
@@ -34,6 +41,8 @@ fn run() -> Result<(), String> {
     let schemas = [
         (REQUEST_PATH, agent_run_request_schema()),
         (RECEIPT_PATH, terminal_run_receipt_schema()),
+        (EFFECT_REQUEST_PATH, protected_effect_request_schema()),
+        (EFFECT_RESULT_PATH, protected_effect_result_schema()),
     ];
     for (relative_path, schema) in schemas {
         let path = root.join(relative_path);

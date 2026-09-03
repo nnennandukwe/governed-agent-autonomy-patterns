@@ -1,12 +1,32 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::model::{AgentRunRequest, TerminalRunReceiptBody};
+use super::model::{AgentRunRequest, ResourceBudget, TerminalRunReceiptBody};
+use super::protected_effect::{ProtectedEffectRequest, ProtectedEffectResultBody};
 use super::validation::{ContractError, ContractErrorCode};
 
 /// Serialize an Agent Run Request using RFC 8785 JSON Canonicalization Scheme.
 pub fn canonical_request_bytes(request: &AgentRunRequest) -> Result<Vec<u8>, ContractError> {
     canonical_bytes(request)
+}
+
+/// Serialize a Protected Effect Request using RFC 8785 JSON Canonicalization Scheme.
+pub fn canonical_protected_effect_request_bytes(
+    request: &ProtectedEffectRequest,
+) -> Result<Vec<u8>, ContractError> {
+    canonical_bytes(request)
+}
+
+/// Return the canonical content digest of one Agent Run resource budget.
+pub fn canonical_resource_budget_digest(budget: &ResourceBudget) -> Result<String, ContractError> {
+    canonical_bytes(budget).map(|bytes| sha256_digest(&bytes))
+}
+
+/// Serialize a Protected Effect Result body using RFC 8785 JSON Canonicalization Scheme.
+pub fn canonical_protected_effect_result_body_bytes(
+    body: &ProtectedEffectResultBody,
+) -> Result<Vec<u8>, ContractError> {
+    canonical_bytes(body)
 }
 
 pub(crate) fn canonical_receipt_body_bytes(

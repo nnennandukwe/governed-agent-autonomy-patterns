@@ -83,6 +83,11 @@ numbered from `1`. The closed event union records:
 Evidence entries contain a closed evidence type, content digest, and optional
 locator. Raw tool output and provider messages are not embedded.
 
+Every `protected_effect_digest` in a decision, tool-execution, or mutation
+event is the RFC 8785 canonical Protected Effect Request digest defined by the
+separate `gaap.protected-effect-request/0.1.0` contract. The Terminal Run
+Receipt remains authoritative for the ordered, multi-gate event chronology.
+
 ## Canonicalization And Digests
 
 GAAP uses RFC 8785 JSON Canonicalization Scheme bytes and lowercase SHA-256:
@@ -91,6 +96,9 @@ GAAP uses RFC 8785 JSON Canonicalization Scheme bytes and lowercase SHA-256:
 request_digest = SHA-256(JCS(AgentRunRequest))
 receipt_digest = SHA-256(JCS(TerminalRunReceiptBody))
 ```
+
+Protected Effect Request and Result digests are versioned separately and are
+defined in [`Protected Effect Contract 0.1.0`](./protected-effect-v0.1.md).
 
 Contract numbers are non-negative integers no larger than
 `9_007_199_254_740_991`; floating-point values are absent. Array order remains
@@ -134,5 +142,6 @@ Evidence Packet.
 ```bash
 cargo run --locked --example generate-contract-schemas -- --check
 cargo run --locked --example generate-contract-examples -- --check
+cargo run --locked --example generate-protected-effect-examples -- --check
 cargo test --locked --test contracts --test schema_contracts
 ```
