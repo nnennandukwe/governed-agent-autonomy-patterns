@@ -710,6 +710,16 @@ where
                 )
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
         }
+        if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
+            let _usage_reason = ledger.record_effect_usage(&observation.usage);
+            return self
+                .finish(
+                    ledger,
+                    AgentRunStatus::Failed,
+                    "protected_effect.untrusted_sandbox",
+                )
+                .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+        }
         let effect_result = self.attempt_result(
             &ledger,
             &proposal.request,
@@ -984,7 +994,7 @@ where
             exit: observation.exit,
             usage: observation.usage,
             executor: Some(self.config.executor_identity.clone()),
-            sandbox_profile: Some(request.sandbox_profile.clone()),
+            sandbox_profile: observation.sandbox_profile,
             reason: observation.reason,
             evidence: observation.evidence,
         };

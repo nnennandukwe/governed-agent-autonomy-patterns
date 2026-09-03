@@ -1405,7 +1405,6 @@ fn attempted_result_uses_trusted_executor_identity() {
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut observation = executed_observation(post_subject.clone());
     observation.executor = None;
-    observation.sandbox_profile = None;
 
     let execution = run_with(
         run_request.clone(),
@@ -1440,6 +1439,43 @@ fn attempted_result_uses_trusted_executor_identity() {
         &execution.protected_effect_results[0],
     )
     .unwrap();
+}
+
+#[test]
+fn missing_observed_sandbox_fails_closed_without_fabricated_result() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let post_subject = subject(digest(b'e'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = executed_observation(post_subject);
+    observation.sandbox_profile = None;
+
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                effect.clone(),
+            ))))],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&run_request.subject.digest)),
+    );
+
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "protected_effect.untrusted_sandbox"
+    );
+    assert!(execution.protected_effect_results.is_empty());
+    assert_eq!(execution.receipt.body.usage.cost_micros, 10);
+
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
 }
 
 #[test]
