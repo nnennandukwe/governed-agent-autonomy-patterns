@@ -178,6 +178,20 @@ fn validate_decision(
     for (index, effect) in decision.decision.effects.iter().enumerate() {
         validate_non_empty(effect, &format!("body.decision.decision.effects[{index}]"))?;
     }
+    if matches!(
+        body.execution_status,
+        EffectExecutionStatus::Executed
+            | EffectExecutionStatus::Failed
+            | EffectExecutionStatus::Interrupted
+            | EffectExecutionStatus::UnknownOutcome
+    ) && decision.gate != Gate::Permission
+    {
+        return Err(ContractError::new(
+            ContractErrorCode::UnauthorizedEffect,
+            "body.decision.gate",
+            "an attempted effect requires an allow decision from the permission gate",
+        ));
+    }
     Ok(())
 }
 
@@ -214,14 +228,6 @@ fn validate_status_matrix(
             ),
         ));
     }
-    if expected_outcome == Outcome::Allow && body.decision.gate != Gate::Permission {
-        return Err(ContractError::new(
-            ContractErrorCode::UnauthorizedEffect,
-            "body.decision.gate",
-            "an attempted effect requires an allow decision from the permission gate",
-        ));
-    }
-
     match body.execution_status {
         EffectExecutionStatus::Executed => validate_executed(request, body),
         EffectExecutionStatus::AwaitingAuthority | EffectExecutionStatus::Denied => {
@@ -431,15 +437,15 @@ fn validate_known_post_effect(
             EffectEvidenceType::Exit,
             "known process result requires exit evidence",
         )?;
-    } else if request.operation_family == OperationFamily::Process
-        && let Some(exit) = &body.exit
-    {
-        validate_exit(exit)?;
-        require_evidence(
-            body,
-            EffectEvidenceType::Exit,
-            "recorded exit status requires exit evidence",
-        )?;
+    } else if request.operation_family == OperationFamily::Process {
+        if let Some(exit) = &body.exit {
+            validate_exit(exit)?;
+            require_evidence(
+                body,
+                EffectEvidenceType::Exit,
+                "recorded exit status requires exit evidence",
+            )?;
+        }
     }
     Ok(())
 }
