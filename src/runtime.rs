@@ -10,7 +10,7 @@ use crate::contracts::{
     ContractSupport, EffectClass, EffectEvidenceReference, EffectEvidenceType,
     EffectExecutionStatus, EffectUsage, EvidenceReference, EvidenceType, ExecutorIdentity,
     PROTECTED_EFFECT_RESULT_SCHEMA, ProtectedEffectDecision, ProtectedEffectRequest,
-    ProtectedEffectResult, ProtectedEffectResultBody, ResourceUsage, RunEvent,
+    ProtectedEffectResult, ProtectedEffectResultBody, ResourceUsage, RunEvent, Subject,
     TERMINAL_RUN_RECEIPT_SCHEMA, TerminalRunReceipt, TerminalRunReceiptBody, VerificationVerdict,
     seal_protected_effect_result, seal_terminal_receipt, validate_protected_effect_request,
     validate_request,
@@ -1013,13 +1013,10 @@ where
         decision: ProtectedEffectDecision,
         observation: ExecutorObservation,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
-        let mut evidence = observation.evidence;
-        evidence.retain(|reference| {
-            !matches!(
-                reference.evidence_type,
-                EffectEvidenceType::Failure | EffectEvidenceType::Interruption
-            )
-        });
+        let post_subject =
+            valid_observed_post_effect_subject(request, observation.observed_post_effect_subject);
+        let usage = safe_effect_usage(observation.usage);
+        let mut evidence = sanitize_untrusted_sandbox_evidence(observation.evidence);
         ensure_effect_evidence(&mut evidence, EffectEvidenceType::Executor, "executor");
         ensure_effect_evidence(
             &mut evidence,
@@ -1032,7 +1029,7 @@ where
             EffectEvidenceType::UnknownOutcome,
             "untrusted-sandbox-unknown-outcome",
         );
-        if observation.observed_post_effect_subject.is_some() {
+        if post_subject.is_some() {
             ensure_effect_evidence(
                 &mut evidence,
                 EffectEvidenceType::SubjectObservation,
@@ -1071,9 +1068,9 @@ where
             observed_tool_schema_digest: request.tool_schema_digest.clone(),
             decision,
             execution_status: EffectExecutionStatus::UnknownOutcome,
-            observed_post_effect_subject: observation.observed_post_effect_subject,
+            observed_post_effect_subject: post_subject,
             exit: None,
-            usage: observation.usage,
+            usage,
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: Some(reason),
@@ -1788,6 +1785,64 @@ fn ensure_effect_evidence(
         .any(|reference| reference.evidence_type == evidence_type)
     {
         evidence.push(runtime_effect_evidence(evidence_type, label));
+    }
+}
+
+fn sanitize_untrusted_sandbox_evidence(
+    evidence: Vec<EffectEvidenceReference>,
+) -> Vec<EffectEvidenceReference> {
+    let mut seen = BTreeSet::new();
+    let mut sanitized = Vec::new();
+    for reference in evidence {
+        if matches!(
+            reference.evidence_type,
+            EffectEvidenceType::Failure | EffectEvidenceType::Interruption
+        ) || !effect_evidence_reference_is_valid(&reference)
+        {
+            continue;
+        }
+        let key = (
+            reference.evidence_type,
+            reference.digest.clone(),
+            reference.locator.clone(),
+        );
+        if seen.insert(key) {
+            sanitized.push(reference);
+        }
+    }
+    sanitized
+}
+
+fn effect_evidence_reference_is_valid(evidence: &EffectEvidenceReference) -> bool {
+    is_digest_string(&evidence.digest)
+        && evidence
+            .locator
+            .as_ref()
+            .is_none_or(|locator| !locator.trim().is_empty())
+}
+
+fn valid_observed_post_effect_subject(
+    request: &ProtectedEffectRequest,
+    subject: Option<Subject>,
+) -> Option<Subject> {
+    let subject = subject?;
+    if subject.locator.trim().is_empty() || !is_digest_string(&subject.digest) {
+        return None;
+    }
+    if request.expected_effect_class == EffectClass::Observation
+        && subject.digest != request.subject.digest
+    {
+        return None;
+    }
+    Some(subject)
+}
+
+fn safe_effect_usage(usage: EffectUsage) -> EffectUsage {
+    EffectUsage {
+        cost_micros: usage.cost_micros.min(MAX_SAFE_INTEGER),
+        elapsed_ms: usage.elapsed_ms.min(MAX_SAFE_INTEGER),
+        model_tokens: usage.model_tokens.min(MAX_SAFE_INTEGER),
+        tool_calls: usage.tool_calls.min(MAX_SAFE_INTEGER),
     }
 }
 

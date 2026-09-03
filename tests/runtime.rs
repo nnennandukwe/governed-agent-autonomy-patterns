@@ -1588,6 +1588,97 @@ fn mismatched_observed_sandbox_records_attempted_mutation() {
 }
 
 #[test]
+fn malformed_untrusted_sandbox_observation_still_returns_failed_receipt() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = executed_observation(subject(digest(b'e')));
+    observation.sandbox_profile = None;
+    observation.observed_post_effect_subject = Some(Subject {
+        kind: SubjectKind::Repository,
+        locator: String::new(),
+        digest: "not-a-digest".to_string(),
+    });
+    observation.usage = EffectUsage {
+        cost_micros: 9_007_199_254_740_992,
+        elapsed_ms: 9_007_199_254_740_992,
+        model_tokens: 9_007_199_254_740_992,
+        tool_calls: 9_007_199_254_740_992,
+    };
+    let duplicate_evidence = effect_evidence(EffectEvidenceType::Usage, b'3');
+    observation.evidence = vec![
+        EffectEvidenceReference {
+            evidence_type: EffectEvidenceType::Executor,
+            digest: "not-a-digest".to_string(),
+            locator: Some(String::new()),
+        },
+        duplicate_evidence.clone(),
+        duplicate_evidence,
+        effect_evidence(EffectEvidenceType::Failure, b'5'),
+        effect_evidence(EffectEvidenceType::Interruption, b'6'),
+    ];
+
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                effect.clone(),
+            ))))],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&run_request.subject.digest)),
+    );
+
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "protected_effect.untrusted_sandbox"
+    );
+    assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
+    assert_eq!(
+        execution.receipt.body.resulting_subject_digest,
+        run_request.subject.digest
+    );
+    assert_eq!(execution.protected_effect_results.len(), 1);
+    let result = &execution.protected_effect_results[0];
+    assert_eq!(
+        result.body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert!(result.body.observed_post_effect_subject.is_none());
+    assert_eq!(result.body.usage.cost_micros, 9_007_199_254_740_991);
+    assert_eq!(result.body.usage.elapsed_ms, 9_007_199_254_740_991);
+    assert_eq!(result.body.usage.model_tokens, 9_007_199_254_740_991);
+    assert_eq!(result.body.usage.tool_calls, 9_007_199_254_740_991);
+    assert!(
+        result
+            .body
+            .evidence
+            .iter()
+            .any(|item| item.evidence_type == EffectEvidenceType::UnknownOutcome)
+    );
+    assert!(!result.body.evidence.iter().any(|item| matches!(
+        item.evidence_type,
+        EffectEvidenceType::Failure | EffectEvidenceType::Interruption
+    )));
+
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(
+        &run_request,
+        &support,
+        &effect,
+        &execution.protected_effect_results[0],
+    )
+    .unwrap();
+}
+
+#[test]
 fn executor_error_records_unknown_outcome_result() {
     let run_request = request();
     let support = support();
