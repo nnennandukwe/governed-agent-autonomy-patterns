@@ -118,6 +118,29 @@ struct FileSnapshot {
     contents: Option<Vec<u8>>,
 }
 
+#[derive(Debug)]
+struct MutationFailure {
+    problem: String,
+    filesystem_changed: bool,
+}
+
+impl MutationFailure {
+    fn unchanged(problem: String) -> Self {
+        Self {
+            problem,
+            filesystem_changed: false,
+        }
+    }
+
+    #[cfg(any(windows, test))]
+    fn recoverable(problem: String) -> Self {
+        Self {
+            problem,
+            filesystem_changed: true,
+        }
+    }
+}
+
 fn inspect(root: &Path, artifacts: &[RenderedArtifact]) -> Result<Inspection, ArtifactError> {
     let expected: BTreeMap<&str, &[u8]> = artifacts
         .iter()
@@ -226,7 +249,11 @@ fn walk_managed_root(
         return Ok(());
     }
     if metadata.is_file() {
-        if path
+        if is_transaction_artifact(path) {
+            fatal.push(format!(
+                "{relative_path} is an unfinished artifact transaction file"
+            ));
+        } else if path
             .extension()
             .is_some_and(|extension| extension == "json")
             && !expected_paths.contains(relative_path.as_str())
@@ -287,10 +314,10 @@ fn apply(
         let contents = expected
             .get(snapshot.relative_path.as_str())
             .expect("write plans must refer to rendered artifacts");
-        replace_file(root, snapshot, contents).map_err(|problem| ArtifactError {
+        replace_file(root, snapshot, contents).map_err(|failure| ArtifactError {
             phase: Phase::Commit,
-            state: durable_state(&report),
-            problems: vec![problem],
+            state: mutation_failure_state(&report, &failure),
+            problems: vec![failure.problem],
             recovery: "preserve the worktree, resolve the named path, rerun generation, then run --check",
         })?;
         report.written.push(snapshot.relative_path.clone());
@@ -322,13 +349,19 @@ fn apply(
     Ok(report)
 }
 
-fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result<(), String> {
-    let parent = validated_parent(root, &snapshot.relative_path, true)?;
+fn replace_file(
+    root: &Path,
+    snapshot: &FileSnapshot,
+    contents: &[u8],
+) -> Result<(), MutationFailure> {
+    let parent = validated_parent(root, &snapshot.relative_path, true)
+        .map_err(MutationFailure::unchanged)?;
     let file_name = Path::new(&snapshot.relative_path)
         .file_name()
-        .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))?;
+        .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))
+        .map_err(MutationFailure::unchanged)?;
     let destination = parent.join(file_name);
-    ensure_snapshot_at(&destination, snapshot)?;
+    ensure_snapshot_at(&destination, snapshot).map_err(MutationFailure::unchanged)?;
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let file_name = file_name.to_string_lossy();
@@ -340,7 +373,7 @@ fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result
         ".{file_name}.gaap-contract-artifacts-{}-{sequence}.backup",
         std::process::id()
     ));
-    let write_result = (|| {
+    let preparation = (|| {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -378,18 +411,40 @@ fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result
             ));
         }
         ensure_snapshot_at(&destination, snapshot)?;
-        replace_temporary(
-            &temporary,
-            &destination,
-            &backup,
-            snapshot.contents.is_some(),
-            &snapshot.relative_path,
-        )
+        Ok(())
     })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    if let Err(problem) = preparation {
+        return Err(cleanup_temporary(
+            &temporary,
+            MutationFailure::unchanged(problem),
+        ));
     }
-    write_result
+
+    match replace_temporary(
+        &temporary,
+        &destination,
+        &backup,
+        snapshot.contents.is_some(),
+        &snapshot.relative_path,
+    ) {
+        Ok(()) => Ok(()),
+        Err(failure) => Err(cleanup_temporary(&temporary, failure)),
+    }
+}
+
+fn cleanup_temporary(temporary: &Path, mut failure: MutationFailure) -> MutationFailure {
+    match fs::remove_file(temporary) {
+        Ok(()) => failure,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => failure,
+        Err(error) => {
+            failure.filesystem_changed = true;
+            failure.problem.push_str(&format!(
+                "; temporary file {} also requires cleanup: {error}",
+                temporary.display()
+            ));
+            failure
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -399,9 +454,11 @@ fn replace_temporary(
     _backup: &Path,
     _destination_exists: bool,
     relative_path: &str,
-) -> Result<(), String> {
+) -> Result<(), MutationFailure> {
     fs::rename(temporary, destination).map_err(|error| {
-        format!("could not replace {relative_path} with its validated temporary file: {error}")
+        MutationFailure::unchanged(format!(
+            "could not replace {relative_path} with its validated temporary file: {error}"
+        ))
     })
 }
 
@@ -412,12 +469,15 @@ fn replace_temporary(
     backup: &Path,
     destination_exists: bool,
     relative_path: &str,
-) -> Result<(), String> {
+) -> Result<(), MutationFailure> {
     if destination_exists {
         replace_existing_with_backup(temporary, destination, backup, relative_path)
     } else {
-        fs::rename(temporary, destination)
-            .map_err(|error| format!("could not install missing artifact {relative_path}: {error}"))
+        fs::rename(temporary, destination).map_err(|error| {
+            MutationFailure::unchanged(format!(
+                "could not install missing artifact {relative_path}: {error}"
+            ))
+        })
     }
 }
 
@@ -427,39 +487,42 @@ fn replace_existing_with_backup(
     destination: &Path,
     backup: &Path,
     relative_path: &str,
-) -> Result<(), String> {
+) -> Result<(), MutationFailure> {
     match fs::symlink_metadata(backup) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Ok(_) => {
-            return Err(format!(
+            return Err(MutationFailure::unchanged(format!(
                 "could not preserve {relative_path}: backup path {} already exists",
                 backup.display()
-            ));
+            )));
         }
         Err(error) => {
-            return Err(format!(
+            return Err(MutationFailure::unchanged(format!(
                 "could not inspect backup path for {relative_path}: {error}"
-            ));
+            )));
         }
     }
 
-    fs::rename(destination, backup)
-        .map_err(|error| format!("could not preserve existing {relative_path}: {error}"))?;
+    fs::rename(destination, backup).map_err(|error| {
+        MutationFailure::unchanged(format!(
+            "could not preserve existing {relative_path}: {error}"
+        ))
+    })?;
     match fs::rename(temporary, destination) {
         Ok(()) => fs::remove_file(backup).map_err(|error| {
-            format!(
+            MutationFailure::recoverable(format!(
                 "installed {relative_path}, but could not remove backup {}: {error}",
                 backup.display()
-            )
+            ))
         }),
         Err(install_error) => match fs::rename(backup, destination) {
-            Ok(()) => Err(format!(
+            Ok(()) => Err(MutationFailure::unchanged(format!(
                 "could not install {relative_path}: {install_error}; restored the previous destination"
-            )),
-            Err(restore_error) => Err(format!(
+            ))),
+            Err(restore_error) => Err(MutationFailure::recoverable(format!(
                 "could not install {relative_path}: {install_error}; the previous destination remains at {} because restoration failed: {restore_error}",
                 backup.display()
-            )),
+            ))),
         },
     }
 }
@@ -607,6 +670,24 @@ fn durable_state(report: &Report) -> DurableState {
     } else {
         DurableState::RecoverableIncomplete
     }
+}
+
+fn mutation_failure_state(report: &Report, failure: &MutationFailure) -> DurableState {
+    if failure.filesystem_changed {
+        DurableState::RecoverableIncomplete
+    } else {
+        durable_state(report)
+    }
+}
+
+fn is_transaction_artifact(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .is_some_and(|file_name| {
+            file_name.starts_with('.')
+                && file_name.contains(".gaap-contract-artifacts-")
+                && (file_name.ends_with(".tmp") || file_name.ends_with(".backup"))
+        })
 }
 
 fn is_managed_artifact_path(relative_path: &str) -> bool {
@@ -1024,8 +1105,48 @@ mod tests {
         )
         .expect_err("missing replacement must restore the destination");
 
-        assert!(error.contains("restored the previous destination"));
+        assert!(error.problem.contains("restored the previous destination"));
+        assert!(!error.filesystem_changed);
         assert_eq!(fs::read(&destination).unwrap(), b"old\n");
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn backup_cleanup_failure_reports_a_recoverable_incomplete_mutation() {
+        let root = TempRoot::new();
+        fs::create_dir(root.path().join("destination.json")).unwrap();
+        root.write("destination.json/keep.txt", b"old\n");
+        root.write("replacement.tmp", b"new\n");
+        let destination = root.path().join("destination.json");
+        let temporary = root.path().join("replacement.tmp");
+        let backup = root.path().join("backup.tmp");
+
+        let error =
+            replace_existing_with_backup(&temporary, &destination, &backup, "destination.json")
+                .expect_err("non-empty backup directory cannot be removed as a file");
+
+        assert!(error.problem.contains("could not remove backup"));
+        assert!(error.filesystem_changed);
+        assert_eq!(
+            mutation_failure_state(&Report::default(), &error),
+            DurableState::RecoverableIncomplete
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"new\n");
+        assert!(backup.is_dir());
+    }
+
+    #[test]
+    fn check_reports_unfinished_transaction_files() {
+        let root = TempRoot::new();
+        let transaction = "schemas/example/v0.1.0/.request.json.gaap-contract-artifacts-1-1.backup";
+        root.write(transaction, b"old\n");
+
+        let error = reconcile(root.path(), &[], Mode::Check)
+            .expect_err("unfinished transactions must fail check mode");
+
+        assert_eq!(error.phase, Phase::Inspect);
+        assert_eq!(error.state, DurableState::Unchanged);
+        assert!(error.problems[0].contains("unfinished artifact transaction"));
+        assert!(root.path().join(transaction).exists());
     }
 }
