@@ -13,7 +13,7 @@ use super::model::{
     SandboxProfileIdentity,
 };
 use super::validation::validate_protected_effect_request;
-use crate::Outcome;
+use crate::{Gate, Outcome};
 
 const STALE_SUBJECT_REASON: &str = "protected_effect.stale_subject";
 const SCHEMA_DRIFT_REASON: &str = "protected_effect.capability_schema_drift";
@@ -192,14 +192,23 @@ fn validate_status_matrix(
         EffectExecutionStatus::AwaitingAuthority => Outcome::Ask,
         EffectExecutionStatus::Denied => Outcome::Block,
     };
+    let execution_status = matches!(
+        body.execution_status,
+        EffectExecutionStatus::Executed
+            | EffectExecutionStatus::Failed
+            | EffectExecutionStatus::Interrupted
+            | EffectExecutionStatus::UnknownOutcome
+    );
+    if execution_status && body.decision.gate != Gate::Permission {
+        return Err(ContractError::new(
+            ContractErrorCode::UnauthorizedEffect,
+            "body.decision.gate",
+            "executed or attempted results require a permission decision",
+        ));
+    }
+
     if body.decision.decision.outcome != expected_outcome {
-        let code = if matches!(
-            body.execution_status,
-            EffectExecutionStatus::Executed
-                | EffectExecutionStatus::Failed
-                | EffectExecutionStatus::Interrupted
-                | EffectExecutionStatus::UnknownOutcome
-        ) {
+        let code = if execution_status {
             ContractErrorCode::UnauthorizedEffect
         } else {
             ContractErrorCode::InvalidContract
