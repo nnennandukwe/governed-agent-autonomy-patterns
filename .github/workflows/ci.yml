@@ -19,6 +19,7 @@ jobs:
     outputs:
       contract: ${{ steps.lanes.outputs.contract }}
       coordinator: ${{ steps.lanes.outputs.coordinator }}
+      runtime: ${{ steps.lanes.outputs.runtime }}
     steps:
       - name: Check out GAAP history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,6 +131,18 @@ jobs:
             evidence/run-invariant-subject-v0.1.0.json \
             /tmp/run-invariant-subject.json
 
+  runtime:
+    needs: classify
+    if: needs.classify.outputs.runtime == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check bounded Agent Run runtime
+        run: cargo test --locked --test runtime
+
   final:
     if: always()
     needs:
@@ -137,6 +150,7 @@ jobs:
       - baseline
       - contract
       - coordinator
+      - runtime
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -148,6 +162,8 @@ jobs:
           CONTRACT_RESULT: ${{ needs.contract.result }}
           COORDINATOR_SELECTED: ${{ needs.classify.outputs.coordinator }}
           COORDINATOR_RESULT: ${{ needs.coordinator.result }}
+          RUNTIME_SELECTED: ${{ needs.classify.outputs.runtime }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
@@ -161,4 +177,9 @@ jobs:
             [[ "$COORDINATOR_RESULT" == "success" ]]
           else
             [[ "$COORDINATOR_RESULT" == "skipped" ]]
+          fi
+          if [[ "$RUNTIME_SELECTED" == "true" ]]; then
+            [[ "$RUNTIME_RESULT" == "success" ]]
+          else
+            [[ "$RUNTIME_RESULT" == "skipped" ]]
           fi
