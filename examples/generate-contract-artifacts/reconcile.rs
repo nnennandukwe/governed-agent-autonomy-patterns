@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MANAGED_ROOTS: &[&str] = &["examples/contracts", "schemas"];
@@ -323,25 +323,21 @@ fn apply(
 }
 
 fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result<(), String> {
-    let destination = root.join(&snapshot.relative_path);
-    let parent = destination
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", snapshot.relative_path))?;
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "could not create {}: {error}",
-            display_relative(root, parent)
-        )
-    })?;
-    ensure_snapshot(root, snapshot)?;
+    let parent = validated_parent(root, &snapshot.relative_path, true)?;
+    let file_name = Path::new(&snapshot.relative_path)
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))?;
+    let destination = parent.join(file_name);
+    ensure_snapshot_at(&destination, snapshot)?;
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let file_name = destination
-        .file_name()
-        .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))?
-        .to_string_lossy();
+    let file_name = file_name.to_string_lossy();
     let temporary = parent.join(format!(
         ".{file_name}.gaap-contract-artifacts-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let backup = parent.join(format!(
+        ".{file_name}.gaap-contract-artifacts-{}-{sequence}.backup",
         std::process::id()
     ));
     let write_result = (|| {
@@ -374,13 +370,21 @@ fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result
             )
         })?;
         drop(file);
-        ensure_snapshot(root, snapshot)?;
-        fs::rename(&temporary, &destination).map_err(|error| {
-            format!(
-                "could not replace {} with its validated temporary file: {error}",
+        let revalidated_parent = validated_parent(root, &snapshot.relative_path, false)?;
+        if revalidated_parent != parent {
+            return Err(format!(
+                "{} parent changed after temporary-file creation; it was preserved",
                 snapshot.relative_path
-            )
-        })
+            ));
+        }
+        ensure_snapshot_at(&destination, snapshot)?;
+        replace_temporary(
+            &temporary,
+            &destination,
+            &backup,
+            snapshot.contents.is_some(),
+            &snapshot.relative_path,
+        )
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -388,15 +392,91 @@ fn replace_file(root: &Path, snapshot: &FileSnapshot, contents: &[u8]) -> Result
     write_result
 }
 
+#[cfg(not(windows))]
+fn replace_temporary(
+    temporary: &Path,
+    destination: &Path,
+    _backup: &Path,
+    _destination_exists: bool,
+    relative_path: &str,
+) -> Result<(), String> {
+    fs::rename(temporary, destination).map_err(|error| {
+        format!("could not replace {relative_path} with its validated temporary file: {error}")
+    })
+}
+
+#[cfg(windows)]
+fn replace_temporary(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    destination_exists: bool,
+    relative_path: &str,
+) -> Result<(), String> {
+    if destination_exists {
+        replace_existing_with_backup(temporary, destination, backup, relative_path)
+    } else {
+        fs::rename(temporary, destination)
+            .map_err(|error| format!("could not install missing artifact {relative_path}: {error}"))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn replace_existing_with_backup(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    relative_path: &str,
+) -> Result<(), String> {
+    match fs::symlink_metadata(backup) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(format!(
+                "could not preserve {relative_path}: backup path {} already exists",
+                backup.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not inspect backup path for {relative_path}: {error}"
+            ));
+        }
+    }
+
+    fs::rename(destination, backup)
+        .map_err(|error| format!("could not preserve existing {relative_path}: {error}"))?;
+    match fs::rename(temporary, destination) {
+        Ok(()) => fs::remove_file(backup).map_err(|error| {
+            format!(
+                "installed {relative_path}, but could not remove backup {}: {error}",
+                backup.display()
+            )
+        }),
+        Err(install_error) => match fs::rename(backup, destination) {
+            Ok(()) => Err(format!(
+                "could not install {relative_path}: {install_error}; restored the previous destination"
+            )),
+            Err(restore_error) => Err(format!(
+                "could not install {relative_path}: {install_error}; the previous destination remains at {} because restoration failed: {restore_error}",
+                backup.display()
+            )),
+        },
+    }
+}
+
 fn remove_orphan(root: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
-    ensure_snapshot(root, snapshot)?;
-    fs::remove_file(root.join(&snapshot.relative_path))
+    let parent = validated_parent(root, &snapshot.relative_path, false)?;
+    let file_name = Path::new(&snapshot.relative_path)
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))?;
+    let path = parent.join(file_name);
+    ensure_snapshot_at(&path, snapshot)?;
+    fs::remove_file(path)
         .map_err(|error| format!("could not prune {}: {error}", snapshot.relative_path))
 }
 
-fn ensure_snapshot(root: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
-    let path = root.join(&snapshot.relative_path);
-    match (&snapshot.contents, fs::symlink_metadata(&path)) {
+fn ensure_snapshot_at(path: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
+    match (&snapshot.contents, fs::symlink_metadata(path)) {
         (None, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         (None, Ok(_)) => Err(format!(
             "{} changed after inspection; concurrent work was preserved",
@@ -415,7 +495,7 @@ fn ensure_snapshot(root: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
             snapshot.relative_path
         )),
         (Some(expected), Ok(_)) => {
-            let actual = fs::read(&path).map_err(|error| {
+            let actual = fs::read(path).map_err(|error| {
                 format!(
                     "could not re-read {} before mutation: {error}",
                     snapshot.relative_path
@@ -435,6 +515,90 @@ fn ensure_snapshot(root: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
             snapshot.relative_path
         )),
     }
+}
+
+fn validated_parent(
+    root: &Path,
+    relative_path: &str,
+    create_missing: bool,
+) -> Result<PathBuf, String> {
+    if !is_managed_artifact_path(relative_path) {
+        return Err(format!(
+            "{relative_path} is outside the managed artifact roots"
+        ));
+    }
+    let relative_parent = Path::new(relative_path)
+        .parent()
+        .ok_or_else(|| format!("{relative_path} has no parent directory"))?;
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|error| format!("could not resolve repository root: {error}"))?;
+    let mut parent = root.to_path_buf();
+
+    for component in relative_parent.components() {
+        let Component::Normal(segment) = component else {
+            return Err(format!("{relative_path} has an unsafe parent component"));
+        };
+        parent.push(segment);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "{} parent is a symlink",
+                    display_relative(root, &parent)
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "{} parent is not a directory",
+                    display_relative(root, &parent)
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
+                match fs::create_dir(&parent) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "could not create {}: {error}",
+                            display_relative(root, &parent)
+                        ));
+                    }
+                }
+                let metadata = fs::symlink_metadata(&parent).map_err(|error| {
+                    format!(
+                        "could not recheck created parent {}: {error}",
+                        display_relative(root, &parent)
+                    )
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "{} parent became a symlink or non-directory",
+                        display_relative(root, &parent)
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect parent {}: {error}",
+                    display_relative(root, &parent)
+                ));
+            }
+        }
+    }
+
+    let canonical_parent = fs::canonicalize(&parent).map_err(|error| {
+        format!(
+            "could not resolve parent {}: {error}",
+            display_relative(root, &parent)
+        )
+    })?;
+    let expected_parent = canonical_root.join(relative_parent);
+    if canonical_parent != expected_parent {
+        return Err(format!(
+            "{relative_path} parent resolves through a symlink outside its catalog path"
+        ));
+    }
+    Ok(canonical_parent)
 }
 
 fn durable_state(report: &Report) -> DurableState {
@@ -758,5 +922,110 @@ mod tests {
             fs::read(root.path().join("outside.json")).unwrap(),
             b"outside\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_symlink_inserted_after_inspection_cannot_redirect_a_write() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempRoot::new();
+        let relative_path = "schemas/example/v0.1.0/request.json";
+        root.write(relative_path, b"old\n");
+        let artifacts = [artifact(relative_path, b"new\n")];
+        let inspection = inspect(root.path(), &artifacts).expect("inspection should succeed");
+
+        let original_parent = root.path().join("schemas/example/v0.1.0");
+        let preserved_parent = root.path().join("preserved-parent");
+        fs::rename(&original_parent, &preserved_parent).expect("parent should move");
+        root.write("outside/request.json", b"old\n");
+        symlink(root.path().join("outside"), &original_parent)
+            .expect("replacement parent symlink should be created");
+
+        let error = apply(root.path(), &artifacts, inspection)
+            .expect_err("parent symlink must stop reconciliation");
+
+        assert_eq!(error.phase, Phase::Commit);
+        assert_eq!(error.state, DurableState::Unchanged);
+        assert!(error.problems[0].contains("symlink"));
+        assert_eq!(
+            fs::read(root.path().join("outside/request.json")).unwrap(),
+            b"old\n"
+        );
+        assert_eq!(
+            fs::read(preserved_parent.join("request.json")).unwrap(),
+            b"old\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_symlink_inserted_after_inspection_cannot_redirect_pruning() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempRoot::new();
+        let relative_path = "schemas/example/v0.1.0/orphan.json";
+        root.write(relative_path, b"orphan\n");
+        let inspection = inspect(root.path(), &[]).expect("inspection should succeed");
+
+        let original_parent = root.path().join("schemas/example/v0.1.0");
+        let preserved_parent = root.path().join("preserved-parent");
+        fs::rename(&original_parent, &preserved_parent).expect("parent should move");
+        root.write("outside/orphan.json", b"orphan\n");
+        symlink(root.path().join("outside"), &original_parent)
+            .expect("replacement parent symlink should be created");
+
+        let error =
+            apply(root.path(), &[], inspection).expect_err("parent symlink must stop pruning");
+
+        assert_eq!(error.phase, Phase::Prune);
+        assert_eq!(error.state, DurableState::Unchanged);
+        assert!(error.problems[0].contains("symlink"));
+        assert_eq!(
+            fs::read(root.path().join("outside/orphan.json")).unwrap(),
+            b"orphan\n"
+        );
+        assert_eq!(
+            fs::read(preserved_parent.join("orphan.json")).unwrap(),
+            b"orphan\n"
+        );
+    }
+
+    #[test]
+    fn windows_style_replacement_installs_the_new_file_and_removes_its_backup() {
+        let root = TempRoot::new();
+        root.write("destination.json", b"old\n");
+        root.write("replacement.tmp", b"new\n");
+        let destination = root.path().join("destination.json");
+        let temporary = root.path().join("replacement.tmp");
+        let backup = root.path().join("backup.tmp");
+
+        replace_existing_with_backup(&temporary, &destination, &backup, "destination.json")
+            .expect("replacement should succeed");
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new\n");
+        assert!(!temporary.exists());
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn windows_style_replacement_restores_the_existing_file_when_installation_fails() {
+        let root = TempRoot::new();
+        root.write("destination.json", b"old\n");
+        let destination = root.path().join("destination.json");
+        let missing_temporary = root.path().join("missing.tmp");
+        let backup = root.path().join("backup.tmp");
+
+        let error = replace_existing_with_backup(
+            &missing_temporary,
+            &destination,
+            &backup,
+            "destination.json",
+        )
+        .expect_err("missing replacement must restore the destination");
+
+        assert!(error.contains("restored the previous destination"));
+        assert_eq!(fs::read(&destination).unwrap(), b"old\n");
+        assert!(!backup.exists());
     }
 }
