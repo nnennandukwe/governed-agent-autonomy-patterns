@@ -14,7 +14,7 @@ persistence, signing, sandbox enforcement, or ThreadLoop integration.
 | Path or interface | Current behavior | Developer use |
 | --- | --- | --- |
 | [`RunCoordinator::evaluate(gate, input)`](./src/lib.rs) | Accepts a typed `Gate` and normalized JSON input, then returns an `allow`, `ask`, or `block` decision with a code and effects. | Put one deterministic decision module behind future provider, tool, and runtime adapters. |
-| [`gaap::runtime`](./src/runtime.rs) | Runs one bounded Agent Run through plan, permission, tool-trust, runtime, workflow, execution, and verification ports, then seals exactly one Terminal Run Receipt. | Test runtime lifecycle behavior without provider SDKs, persistence, or real sandbox/executor integrations. |
+| [`gaap::runtime`](./src/runtime.rs) | Runs one bounded Agent Run through plan, runtime-owned permission/tool-trust/runtime gates, workflow, execution, and verification ports, then seals exactly one Terminal Run Receipt. | Test runtime lifecycle behavior without provider SDKs, persistence, or real sandbox/executor integrations. |
 | [`gaap::contracts`](./src/contracts) | Defines and validates provider-neutral Agent Run and Protected Effect `0.1.0` contracts. | Parse, canonicalize, validate, seal, and verify immutable contract values without importing provider SDK types. |
 | [`gaap::contracts::protected_effect`](./src/contracts/protected_effect) | Defines typed effect scopes, request binding, result-state invariants, evidence references, and replay/tamper checks. It performs no effect or policy evaluation. | Integrate a future executor at one small contract seam while keeping `RunCoordinator` authoritative. |
 | [`schemas/agent-run/v0.1.0`](./schemas/agent-run/v0.1.0) | Freezes Draft 2020-12 request and receipt schemas with strict fields, versions, enums, digests, and safe integers. | Generate or validate cross-language contract documents. |
@@ -53,12 +53,13 @@ Implemented and tested now:
 - fail-closed decision/status, observed-identity, drift, evidence, and
   non-execution invariants;
 - a Rust `gaap::runtime` engine around `RunCoordinator` with narrow agent,
-  executor, and verifier ports;
-- runtime-only trusted capability support for the `ToolTrust` gate without
-  changing the frozen `0.1.0` contracts;
+  executor, and verifier ports plus explicit port usage accounting;
+- runtime-only support for trusted capabilities, permission policy, overage
+  approvals, verifier identities, and effect usage estimates without changing
+  the frozen `0.1.0` contracts;
 - deterministic protected-effect execution through test executor ports,
-  one-shot ask blocking, unknown-outcome separation, interruption evidence, and
-  stale-verification rejection;
+  one-shot ask blocking, duplicate-effect rejection, unknown-outcome
+  separation, interruption evidence, and stale-verification rejection;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
