@@ -4,15 +4,17 @@ GAAP is a Rust library and CLI that evaluates normalized plan, permission,
 tool-trust, verification, runtime, mutation, and completion decisions for an
 agent run.
 
-The current executable slice provides the integrity coordinator that a future
-agent loop will call before protected effects. It does not yet execute models,
-tools, repository mutations, sandboxes, or verifiers.
+The current executable slice provides the integrity coordinator, frozen
+contracts, and a deterministic Rust runtime that calls explicit adapter ports
+before protected effects. It does not yet include provider adapters,
+persistence, signing, sandbox enforcement, or ThreadLoop integration.
 
 ## Current Interfaces And Evidence
 
 | Path or interface | Current behavior | Developer use |
 | --- | --- | --- |
 | [`RunCoordinator::evaluate(gate, input)`](./src/lib.rs) | Accepts a typed `Gate` and normalized JSON input, then returns an `allow`, `ask`, or `block` decision with a code and effects. | Put one deterministic decision module behind future provider, tool, and runtime adapters. |
+| [`gaap::runtime`](./src/runtime.rs) | Runs one bounded Agent Run through plan, runtime-owned permission/tool-trust/runtime gates, workflow, execution, and verification ports, then seals exactly one Terminal Run Receipt. | Test runtime lifecycle behavior without provider SDKs, persistence, or real sandbox/executor integrations. |
 | [`gaap::contracts`](./src/contracts) | Defines and validates provider-neutral Agent Run and Protected Effect `0.1.0` contracts. | Parse, canonicalize, validate, seal, and verify immutable contract values without importing provider SDK types. |
 | [`gaap::contracts::protected_effect`](./src/contracts/protected_effect) | Defines typed effect scopes, request binding, result-state invariants, evidence references, and replay/tamper checks. It performs no effect or policy evaluation. | Integrate a future executor at one small contract seam while keeping `RunCoordinator` authoritative. |
 | [`schemas/agent-run/v0.1.0`](./schemas/agent-run/v0.1.0) | Freezes Draft 2020-12 request and receipt schemas with strict fields, versions, enums, digests, and safe integers. | Generate or validate cross-language contract documents. |
@@ -34,7 +36,7 @@ GAAP does not import or vendor RunInvariant.
 Implemented and tested now:
 
 - a Rust `RunCoordinator` with one public evaluation interface;
-- plan approval bound to the exact plan digest;
+- plan approval bound to the exact subject digest;
 - deny precedence and explicit approval for risky or unknown actions;
 - capability approval bound to an exact capability digest;
 - independent, subject-bound, evidence-bearing verification;
@@ -50,6 +52,14 @@ Implemented and tested now:
 - parent-bound request digests and sealed, replay-resistant result digests;
 - fail-closed decision/status, observed-identity, drift, evidence, and
   non-execution invariants;
+- a Rust `gaap::runtime` engine around `RunCoordinator` with narrow agent,
+  executor, and verifier ports plus explicit port usage accounting;
+- runtime-only support for trusted capabilities, permission policy, overage
+  approvals, verifier identities, and effect usage estimates without changing
+  the frozen `0.1.0` contracts;
+- deterministic protected-effect execution through test executor ports,
+  one-shot ask blocking, duplicate-effect rejection, unknown-outcome
+  separation, interruption evidence, and stale-verification rejection;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
@@ -57,13 +67,13 @@ Implemented and tested now:
 
 Not implemented yet:
 
-- a bounded or open-ended model and tool execution loop;
 - OpenAI, Anthropic, MCP, or other provider adapters;
-- Protected Effect execution, retry orchestration, reconciliation, or
-  persistence;
+- production Protected Effect executor adapters, retry orchestration,
+  reconciliation, or persistence;
 - repository mutation interception;
 - approval persistence, revocation, or delegated authority;
-- sandbox, budget-meter, verifier, or evidence-ledger adapters; and
+- sandbox, budget-meter, verifier, or evidence-ledger adapters beyond the Rust
+  test ports; and
 - crash recovery or resumable run state.
 
 The conformance packet proves normalized decision compatibility for the frozen
@@ -126,14 +136,16 @@ RunInvariant commit and fails if the packet changes.
 
 ## Architecture Direction
 
-The `RunCoordinator` is the deep module at the integrity seam. Both the
-RunInvariant adapter and the future agent loop call the same interface; neither
+The `RunCoordinator` is the deep module at the integrity seam. The RunInvariant
+adapter and the bounded runtime call the same interface; neither
 provider-specific message types nor transport details enter the coordinator.
 
-The next runtime slice must own lifecycle advancement around the coordinator:
-plan, authorize mutation, execute through explicit adapters, account for
-resources, obtain independent verification for the current artifact digest,
-and authorize completion only if no later mutation invalidated that evidence.
+The runtime owns lifecycle advancement around the coordinator: plan, authorize
+mutation, execute through explicit adapters, account for resources, obtain
+independent verification for the current artifact digest, and authorize
+completion only if no later mutation invalidated that evidence. Future adapter
+slices can bind that runtime to providers, sandboxes, persistence, and
+ThreadLoop without changing the frozen `0.1.0` contracts.
 
 Architecture decisions:
 
@@ -141,6 +153,7 @@ Architecture decisions:
 - [`0002: Use an external conformance seam`](./docs/adr/0002-run-invariant-process-seam.md)
 - [`0003: Freeze the Agent Run contract as canonical evidence`](./docs/adr/0003-freeze-agent-run-contract.md)
 - [`0004: Separate Protected Effect contracts from execution`](./docs/adr/0004-protected-effect-contract-boundary.md)
+- [`0005: Add a bounded Agent Run engine`](./docs/adr/0005-bounded-agent-run-engine.md)
 
 The normative contract guide is
 [`Agent Run Contract 0.1.0`](./docs/contracts/agent-run-v0.1.md). Contract
@@ -150,7 +163,7 @@ interoperability, not producer authenticity.
 The inner effect boundary is defined by
 [`Protected Effect Contract 0.1.0`](./docs/contracts/protected-effect-v0.1.md).
 Its validators check contract consistency; they do not replace
-`RunCoordinator`, execute effects, or implement the bounded runtime.
+`RunCoordinator` or grant effect authority.
 
 ## Pattern Library
 
