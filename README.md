@@ -80,10 +80,13 @@ cd governed-agent-autonomy-patterns
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
-cargo run --locked --example generate-contract-schemas -- --check
-cargo run --locked --example generate-contract-examples -- --check
-cargo run --locked --example generate-protected-effect-examples -- --check
+cargo run --locked --example generate-contract-artifacts -- --check
 ```
+
+Schemas and examples are registered in one typed catalog. To intentionally
+reconcile all managed artifacts under `schemas/` and `examples/contracts/`, run
+`cargo run --locked --example generate-contract-artifacts`, review the diff,
+then rerun the command with `--check`.
 
 Inspect the CLI:
 

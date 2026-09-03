@@ -1,118 +1,61 @@
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-
 use gaap::contracts::{
     AGENT_RUN_REQUEST_SCHEMA, AgentRunRequest, AgentRunStatus, ApprovalReference,
     CapabilityIdentity, ContractSupport, EvidenceReference, EvidenceType, PolicyIdentity,
     ResourceBudget, ResourceUsage, RunEvent, Subject, SubjectKind, TERMINAL_RUN_RECEIPT_SCHEMA,
     TaskSpec, TerminalRunReceipt, TerminalRunReceiptBody, VerificationIndependence,
     VerificationRequirement, VerificationVerdict, seal_terminal_receipt, validate_request,
-    verify_terminal_receipt,
 };
 use gaap::{Decision, Gate, Outcome};
 use serde::Serialize;
 
-const DIRECTORY: &str = "examples/contracts/v0.1.0";
+use super::catalog::{AGENT_RUN_REQUEST_EXAMPLE_PATH, ArtifactStore, BuiltArtifact};
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("contract example generation failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
+pub(crate) fn build_request(_: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    serialize(&request())
 }
 
-fn run() -> Result<(), String> {
-    let arguments: Vec<String> = env::args().skip(1).collect();
-    let check = match arguments.as_slice() {
-        [] => false,
-        [argument] if argument == "--check" => true,
-        _ => {
-            return Err(
-                "usage: cargo run --locked --example generate-contract-examples -- [--check]"
-                    .to_owned(),
-            );
-        }
-    };
+pub(crate) fn build_completed(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, completed)
+}
 
-    let request = request();
-    let support = ContractSupport::new([policy()]);
+pub(crate) fn build_blocked(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, blocked)
+}
+
+pub(crate) fn build_failed(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, failed)
+}
+
+pub(crate) fn build_interrupted(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, interrupted)
+}
+
+pub(crate) fn build_budget_exhausted(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, budget_exhausted)
+}
+
+pub(crate) fn build_denied_effect(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, denied_effect)
+}
+
+pub(crate) fn build_stale_verification(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_receipt(store, stale_verification)
+}
+
+fn build_receipt(
+    store: &ArtifactStore,
+    builder: fn(&AgentRunRequest, &ContractSupport, &str) -> Result<TerminalRunReceipt, String>,
+) -> Result<BuiltArtifact, String> {
+    let request: AgentRunRequest =
+        serde_json::from_value(store.get(AGENT_RUN_REQUEST_EXAMPLE_PATH)?.clone())
+            .map_err(|error| format!("could not decode in-memory Agent Run request: {error}"))?;
+    let support = ContractSupport::new(request.policies.clone());
     let request_digest = validate_request(&request, &support).map_err(|error| error.to_string())?;
-    let receipts = [
-        (
-            "completed.json",
-            completed(&request, &support, &request_digest)?,
-        ),
-        (
-            "blocked.json",
-            blocked(&request, &support, &request_digest)?,
-        ),
-        ("failed.json", failed(&request, &support, &request_digest)?),
-        (
-            "interrupted.json",
-            interrupted(&request, &support, &request_digest)?,
-        ),
-        (
-            "budget-exhausted.json",
-            budget_exhausted(&request, &support, &request_digest)?,
-        ),
-        (
-            "denied-effect.json",
-            denied_effect(&request, &support, &request_digest)?,
-        ),
-        (
-            "stale-verification.json",
-            stale_verification(&request, &support, &request_digest)?,
-        ),
-    ];
-
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    materialize(&root, "agent-run-request.json", &request, check)?;
-    for (file_name, receipt) in receipts {
-        verify_terminal_receipt(&request, &support, &receipt)
-            .map_err(|error| format!("{file_name} does not verify: {error}"))?;
-        materialize(&root, file_name, &receipt, check)?;
-    }
-    Ok(())
+    serialize(&builder(&request, &support, &request_digest)?)
 }
 
-fn materialize<T: Serialize>(
-    root: &Path,
-    file_name: &str,
-    value: &T,
-    check: bool,
-) -> Result<(), String> {
-    let relative_path = format!("{DIRECTORY}/{file_name}");
-    let path = root.join(&relative_path);
-    let contents = format!(
-        "{}\n",
-        serde_json::to_string_pretty(value)
-            .map_err(|error| format!("could not serialize {relative_path}: {error}"))?
-    );
-    if check {
-        let actual = fs::read_to_string(&path)
-            .map_err(|error| format!("could not read {relative_path}: {error}"))?;
-        if actual != contents {
-            return Err(format!(
-                "{relative_path} is stale; run `cargo run --locked --example generate-contract-examples`"
-            ));
-        }
-        println!("example is current: {relative_path}");
-    } else {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("example path has no parent: {relative_path}"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-        fs::write(&path, contents)
-            .map_err(|error| format!("could not write {relative_path}: {error}"))?;
-        println!("wrote example: {relative_path}");
-    }
-    Ok(())
+fn serialize(value: &impl Serialize) -> Result<BuiltArtifact, String> {
+    BuiltArtifact::serialize(value)
 }
 
 fn digest(byte: char) -> String {

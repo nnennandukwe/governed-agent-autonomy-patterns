@@ -1,8 +1,3 @@
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-
 use gaap::contracts::{
     AgentRunRequest, ApprovalReference, ContractSupport, EffectClass, EffectEvidenceReference,
     EffectEvidenceType, EffectExecutionStatus, EffectExit, EffectUsage, EvidenceReference,
@@ -10,94 +5,87 @@ use gaap::contracts::{
     OperationFamily, PROTECTED_EFFECT_REQUEST_SCHEMA, PROTECTED_EFFECT_RESULT_SCHEMA,
     ProtectedEffectDecision, ProtectedEffectRequest, ProtectedEffectResult,
     ProtectedEffectResultBody, Repeatability, RequestedScope, SandboxProfileIdentity,
-    canonical_resource_budget_digest, parse_agent_run_request_json, seal_protected_effect_result,
-    validate_protected_effect_request, verify_protected_effect_result,
+    canonical_resource_budget_digest, seal_protected_effect_result,
+    validate_protected_effect_request,
 };
 use gaap::{Decision, Gate, Outcome};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const AGENT_RUN_REQUEST_PATH: &str = "examples/contracts/v0.1.0/agent-run-request.json";
-const DIRECTORY: &str = "examples/contracts/protected-effect/v0.1.0";
+use super::catalog::{
+    AGENT_RUN_REQUEST_EXAMPLE_PATH, ArtifactStore, BuiltArtifact,
+    PROTECTED_EFFECT_REQUEST_EXAMPLE_PATH,
+};
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("protected effect example generation failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
+pub(crate) fn build_request(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    let agent_run_request = agent_run_request(store)?;
+    serialize(&protected_effect_request(&agent_run_request)?)
 }
 
-fn run() -> Result<(), String> {
-    let arguments: Vec<String> = env::args().skip(1).collect();
-    let check = match arguments.as_slice() {
-        [] => false,
-        [argument] if argument == "--check" => true,
-        _ => {
-            return Err(
-                "usage: cargo run --locked --example generate-protected-effect-examples -- [--check]"
-                    .to_owned(),
-            );
-        }
-    };
+pub(crate) fn build_completed(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, completed)
+}
 
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let agent_run_request = read_agent_run_request(&root)?;
+pub(crate) fn build_denied(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, denied)
+}
+
+pub(crate) fn build_awaiting_authority(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, awaiting_authority)
+}
+
+pub(crate) fn build_failed(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, failed)
+}
+
+pub(crate) fn build_interrupted(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, interrupted)
+}
+
+pub(crate) fn build_stale_subject(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, stale_subject)
+}
+
+pub(crate) fn build_schema_drift(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, schema_drift)
+}
+
+pub(crate) fn build_unknown_outcome(store: &ArtifactStore) -> Result<BuiltArtifact, String> {
+    build_result(store, unknown_outcome)
+}
+
+fn build_result(
+    store: &ArtifactStore,
+    builder: fn(
+        &AgentRunRequest,
+        &ContractSupport,
+        &ProtectedEffectRequest,
+        &str,
+    ) -> Result<ProtectedEffectResult, String>,
+) -> Result<BuiltArtifact, String> {
+    let agent_run_request = agent_run_request(store)?;
+    let request: ProtectedEffectRequest = serde_json::from_value(
+        store.get(PROTECTED_EFFECT_REQUEST_EXAMPLE_PATH)?.clone(),
+    )
+    .map_err(|error| format!("could not decode in-memory Protected Effect request: {error}"))?;
     let support = ContractSupport::new(agent_run_request.policies.clone());
-    let request = protected_effect_request(&agent_run_request)?;
     let request_digest = validate_protected_effect_request(&agent_run_request, &support, &request)
         .map_err(|error| error.to_string())?;
-    let results = [
-        (
-            "completed.json",
-            completed(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "denied.json",
-            denied(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "awaiting-authority.json",
-            awaiting_authority(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "failed.json",
-            failed(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "interrupted.json",
-            interrupted(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "stale-subject.json",
-            stale_subject(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "schema-drift.json",
-            schema_drift(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-        (
-            "unknown-outcome.json",
-            unknown_outcome(&agent_run_request, &support, &request, &request_digest)?,
-        ),
-    ];
-
-    materialize(&root, "protected-effect-request.json", &request, check)?;
-    for (file_name, result) in results {
-        verify_protected_effect_result(&agent_run_request, &support, &request, &result)
-            .map_err(|error| format!("{file_name} does not verify: {error}"))?;
-        materialize(&root, file_name, &result, check)?;
-    }
-    Ok(())
+    serialize(&builder(
+        &agent_run_request,
+        &support,
+        &request,
+        &request_digest,
+    )?)
 }
 
-fn read_agent_run_request(root: &Path) -> Result<AgentRunRequest, String> {
-    let bytes = fs::read(root.join(AGENT_RUN_REQUEST_PATH))
-        .map_err(|error| format!("could not read {AGENT_RUN_REQUEST_PATH}: {error}"))?;
-    parse_agent_run_request_json(&bytes)
-        .map_err(|error| format!("{AGENT_RUN_REQUEST_PATH} is invalid: {error}"))
+fn agent_run_request(store: &ArtifactStore) -> Result<AgentRunRequest, String> {
+    serde_json::from_value(store.get(AGENT_RUN_REQUEST_EXAMPLE_PATH)?.clone())
+        .map_err(|error| format!("could not decode in-memory Agent Run request: {error}"))
+}
+
+fn serialize(value: &impl Serialize) -> Result<BuiltArtifact, String> {
+    BuiltArtifact::serialize(value)
 }
 
 fn protected_effect_request(
@@ -470,41 +458,6 @@ fn seal(
 ) -> Result<ProtectedEffectResult, String> {
     seal_protected_effect_result(agent_run_request, support, request, body)
         .map_err(|error| error.to_string())
-}
-
-fn materialize<T: Serialize>(
-    root: &Path,
-    file_name: &str,
-    value: &T,
-    check: bool,
-) -> Result<(), String> {
-    let relative_path = format!("{DIRECTORY}/{file_name}");
-    let path = root.join(&relative_path);
-    let contents = format!(
-        "{}\n",
-        serde_json::to_string_pretty(value)
-            .map_err(|error| format!("could not serialize {relative_path}: {error}"))?
-    );
-    if check {
-        let actual = fs::read_to_string(&path)
-            .map_err(|error| format!("could not read {relative_path}: {error}"))?;
-        if actual != contents {
-            return Err(format!(
-                "{relative_path} is stale; run `cargo run --locked --example generate-protected-effect-examples`"
-            ));
-        }
-        println!("example is current: {relative_path}");
-    } else {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("example path has no parent: {relative_path}"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-        fs::write(&path, contents)
-            .map_err(|error| format!("could not write {relative_path}: {error}"))?;
-        println!("wrote example: {relative_path}");
-    }
-    Ok(())
 }
 
 fn digest(byte: char) -> String {

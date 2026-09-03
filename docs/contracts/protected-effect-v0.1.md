@@ -234,8 +234,6 @@ ledger in a later phase.
 ## Reproduce The Artifacts
 
 ```bash
-cargo run --locked --example generate-contract-schemas -- --check
-cargo run --locked --example generate-contract-examples -- --check
-cargo run --locked --example generate-protected-effect-examples -- --check
-cargo test --locked --test protected_effect_contracts --test schema_contracts
+cargo run --locked --example generate-contract-artifacts -- --check
+cargo test --locked --test protected_effect_contracts
 ```
