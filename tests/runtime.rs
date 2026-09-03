@@ -1442,13 +1442,13 @@ fn attempted_result_uses_trusted_executor_identity() {
 }
 
 #[test]
-fn missing_observed_sandbox_fails_closed_without_fabricated_result() {
+fn missing_observed_sandbox_records_attempted_mutation() {
     let run_request = request();
     let support = support();
     let effect = effect_request(&run_request, &support, 1);
     let post_subject = subject(digest(b'e'));
     let calls = Rc::new(RefCell::new(Vec::new()));
-    let mut observation = executed_observation(post_subject);
+    let mut observation = executed_observation(post_subject.clone());
     observation.sandbox_profile = None;
 
     let execution = run_with(
@@ -1472,10 +1472,119 @@ fn missing_observed_sandbox_fails_closed_without_fabricated_result() {
         execution.receipt.body.terminal_reason,
         "protected_effect.untrusted_sandbox"
     );
-    assert!(execution.protected_effect_results.is_empty());
+    assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
     assert_eq!(execution.receipt.body.usage.cost_micros, 10);
+    assert_eq!(execution.protected_effect_results.len(), 1);
+    assert_eq!(
+        execution.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(
+        execution.protected_effect_results[0]
+            .body
+            .observed_post_effect_subject,
+        Some(post_subject.clone())
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.sandbox_profile,
+        Some(effect.sandbox_profile.clone())
+    );
+    assert!(
+        execution.protected_effect_results[0]
+            .body
+            .evidence
+            .iter()
+            .any(|item| item.evidence_type == EffectEvidenceType::UnknownOutcome)
+    );
+    assert_eq!(
+        execution.receipt.body.resulting_subject_digest,
+        post_subject.digest
+    );
+    assert!(
+        execution
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolExecution { .. }))
+    );
+    assert!(execution.receipt.body.events.iter().any(|event| matches!(
+        event,
+        RunEvent::Mutation {
+            after_subject_digest,
+            ..
+        } if after_subject_digest == &post_subject.digest
+    )));
 
     verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(
+        &run_request,
+        &support,
+        &effect,
+        &execution.protected_effect_results[0],
+    )
+    .unwrap();
+}
+
+#[test]
+fn mismatched_observed_sandbox_records_attempted_mutation() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let post_subject = subject(digest(b'e'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = executed_observation(post_subject.clone());
+    observation.sandbox_profile = Some(SandboxProfileIdentity {
+        name: "different-sandbox".to_string(),
+        version: "0.1.0".to_string(),
+        digest: digest(b'f'),
+    });
+
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                effect.clone(),
+            ))))],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&run_request.subject.digest)),
+    );
+
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "protected_effect.untrusted_sandbox"
+    );
+    assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
+    assert_eq!(
+        execution.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(
+        execution.protected_effect_results[0]
+            .body
+            .observed_post_effect_subject,
+        Some(post_subject.clone())
+    );
+    assert_eq!(
+        execution.receipt.body.resulting_subject_digest,
+        post_subject.digest
+    );
+
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(
+        &run_request,
+        &support,
+        &effect,
+        &execution.protected_effect_results[0],
+    )
+    .unwrap();
 }
 
 #[test]

@@ -711,7 +711,42 @@ where
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
         }
         if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
-            let _usage_reason = ledger.record_effect_usage(&observation.usage);
+            let effect_result = self.untrusted_sandbox_result(
+                &ledger,
+                &proposal.request,
+                &effect_digest,
+                ProtectedEffectDecision {
+                    decision_id: permission_decision_id.clone(),
+                    gate: Gate::Permission,
+                    effect_request_digest: effect_digest.clone(),
+                    subject_digest: ledger.current_subject.digest.clone(),
+                    decision: permission_decision,
+                },
+                observation,
+            )?;
+            ledger.accept_effect_identity(&proposal.request, &effect_digest);
+            ledger.tool_execution(
+                &permission_decision_id,
+                &effect_digest,
+                &proposal.request.capability.digest,
+                &effect_result,
+            );
+            if let Some(post_subject) = effect_result.body.observed_post_effect_subject.clone() {
+                if proposal.request.expected_effect_class == EffectClass::Mutation {
+                    let workflow_decision_id = workflow_decision_id
+                        .as_deref()
+                        .expect("mutation effects require a workflow decision");
+                    ledger.mutation(
+                        workflow_decision_id,
+                        &effect_digest,
+                        &post_subject.digest,
+                        &effect_result.body.evidence,
+                    );
+                    ledger.current_subject = post_subject;
+                }
+            }
+            let _usage_reason = ledger.record_effect_usage(&effect_result.body.usage);
+            ledger.effect_results.push(effect_result);
             return self
                 .finish(
                     ledger,
@@ -960,6 +995,89 @@ where
             sandbox_profile: None,
             reason: Some(outcome.reason),
             evidence: outcome.evidence,
+        };
+        seal_protected_effect_result(
+            &ledger.request,
+            self.support.contract_support(),
+            request,
+            body,
+        )
+        .map_err(RuntimeError::ProtectedEffectResult)
+    }
+
+    fn untrusted_sandbox_result(
+        &self,
+        ledger: &Ledger,
+        request: &ProtectedEffectRequest,
+        effect_digest: &str,
+        decision: ProtectedEffectDecision,
+        observation: ExecutorObservation,
+    ) -> Result<ProtectedEffectResult, RuntimeError> {
+        let mut evidence = observation.evidence;
+        evidence.retain(|reference| {
+            !matches!(
+                reference.evidence_type,
+                EffectEvidenceType::Failure | EffectEvidenceType::Interruption
+            )
+        });
+        ensure_effect_evidence(&mut evidence, EffectEvidenceType::Executor, "executor");
+        ensure_effect_evidence(
+            &mut evidence,
+            EffectEvidenceType::Sandbox,
+            "untrusted-sandbox",
+        );
+        ensure_effect_evidence(&mut evidence, EffectEvidenceType::Usage, "usage");
+        ensure_effect_evidence(
+            &mut evidence,
+            EffectEvidenceType::UnknownOutcome,
+            "untrusted-sandbox-unknown-outcome",
+        );
+        if observation.observed_post_effect_subject.is_some() {
+            ensure_effect_evidence(
+                &mut evidence,
+                EffectEvidenceType::SubjectObservation,
+                "untrusted-sandbox-subject",
+            );
+            if request.expected_effect_class == EffectClass::Mutation {
+                ensure_effect_evidence(
+                    &mut evidence,
+                    EffectEvidenceType::Mutation,
+                    "untrusted-sandbox-mutation",
+                );
+                ensure_effect_evidence(
+                    &mut evidence,
+                    EffectEvidenceType::Artifact,
+                    "untrusted-sandbox-artifact",
+                );
+            }
+        }
+
+        let reason = observation
+            .reason
+            .filter(|reason| !reason.trim().is_empty())
+            .map_or_else(
+                || "protected_effect.untrusted_sandbox".to_string(),
+                |reason| format!("protected_effect.untrusted_sandbox: {reason}"),
+            );
+        let body = ProtectedEffectResultBody {
+            schema_version: PROTECTED_EFFECT_RESULT_SCHEMA.to_owned(),
+            effect_id: request.effect_id.clone(),
+            effect_sequence: request.effect_sequence,
+            run_id: request.run_id.clone(),
+            agent_run_request_digest: request.agent_run_request_digest.clone(),
+            effect_request_digest: effect_digest.to_owned(),
+            observed_pre_effect_subject: ledger.current_subject.clone(),
+            observed_capability: request.capability.clone(),
+            observed_tool_schema_digest: request.tool_schema_digest.clone(),
+            decision,
+            execution_status: EffectExecutionStatus::UnknownOutcome,
+            observed_post_effect_subject: observation.observed_post_effect_subject,
+            exit: None,
+            usage: observation.usage,
+            executor: Some(self.config.executor_identity.clone()),
+            sandbox_profile: Some(request.sandbox_profile.clone()),
+            reason: Some(reason),
+            evidence,
         };
         seal_protected_effect_result(
             &ledger.request,
@@ -1657,6 +1775,19 @@ fn runtime_effect_evidence(
         evidence_type,
         digest: digest_bytes(format!("gaap:runtime/effect-evidence:{label}").as_bytes()),
         locator: Some(format!("gaap:runtime/{label}")),
+    }
+}
+
+fn ensure_effect_evidence(
+    evidence: &mut Vec<EffectEvidenceReference>,
+    evidence_type: EffectEvidenceType,
+    label: &str,
+) {
+    if !evidence
+        .iter()
+        .any(|reference| reference.evidence_type == evidence_type)
+    {
+        evidence.push(runtime_effect_evidence(evidence_type, label));
     }
 }
 
