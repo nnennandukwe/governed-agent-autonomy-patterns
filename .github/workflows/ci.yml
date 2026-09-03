@@ -13,7 +13,54 @@ env:
   RUN_INVARIANT_COMMIT: e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44
 
 jobs:
-  test:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      contract: ${{ steps.lanes.outputs.contract }}
+      coordinator: ${{ steps.lanes.outputs.coordinator }}
+    steps:
+      - name: Check out GAAP history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select risk-scoped lanes
+        id: lanes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+            head_sha="$PR_HEAD_SHA"
+          else
+            base_sha="$PUSH_BASE_SHA"
+            head_sha="$PUSH_HEAD_SHA"
+          fi
+
+          zero_sha="0000000000000000000000000000000000000000"
+          lanes=""
+          if [[ -n "$base_sha" && "$base_sha" != "$zero_sha" ]] \
+            && git cat-file -e "$base_sha^{commit}" \
+            && git cat-file -e "$head_sha^{commit}"; then
+            if changed_paths="$(git diff --name-only --no-renames "$base_sha" "$head_sha")"; then
+              mapfile -t paths <<< "$changed_paths"
+              if ! lanes="$(bash .github/scripts/select-ci-lanes.sh "${paths[@]}")"; then
+                lanes="$(bash .github/scripts/select-ci-lanes.sh --uncertain)"
+              fi
+            fi
+          fi
+          if [[ -z "$lanes" ]]; then
+            lanes="$(bash .github/scripts/select-ci-lanes.sh --uncertain)"
+          fi
+          printf '%s\n' "$lanes" | tee -a "$GITHUB_OUTPUT"
+
+  baseline:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,6 +75,36 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --locked
+
+      - name: Build subject binary
+        run: cargo build --locked
+
+  contract:
+    needs: classify
+    if: needs.classify.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check generated contract artifacts
+        run: cargo run --locked --example generate-contract-artifacts -- --check
+
+      - name: Check Agent Run enum consumers and invariants
+        run: cargo test --locked --test contracts
+
+      - name: Check Protected Effect enum consumers and invariants
+        run: cargo test --locked --test protected_effect_contracts
+
+  coordinator:
+    needs: classify
+    if: needs.classify.outputs.coordinator == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build subject binary
         run: cargo build --locked
@@ -52,3 +129,36 @@ jobs:
           diff -u \
             evidence/run-invariant-subject-v0.1.0.json \
             /tmp/run-invariant-subject.json
+
+  final:
+    if: always()
+    needs:
+      - classify
+      - baseline
+      - contract
+      - coordinator
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected lane to succeed
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          BASELINE_RESULT: ${{ needs.baseline.result }}
+          CONTRACT_SELECTED: ${{ needs.classify.outputs.contract }}
+          CONTRACT_RESULT: ${{ needs.contract.result }}
+          COORDINATOR_SELECTED: ${{ needs.classify.outputs.coordinator }}
+          COORDINATOR_RESULT: ${{ needs.coordinator.result }}
+        run: |
+          set -euo pipefail
+          [[ "$CLASSIFY_RESULT" == "success" ]]
+          [[ "$BASELINE_RESULT" == "success" ]]
+          if [[ "$CONTRACT_SELECTED" == "true" ]]; then
+            [[ "$CONTRACT_RESULT" == "success" ]]
+          else
+            [[ "$CONTRACT_RESULT" == "skipped" ]]
+          fi
+          if [[ "$COORDINATOR_SELECTED" == "true" ]]; then
+            [[ "$COORDINATOR_RESULT" == "success" ]]
+          else
+            [[ "$COORDINATOR_RESULT" == "skipped" ]]
+          fi
