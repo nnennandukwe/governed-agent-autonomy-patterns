@@ -13,7 +13,7 @@ use super::model::{
     SandboxProfileIdentity,
 };
 use super::validation::validate_protected_effect_request;
-use crate::Outcome;
+use crate::{Gate, Outcome};
 
 const STALE_SUBJECT_REASON: &str = "protected_effect.stale_subject";
 const SCHEMA_DRIFT_REASON: &str = "protected_effect.capability_schema_drift";
@@ -46,6 +46,7 @@ pub fn validate_protected_effect_result_body(
     validate_decision(&effect_request_digest, body)?;
     validate_usage(&body.usage)?;
     validate_evidence(&body.evidence)?;
+    validate_operation_specific_result(request, body)?;
 
     let subject_drift = body.observed_pre_effect_subject != request.subject;
     if body.observed_capability != request.capability {
@@ -211,6 +212,13 @@ fn validate_status_matrix(
                 "{:?} requires a {expected_outcome:?} decision",
                 body.execution_status
             ),
+        ));
+    }
+    if expected_outcome == Outcome::Allow && body.decision.gate != Gate::Permission {
+        return Err(ContractError::new(
+            ContractErrorCode::UnauthorizedEffect,
+            "body.decision.gate",
+            "an attempted effect requires an allow decision from the permission gate",
         ));
     }
 
@@ -423,13 +431,42 @@ fn validate_known_post_effect(
             EffectEvidenceType::Exit,
             "known process result requires exit evidence",
         )?;
-    } else if let Some(exit) = &body.exit {
+    } else if request.operation_family == OperationFamily::Process
+        && let Some(exit) = &body.exit
+    {
         validate_exit(exit)?;
         require_evidence(
             body,
             EffectEvidenceType::Exit,
             "recorded exit status requires exit evidence",
         )?;
+    }
+    Ok(())
+}
+
+fn validate_operation_specific_result(
+    request: &ProtectedEffectRequest,
+    body: &ProtectedEffectResultBody,
+) -> Result<(), ContractError> {
+    if request.operation_family == OperationFamily::Process {
+        return Ok(());
+    }
+    if body.exit.is_some() {
+        return Err(invalid_contract(
+            "body.exit",
+            "only process effects may record an exit status",
+        ));
+    }
+    if let Some((index, _)) = body
+        .evidence
+        .iter()
+        .enumerate()
+        .find(|(_, reference)| reference.evidence_type == EffectEvidenceType::Exit)
+    {
+        return Err(invalid_contract(
+            format!("body.evidence[{index}].evidence_type"),
+            "only process effects may record exit evidence",
+        ));
     }
     Ok(())
 }

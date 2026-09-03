@@ -547,6 +547,23 @@ fn normalized_operations_and_approval_references_fail_closed() {
 }
 
 #[test]
+fn approval_context_must_bind_the_current_effect_subject() {
+    let agent_request = agent_run_request("run-001");
+    let support = ContractSupport::new([policy()]);
+    let mut request = effect_request(&agent_request, &support);
+    request.approval_context[0].subject_digest = digest('8');
+
+    let error = validate_protected_effect_request(&agent_request, &support, &request)
+        .expect_err("approval evidence for another subject must fail closed");
+    assert_eq!(error.code(), ContractErrorCode::InvalidContract);
+    assert_eq!(error.path(), "approval_context[0].subject_digest");
+    assert_eq!(
+        error.message(),
+        "approval evidence must bind the Protected Effect Request subject"
+    );
+}
+
+#[test]
 fn raw_effect_request_rejects_unknown_fields_families_and_repeatability() {
     let agent_request = agent_run_request("run-001");
     let support = ContractSupport::new([policy()]);
@@ -854,6 +871,26 @@ fn decision_outcomes_and_execution_statuses_follow_the_authority_matrix() {
         validate_protected_effect_result_body(&agent_request, &support, &request, &body)
             .expect("non-execution authority result should validate");
     }
+}
+
+#[test]
+fn unrelated_gate_cannot_authorize_an_attempted_effect() {
+    let agent_request = agent_run_request("run-001");
+    let support = ContractSupport::new([policy()]);
+    let request = effect_request(&agent_request, &support);
+    let request_digest = validate_protected_effect_request(&agent_request, &support, &request)
+        .expect("effect request should validate");
+    let mut body = executed_result_body(&request, &request_digest);
+    body.decision.gate = Gate::Verification;
+
+    let error = validate_protected_effect_result_body(&agent_request, &support, &request, &body)
+        .expect_err("an unrelated gate must not authorize effect execution");
+    assert_eq!(error.code(), ContractErrorCode::UnauthorizedEffect);
+    assert_eq!(error.path(), "body.decision.gate");
+    assert_eq!(
+        error.message(),
+        "an attempted effect requires an allow decision from the permission gate"
+    );
 }
 
 #[test]
@@ -1325,6 +1362,42 @@ fn known_process_results_require_typed_exit_status_and_exit_evidence() {
     let error = validate_protected_effect_result_body(&agent_request, &support, &request, &body)
         .expect_err("known process execution requires exit evidence");
     assert_eq!(error.path(), "body.evidence");
+}
+
+#[test]
+fn non_process_results_reject_process_exit_state() {
+    let agent_request = agent_run_request("run-001");
+    let support = ContractSupport::new([policy()]);
+    let mut request = effect_request(&agent_request, &support);
+    request.operation_family = OperationFamily::Filesystem;
+    request.normalized_operation = "filesystem.write".to_owned();
+    request.requested_scopes = vec![RequestedScope::Filesystem {
+        root: "/workspace".to_owned(),
+        access: vec![FilesystemAccess::Modify],
+        recursive: true,
+    }];
+    let request_digest = validate_protected_effect_request(&agent_request, &support, &request)
+        .expect("filesystem effect request should validate");
+
+    let mut body = executed_result_body(&request, &request_digest);
+    let error = validate_protected_effect_result_body(&agent_request, &support, &request, &body)
+        .expect_err("non-process result must not contain a process exit");
+    assert_eq!(error.code(), ContractErrorCode::InvalidContract);
+    assert_eq!(error.path(), "body.exit");
+    assert_eq!(
+        error.message(),
+        "only process effects may record an exit status"
+    );
+
+    body.exit = None;
+    let error = validate_protected_effect_result_body(&agent_request, &support, &request, &body)
+        .expect_err("non-process result must not contain process exit evidence");
+    assert_eq!(error.code(), ContractErrorCode::InvalidContract);
+    assert_eq!(error.path(), "body.evidence[0].evidence_type");
+    assert_eq!(
+        error.message(),
+        "only process effects may record exit evidence"
+    );
 }
 
 #[test]

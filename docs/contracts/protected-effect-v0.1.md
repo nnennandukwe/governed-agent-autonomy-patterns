@@ -85,8 +85,9 @@ Network protocols are `tcp`, `udp`, `http`, and `https`.
 
 The run ID, Agent Run Request digest, capability, policy identities, and
 resource-budget digest must exactly match a validated `AgentRunRequest`.
-Effect-specific approval references identify evidence. They do not authorize
-execution by themselves.
+Effect-specific approval references identify evidence bound to the Protected
+Effect Request's current subject digest. They do not authorize execution by
+themselves.
 
 `RunCoordinator` remains the sole decision authority. The contract validator
 does not recompute policy or reinterpret a decision code.
@@ -124,6 +125,8 @@ and sandbox identities, a reason, and typed evidence references.
 The decisive decision record contains its ID, gate, exact Protected Effect
 Request digest, observed subject digest, and the existing `Decision`. Full
 multi-gate chronology remains in the Terminal Run Receipt event ledger.
+An attempted effect requires an `allow` decision from the `permission` gate;
+an `allow` from another gate cannot authorize execution.
 
 ### Decision And Execution Matrix
 
@@ -144,7 +147,8 @@ An observation result with a known post-effect subject preserves the subject
 digest. A mutation result with a known post-effect subject requires
 both mutation and artifact evidence even if the resulting digest is unchanged.
 Known `process` execution and failure records contain exactly one exit code or
-signal plus exit evidence.
+signal plus exit evidence. Non-process results cannot contain an exit status or
+exit evidence.
 
 Process exits are a tagged union:
 

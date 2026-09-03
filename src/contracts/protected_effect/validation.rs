@@ -238,6 +238,12 @@ fn validate_approvals(request: &ProtectedEffectRequest) -> Result<(), ContractEr
         validate_non_empty(&approval.actor_id, &format!("{path}.actor_id"))?;
         validate_non_empty(&approval.scope, &format!("{path}.scope"))?;
         validate_digest(&approval.subject_digest, &format!("{path}.subject_digest"))?;
+        if approval.subject_digest != request.subject.digest {
+            return Err(invalid_contract(
+                format!("{path}.subject_digest"),
+                "approval evidence must bind the Protected Effect Request subject",
+            ));
+        }
         validate_evidence(&approval.evidence, &format!("{path}.evidence"))?;
         if approval.evidence.evidence_type != EvidenceType::Approval {
             return Err(invalid_contract(
