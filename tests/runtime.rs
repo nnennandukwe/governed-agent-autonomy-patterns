@@ -1335,11 +1335,101 @@ fn executor_denial_is_normalized_to_non_execution_result() {
         execution.protected_effect_results[0].body.execution_status,
         EffectExecutionStatus::Denied
     );
+    assert_eq!(execution.receipt.body.usage.cost_micros, 10);
     assert!(
         execution.protected_effect_results[0]
             .body
             .executor
             .is_none()
+    );
+
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(
+        &run_request,
+        &support,
+        &effect,
+        &execution.protected_effect_results[0],
+    )
+    .unwrap();
+}
+
+#[test]
+fn budget_overrun_does_not_mask_failed_executor_outcome() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let post_subject = subject(digest(b'e'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = failed_mutation_observation(post_subject);
+    observation.usage = usage(1_000_001);
+
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                effect.clone(),
+            ))))],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&run_request.subject.digest)),
+    );
+
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "protected_effect.failed"
+    );
+    assert_eq!(execution.receipt.body.usage.cost_micros, 1_000_001);
+
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(
+        &run_request,
+        &support,
+        &effect,
+        &execution.protected_effect_results[0],
+    )
+    .unwrap();
+}
+
+#[test]
+fn attempted_result_uses_trusted_executor_identity() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let post_subject = subject(digest(b'e'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = executed_observation(post_subject.clone());
+    observation.executor = None;
+    observation.sandbox_profile = None;
+
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [
+                Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                    effect.clone(),
+                )))),
+                Ok(AgentStep::Finish),
+            ],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&post_subject.digest)),
+    );
+
+    assert_eq!(
+        execution.protected_effect_results[0].body.executor,
+        Some(executor_identity())
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.sandbox_profile,
+        Some(effect.sandbox_profile.clone())
     );
 
     verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();

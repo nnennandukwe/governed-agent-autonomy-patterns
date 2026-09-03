@@ -699,6 +699,7 @@ where
             EffectExecutionStatus::AwaitingAuthority | EffectExecutionStatus::Denied
         ) {
             let decision = executor_non_execution_decision(&observation);
+            let _usage_reason = ledger.record_effect_usage(&observation.usage);
             return self
                 .decline_protected_effect(
                     ledger,
@@ -766,7 +767,9 @@ where
             }
         };
         if let Some(reason) = usage_reason {
-            terminal = Some((AgentRunStatus::Blocked, reason));
+            if terminal.is_none() {
+                terminal = Some((AgentRunStatus::Blocked, reason));
+            }
         }
         ledger.effect_results.push(effect_result);
 
@@ -980,8 +983,8 @@ where
             observed_post_effect_subject: observation.observed_post_effect_subject,
             exit: observation.exit,
             usage: observation.usage,
-            executor: observation.executor,
-            sandbox_profile: observation.sandbox_profile,
+            executor: Some(self.config.executor_identity.clone()),
+            sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: observation.reason,
             evidence: observation.evidence,
         };
