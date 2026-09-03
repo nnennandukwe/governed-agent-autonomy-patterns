@@ -125,20 +125,27 @@ struct MutationFailure {
 }
 
 impl MutationFailure {
-    fn unchanged(problem: String) -> Self {
+    fn with_state(problem: String, filesystem_changed: bool) -> Self {
         Self {
             problem,
-            filesystem_changed: false,
+            filesystem_changed,
         }
+    }
+
+    fn unchanged(problem: String) -> Self {
+        Self::with_state(problem, false)
     }
 
     #[cfg(any(windows, test))]
     fn recoverable(problem: String) -> Self {
-        Self {
-            problem,
-            filesystem_changed: true,
-        }
+        Self::with_state(problem, true)
     }
+}
+
+#[derive(Debug)]
+struct ValidatedParent {
+    path: PathBuf,
+    filesystem_changed: bool,
 }
 
 fn inspect(root: &Path, artifacts: &[RenderedArtifact]) -> Result<Inspection, ArtifactError> {
@@ -354,14 +361,17 @@ fn replace_file(
     snapshot: &FileSnapshot,
     contents: &[u8],
 ) -> Result<(), MutationFailure> {
-    let parent = validated_parent(root, &snapshot.relative_path, true)
-        .map_err(MutationFailure::unchanged)?;
+    let ValidatedParent {
+        path: parent,
+        filesystem_changed: parent_changed,
+    } = validated_parent(root, &snapshot.relative_path, true)?;
     let file_name = Path::new(&snapshot.relative_path)
         .file_name()
         .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))
-        .map_err(MutationFailure::unchanged)?;
+        .map_err(|problem| MutationFailure::with_state(problem, parent_changed))?;
     let destination = parent.join(file_name);
-    ensure_snapshot_at(&destination, snapshot).map_err(MutationFailure::unchanged)?;
+    ensure_snapshot_at(&destination, snapshot)
+        .map_err(|problem| MutationFailure::with_state(problem, parent_changed))?;
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let file_name = file_name.to_string_lossy();
@@ -373,6 +383,7 @@ fn replace_file(
         ".{file_name}.gaap-contract-artifacts-{}-{sequence}.backup",
         std::process::id()
     ));
+    let mut temporary_created = false;
     let preparation = (|| {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -384,6 +395,7 @@ fn replace_file(
                     snapshot.relative_path
                 )
             })?;
+        temporary_created = true;
         file.write_all(contents).map_err(|error| {
             format!(
                 "could not write temporary file for {}: {error}",
@@ -403,7 +415,9 @@ fn replace_file(
             )
         })?;
         drop(file);
-        let revalidated_parent = validated_parent(root, &snapshot.relative_path, false)?;
+        let revalidated_parent = validated_parent(root, &snapshot.relative_path, false)
+            .map_err(|failure| failure.problem)?
+            .path;
         if revalidated_parent != parent {
             return Err(format!(
                 "{} parent changed after temporary-file creation; it was preserved",
@@ -414,10 +428,12 @@ fn replace_file(
         Ok(())
     })();
     if let Err(problem) = preparation {
-        return Err(cleanup_temporary(
-            &temporary,
-            MutationFailure::unchanged(problem),
-        ));
+        let failure = MutationFailure::with_state(problem, parent_changed);
+        return Err(if temporary_created {
+            cleanup_temporary(&temporary, failure)
+        } else {
+            failure
+        });
     }
 
     match replace_temporary(
@@ -428,7 +444,10 @@ fn replace_file(
         &snapshot.relative_path,
     ) {
         Ok(()) => Ok(()),
-        Err(failure) => Err(cleanup_temporary(&temporary, failure)),
+        Err(mut failure) => {
+            failure.filesystem_changed |= parent_changed;
+            Err(cleanup_temporary(&temporary, failure))
+        }
     }
 }
 
@@ -528,7 +547,9 @@ fn replace_existing_with_backup(
 }
 
 fn remove_orphan(root: &Path, snapshot: &FileSnapshot) -> Result<(), String> {
-    let parent = validated_parent(root, &snapshot.relative_path, false)?;
+    let parent = validated_parent(root, &snapshot.relative_path, false)
+        .map_err(|failure| failure.problem)?
+        .path;
     let file_name = Path::new(&snapshot.relative_path)
         .file_name()
         .ok_or_else(|| format!("{} has no file name", snapshot.relative_path))?;
@@ -584,84 +605,111 @@ fn validated_parent(
     root: &Path,
     relative_path: &str,
     create_missing: bool,
-) -> Result<PathBuf, String> {
+) -> Result<ValidatedParent, MutationFailure> {
     if !is_managed_artifact_path(relative_path) {
-        return Err(format!(
+        return Err(MutationFailure::unchanged(format!(
             "{relative_path} is outside the managed artifact roots"
-        ));
+        )));
     }
-    let relative_parent = Path::new(relative_path)
-        .parent()
-        .ok_or_else(|| format!("{relative_path} has no parent directory"))?;
-    let canonical_root = fs::canonicalize(root)
-        .map_err(|error| format!("could not resolve repository root: {error}"))?;
+    let relative_parent = Path::new(relative_path).parent().ok_or_else(|| {
+        MutationFailure::unchanged(format!("{relative_path} has no parent directory"))
+    })?;
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        MutationFailure::unchanged(format!("could not resolve repository root: {error}"))
+    })?;
     let mut parent = root.to_path_buf();
+    let mut filesystem_changed = false;
 
     for component in relative_parent.components() {
         let Component::Normal(segment) = component else {
-            return Err(format!("{relative_path} has an unsafe parent component"));
+            return Err(MutationFailure::with_state(
+                format!("{relative_path} has an unsafe parent component"),
+                filesystem_changed,
+            ));
         };
         parent.push(segment);
         match fs::symlink_metadata(&parent) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "{} parent is a symlink",
-                    display_relative(root, &parent)
+                return Err(MutationFailure::with_state(
+                    format!("{} parent is a symlink", display_relative(root, &parent)),
+                    filesystem_changed,
                 ));
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
-                return Err(format!(
-                    "{} parent is not a directory",
-                    display_relative(root, &parent)
+                return Err(MutationFailure::with_state(
+                    format!(
+                        "{} parent is not a directory",
+                        display_relative(root, &parent)
+                    ),
+                    filesystem_changed,
                 ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
                 match fs::create_dir(&parent) {
-                    Ok(()) => {}
+                    Ok(()) => filesystem_changed = true,
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(error) => {
-                        return Err(format!(
-                            "could not create {}: {error}",
-                            display_relative(root, &parent)
+                        return Err(MutationFailure::with_state(
+                            format!(
+                                "could not create {}: {error}",
+                                display_relative(root, &parent)
+                            ),
+                            filesystem_changed,
                         ));
                     }
                 }
                 let metadata = fs::symlink_metadata(&parent).map_err(|error| {
-                    format!(
-                        "could not recheck created parent {}: {error}",
-                        display_relative(root, &parent)
+                    MutationFailure::with_state(
+                        format!(
+                            "could not recheck created parent {}: {error}",
+                            display_relative(root, &parent)
+                        ),
+                        filesystem_changed,
                     )
                 })?;
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(format!(
-                        "{} parent became a symlink or non-directory",
-                        display_relative(root, &parent)
+                    return Err(MutationFailure::with_state(
+                        format!(
+                            "{} parent became a symlink or non-directory",
+                            display_relative(root, &parent)
+                        ),
+                        filesystem_changed,
                     ));
                 }
             }
             Err(error) => {
-                return Err(format!(
-                    "could not inspect parent {}: {error}",
-                    display_relative(root, &parent)
+                return Err(MutationFailure::with_state(
+                    format!(
+                        "could not inspect parent {}: {error}",
+                        display_relative(root, &parent)
+                    ),
+                    filesystem_changed,
                 ));
             }
         }
     }
 
     let canonical_parent = fs::canonicalize(&parent).map_err(|error| {
-        format!(
-            "could not resolve parent {}: {error}",
-            display_relative(root, &parent)
+        MutationFailure::with_state(
+            format!(
+                "could not resolve parent {}: {error}",
+                display_relative(root, &parent)
+            ),
+            filesystem_changed,
         )
     })?;
     let expected_parent = canonical_root.join(relative_parent);
     if canonical_parent != expected_parent {
-        return Err(format!(
-            "{relative_path} parent resolves through a symlink outside its catalog path"
+        return Err(MutationFailure::with_state(
+            format!("{relative_path} parent resolves through a symlink outside its catalog path"),
+            filesystem_changed,
         ));
     }
-    Ok(canonical_parent)
+    Ok(ValidatedParent {
+        path: canonical_parent,
+        filesystem_changed,
+    })
 }
 
 fn durable_state(report: &Report) -> DurableState {
@@ -968,6 +1016,38 @@ mod tests {
         assert_eq!(
             fs::read(root.path().join("schemas/example/v0.1.0/current.json")).unwrap(),
             b"current\n"
+        );
+    }
+
+    #[test]
+    fn failure_after_parent_creation_reports_recoverable_incomplete_state() {
+        let root = TempRoot::new();
+        let long_file_name = format!("{}.json", "x".repeat(240));
+        let relative_path = format!("schemas/new/{long_file_name}");
+        let artifacts = [artifact(&relative_path, b"{}\n")];
+
+        let error = reconcile(root.path(), &artifacts, Mode::Generate)
+            .expect_err("temporary-file creation should exceed the component length limit");
+
+        assert_eq!(error.phase, Phase::Commit);
+        assert_eq!(error.state, DurableState::RecoverableIncomplete);
+        assert!(error.problems[0].contains("could not create temporary file"));
+        assert!(root.path().join("schemas/new").is_dir());
+    }
+
+    #[test]
+    fn parent_validation_records_directories_created_before_commit() {
+        let root = TempRoot::new();
+
+        let validation = validated_parent(root.path(), "schemas/example/v0.1.0/request.json", true)
+            .expect("missing managed parents should be created");
+
+        assert!(validation.filesystem_changed);
+        assert_eq!(
+            validation.path,
+            fs::canonicalize(root.path())
+                .unwrap()
+                .join("schemas/example/v0.1.0")
         );
     }
 
