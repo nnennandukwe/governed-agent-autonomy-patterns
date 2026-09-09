@@ -9,6 +9,10 @@ preserved at the `legacy-ts-boundarybench-v0.1.0` tag and is no longer on
 This note is historical design provenance, not current implementation
 documentation, an experimental result, or a private build plan.
 
+For the later cross-project literature review, see the
+[September 2026 harness engineering review](./2026-09-10-harness-engineering-review.md)
+and its [adoption decision tracker](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29).
+
 ## Provider-Owned Inference, Harness-Owned Control
 
 ### OpenAI Responses API
