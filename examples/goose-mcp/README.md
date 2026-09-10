@@ -21,6 +21,14 @@ unchanged. This is an independent example crate with its own pinned lockfile.
 
 Requires Rust 1.96.0, Python 3.9 or later, and Goose signed in to its **ChatGPT
 Codex** provider. The default model is `gpt-5.5`, matching the conference laptop.
+Use your normal checkout; a Codex worktree is not required. Keep demo sessions
+in the visible, Git-ignored `demo-runs/` folder at the repository root:
+
+```sh
+cd ~/Code/governed-agent-autonomy-patterns/examples/goose-mcp
+mkdir -p ../../demo-runs
+```
+
 From this directory:
 
 ```sh
@@ -58,7 +66,7 @@ The original API-key option remains available:
 ```sh
 python3 demo.py configure
 python3 demo.py --provider openai doctor
-python3 demo.py --provider openai rehearse /tmp/conference-api-rehearsal-1
+python3 demo.py --provider openai rehearse ../../demo-runs/conference-api-rehearsal-1
 ```
 
 `configure` uses a hidden terminal prompt and saves an owner-only key to
@@ -98,11 +106,12 @@ independently measured model cost.
 With Goose Desktop installed and signed in to ChatGPT Codex:
 
 ```sh
-python3 demo.py desktop /tmp/conference-desktop-1
+python3 demo.py desktop ../../demo-runs/conference-desktop-1
 ```
 
-This initializes a fresh disposable fixture, writes `desktop-recipe.json`
-outside the tool-accessible workspace, and opens the recipe in Goose Desktop.
+This initializes a fresh fixture under your checkout's `demo-runs/` folder,
+writes `desktop-recipe.json` outside the tool-accessible workspace, and opens
+the recipe in Goose Desktop.
 Review its instructions and choose **Trust and Execute**. The recipe explicitly
 lists only the GAAP extension and its three tools. Goose's
 [recipe extension configuration](https://github.com/aaif-goose/goose/blob/v1.50.0/documentation/docs/guides/recipes/recipe-reference.md#extensions)
@@ -119,8 +128,8 @@ Use the proposal activity button or type:
 In your separate operator terminal:
 
 ```sh
-python3 demo.py status /tmp/conference-desktop-1
-python3 demo.py approve /tmp/conference-desktop-1 REQUEST_ID
+python3 demo.py status ../../demo-runs/conference-desktop-1
+python3 demo.py approve ../../demo-runs/conference-desktop-1 REQUEST_ID
 ```
 
 Back in the **same Goose chat**, ask it to apply that exact request ID and read
@@ -132,7 +141,10 @@ the recipe; it does not approve a GAAP file-change proposal.
 
 To reopen the same recipe, use the pinned CLI's `recipe open` command with the
 printed JSON path. To reset for a new demonstration, run `desktop` with a new
-directory. The launcher never overwrites or resets an existing session.
+directory. The launcher never overwrites or resets an existing session. Keep
+initialized session folders in place: their authority records bind to the
+original path and filesystem identity. Create a fresh session when changing
+locations.
 
 The desktop session uses the app's existing authentication and session storage.
 The recipe sets a six-turn limit and a 30-second MCP tool timeout. The CLI
@@ -146,21 +158,22 @@ the separate GAAP decision log. Stop the chat in Goose if a model call stalls.
 Use two terminal panes: goose requests in one, operator inspection and approval
 in the other. Both panes can use this directory as their working directory.
 Choose a fresh session name every time; initialization refuses an existing
-path. Use a private parent or sticky `/tmp`; shared non-sticky parents and
-ancestors owned by other non-root users are rejected. The commands below assume that `conference-demo-1` does not exist.
+path. Use the `demo-runs/` parent created during setup; shared writable parents
+and ancestors owned by other non-root users are rejected. The commands below
+assume that `conference-demo-1` does not exist.
 
 ```sh
-python3 demo.py init /tmp/conference-demo-1
-python3 demo.py goose /tmp/conference-demo-1 --text \
+python3 demo.py init ../../demo-runs/conference-demo-1
+python3 demo.py goose ../../demo-runs/conference-demo-1 --text \
   'Read release.json. Propose changing only its version to 1.1.0 using propose_write. Return the request_id and decision, then stop for operator approval.'
-python3 demo.py status /tmp/conference-demo-1
+python3 demo.py status ../../demo-runs/conference-demo-1
 ```
 
 The file remains at `1.0.0`. Copy the exact `sha256:...` request ID returned by
 goose or `status`, then run the operator command:
 
 ```sh
-python3 demo.py approve /tmp/conference-demo-1 REQUEST_ID
+python3 demo.py approve ../../demo-runs/conference-demo-1 REQUEST_ID
 ```
 
 This displays a unified diff and the immutable proposal before prompting for
@@ -169,9 +182,9 @@ the immutable proposal retains its exact original bytes. The Rust command rechec
 before saving authority. No MCP tool can approve anything.
 
 ```sh
-python3 demo.py goose /tmp/conference-demo-1 --text \
+python3 demo.py goose ../../demo-runs/conference-demo-1 --text \
   'Call apply_change for request_id REQUEST_ID. Then read release.json and report the observed result.'
-python3 demo.py status /tmp/conference-demo-1
+python3 demo.py status ../../demo-runs/conference-demo-1
 ```
 
 Replace `REQUEST_ID` in both commands with the actual complete ID. `status`
@@ -192,8 +205,8 @@ different content also creates a different ID and does not inherit approval.
 ## Automated real rehearsal and network fallback
 
 ```sh
-python3 demo.py rehearse /tmp/conference-rehearsal-1
-python3 demo.py rehearse /tmp/conference-rehearsal-2
+python3 demo.py rehearse ../../demo-runs/conference-rehearsal-1
+python3 demo.py rehearse ../../demo-runs/conference-rehearsal-2
 ```
 
 Each command creates a fresh fixture and makes four genuine model-driven

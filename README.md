@@ -15,6 +15,29 @@ local decision log. It also provides a separate deterministic `AgentRunEngine`
 view. The example does not integrate goose into the full engine or change the
 core contracts.
 
+## Run the demo from your checkout
+
+With the [example prerequisites](./examples/goose-mcp/README.md#setup-on-the-conference-laptop)
+installed, run these commands from the repository root:
+
+```sh
+python3 examples/goose-mcp/demo.py build
+mkdir -p demo-runs
+python3 examples/goose-mcp/demo.py desktop demo-runs/agentcon-1
+```
+
+Goose opens the recipe using this checkout's MCP server. The fixture is at
+`demo-runs/agentcon-1/workspace/release.json`; its operator records and recipe
+are beside `workspace/`. Demo sessions stay in this visible, Git-ignored folder.
+Use a new session name for another run; existing sessions are never reset.
+
+The engine and current session can be inspected from the same terminal:
+
+```sh
+python3 examples/goose-mcp/demo.py engine
+python3 examples/goose-mcp/demo.py status demo-runs/agentcon-1
+```
+
 ## Current Interfaces And Evidence
 
 | Path or interface | Current behavior | Developer use |

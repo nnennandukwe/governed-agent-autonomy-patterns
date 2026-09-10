@@ -2,3 +2,4 @@ target/
 .run-invariant/
 .qodo/
 *.log
+/demo-runs/
