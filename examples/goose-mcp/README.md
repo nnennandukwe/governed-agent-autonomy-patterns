@@ -11,7 +11,7 @@ There are two explicitly different views:
 | View | Executes | Evidence |
 | --- | --- | --- |
 | **Engine view** | Existing `AgentRunEngine` with deterministic agent, in-memory executor, and verifier ports | Sealed and locally verified Terminal Run Receipt and Protected Effect Results; usage and evidence references are fixtures |
-| **Goose view** | Real goose 1.50.0 + OpenAI `gpt-5.4-mini`, calling a Rust MCP server that uses the existing `RunCoordinator` | Actual `release.json` replacement and persistent MCP boundary decision records |
+| **Goose view** | Real goose 1.50.0 + ChatGPT Codex `gpt-5.5`, calling a Rust MCP server that uses the existing `RunCoordinator` | Actual `release.json` replacement and persistent MCP boundary decision records |
 
 The goose example does not run the full `AgentRunEngine`. Its decision records
 are not Terminal Run Receipts. Core contracts, schemas, and runtime behavior are
@@ -19,14 +19,14 @@ unchanged. This is an independent example crate with its own pinned lockfile.
 
 ## Setup on the conference laptop
 
-Requires Rust 1.96.0, Python 3.9 or later, and an OpenAI API account with access
-to `gpt-5.4-mini`. From this directory:
+Requires Rust 1.96.0, Python 3.9 or later, and Goose signed in to its **ChatGPT
+Codex** provider. The default model is `gpt-5.5`, matching the conference laptop.
+From this directory:
 
 ```sh
 python3 demo.py build
 python3 demo.py engine
 python3 install_goose.py
-python3 demo.py configure
 python3 demo.py doctor
 ```
 
@@ -34,15 +34,37 @@ The engine command works without a provider key or goose. The installer pins
 the [official v1.50.0 release](https://github.com/aaif-goose/goose/releases/tag/v1.50.0)
 for Apple Silicon macOS and checks its published archive digest. Existing and
 new executable bytes are checked against the digest derived from that verified
-archive before execution or receiving the provider key. Installation publishes
+archive before execution or receiving provider authentication. Installation publishes
 a fully synced file atomically without overwriting an existing destination. It installs
 under `~/.local/share/gaap-demo/tools/goose-1.50.0/` without changing PATH.
 
-`configure` prompts with terminal echo disabled and saves the key to
-`~/.config/gaap-demo/openai-key` with owner-only permissions. Enter the key in
-your terminal, never in chat or command arguments. `doctor` checks model access
-through the OpenAI API. An accessible model ID is a setup check; a successful
-real goose run is the integration check.
+`doctor` checks the pinned runtime, engine binary, and existing Goose sign-in.
+A successful real goose run verifies model access. The launcher reads
+`~/.config/goose/chatgpt_codex/tokens.json` with owner-only file checks. Each call
+gets a temporary access-token copy outside the fixture, without the refresh
+token or identity token. The copy and temporary Goose state are removed on
+normal completion, failure, or a handled interrupt. Desktop configuration and
+credentials remain unchanged. A sign-in too close to expiry is rejected before
+launch; refresh the connection in Goose and retry. An uncatchable process kill
+can leave temporary files beneath the owner-only session root.
+
+This is Goose's direct
+[ChatGPT Codex provider](https://github.com/aaif-goose/goose/blob/v1.50.0/crates/goose/src/providers/chatgpt_codex.rs),
+which sends the registered MCP tool schemas to the model. It does not spawn
+Codex CLI or enable its filesystem and shell tools.
+
+The original API-key option remains available:
+
+```sh
+python3 demo.py configure
+python3 demo.py --provider openai doctor
+python3 demo.py --provider openai rehearse /tmp/conference-api-rehearsal-1
+```
+
+`configure` uses a hidden terminal prompt and saves an owner-only key to
+`~/.config/gaap-demo/openai-key`. This provider defaults to `gpt-5.4-mini` and
+requires separate OpenAI API access. Global `--provider` and `--model` options
+go before the command. Never put credentials in chat or command arguments.
 
 The Rust example supports Unix hosts. CI tests the MCP server without goose
 or API credentials. The goose launcher and bundled installer target this
@@ -142,12 +164,12 @@ captured earlier. The deterministic engine view remains runnable offline.
 
 `goose run` uses `--no-profile`, an explicit single MCP extension, six maximum
 turns, two maximum identical tool repetitions, and a 90-second process timeout
-per call. The provider key is passed to goose only. The MCP server starts with
+per call. Provider authentication is available to goose only. The MCP server starts with
 a cleared environment. Configuration, plugins, data, and session state use a
-fresh `GOOSE_PATH_ROOT` outside the fixture. Keyring access is disabled. No
+temporary per-call `GOOSE_PATH_ROOT` outside the fixture. Keyring access is disabled. No
 Developer or extension-management extension is loaded. The launcher does not
 resume existing goose sessions; goose may still persist internal session data
-under its isolated root despite `--no-session`.
+under its isolated root despite `--no-session`; that root is removed after the call.
 
 ## The transferable architecture
 

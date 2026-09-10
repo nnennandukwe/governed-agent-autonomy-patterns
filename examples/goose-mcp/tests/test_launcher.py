@@ -65,7 +65,7 @@ class LauncherTests(unittest.TestCase):
             process.communicate.side_effect = [subprocess.TimeoutExpired("simulated", 1), ("stopped dummy-unit-key", None)]
             with mock.patch.object(demo, "session", return_value=root), mock.patch.object(demo, "verify_binary"), mock.patch.object(demo, "key_from_file", return_value="dummy-unit-key"), mock.patch.object(demo.subprocess, "Popen", return_value=process), mock.patch.object(demo.os, "killpg"), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    demo.goose(root, "do not retain dummy-unit-key", timeout=1)
+                    demo.goose(root, "do not retain dummy-unit-key", timeout=1, provider="openai")
             transcript = next((root / "transcripts").glob("*.txt")).read_text()
             self.assertIn("OPERATOR TIMEOUT", transcript)
             self.assertNotIn("dummy-unit-key", transcript)
@@ -80,7 +80,7 @@ class LauncherTests(unittest.TestCase):
             process.communicate.side_effect = [KeyboardInterrupt(), subprocess.TimeoutExpired("simulated", 5), ("stopped", None)]
             with mock.patch.object(demo, "session", return_value=root), mock.patch.object(demo, "verify_binary"), mock.patch.object(demo, "key_from_file", return_value="dummy-unit-key"), mock.patch.object(demo.subprocess, "Popen", return_value=process), mock.patch.object(demo.os, "killpg") as signals, contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    demo.goose(root, "simulated interruption")
+                    demo.goose(root, "simulated interruption", provider="openai")
                 self.assertEqual(signals.call_args_list, [mock.call(1234,demo.signal.SIGTERM),mock.call(1234,demo.signal.SIGKILL)])
             self.assertIn("OPERATOR INTERRUPTED",next((root / "transcripts").glob("*.txt")).read_text())
 
@@ -96,6 +96,114 @@ class LauncherTests(unittest.TestCase):
         self.assertIn(r"\u202e", rendered)
         self.assertIn(r"\\x1b", rendered)
         self.assertIn("before\n", rendered)
+
+    def test_codex_auth_is_temporary_and_does_not_copy_refresh_authority(self):
+        """Only short-lived access reaches the isolated runtime, including on failure."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            source = home / ".config/goose/chatgpt_codex/tokens.json"
+            source.parent.mkdir(parents=True)
+            data = {"access_token": "dummy-access", "account_id": "dummy-account",
+                    "refresh_token": "dummy-refresh", "id_token": "dummy-identity",
+                    "expires_at": "2099-01-01T00:00:00Z"}
+            source.write_text(json.dumps(data))
+            source.chmod(0o600)
+            before = source.read_bytes()
+            with mock.patch.object(demo.Path, "home", return_value=home):
+                with self.assertRaisesRegex(RuntimeError, "simulated launch failure"):
+                    with demo.provider_environment(home, "chatgpt_codex", "gpt-5.5", 90) as (env, secrets):
+                        cache_root = Path(env["GOOSE_PATH_ROOT"])
+                        cache = cache_root / "config/chatgpt_codex/tokens.json"
+                        copied = json.loads(cache.read_text())
+                        self.assertEqual(copied["refresh_token"], "")
+                        self.assertIsNone(copied["id_token"])
+                        self.assertEqual(copied["access_token"], data["access_token"])
+                        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(cache_root.stat().st_mode & 0o777, 0o700)
+                        self.assertNotIn("OPENAI_API_KEY", env)
+                        self.assertNotIn("dummy-access", json.dumps(env))
+                        self.assertIn("dummy-access", secrets)
+                        raise RuntimeError("simulated launch failure")
+            self.assertFalse(cache_root.exists())
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_expiring_codex_auth_stops_before_goose_can_refresh_it(self):
+        """Expired access is rejected locally without rotating desktop credentials."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            source = home / ".config/goose/chatgpt_codex/tokens.json"
+            source.parent.mkdir(parents=True)
+            source.write_text(json.dumps({"access_token": "dummy", "account_id": "dummy",
+                                          "expires_at": "2000-01-01T00:00:00Z"}))
+            source.chmod(0o600)
+            with mock.patch.object(demo.Path, "home", return_value=home):
+                with self.assertRaisesRegex(SystemExit, "expires too soon"):
+                    demo.codex_token(90)
+
+    def test_codex_auth_refuses_symlinks_and_shared_credentials(self):
+        """The launcher cannot read a redirected or shared sign-in file."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            source = home / ".config/goose/chatgpt_codex/tokens.json"
+            source.parent.mkdir(parents=True)
+            external = home / "external"
+            external.write_text("must not be read")
+            source.symlink_to(external)
+            with mock.patch.object(demo.Path, "home", return_value=home):
+                with self.assertRaisesRegex(SystemExit, "symlink"):
+                    demo.codex_token(90)
+                source.unlink()
+                source.write_text("must not be read")
+                source.chmod(0o644)
+                with self.assertRaisesRegex(SystemExit, "owner-only"):
+                    demo.codex_token(90)
+
+    def test_codex_auth_rejects_a_redirected_config_ancestor_before_reading(self):
+        """A symlink at .config cannot redirect the credential lookup."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            external = home / "elsewhere"
+            (external / "goose/chatgpt_codex").mkdir(parents=True)
+            (home / ".config").symlink_to(external, target_is_directory=True)
+            with mock.patch.object(demo.Path, "home", return_value=home), mock.patch.object(demo.os, "open") as opened:
+                with self.assertRaisesRegex(SystemExit, "must not be a symlink"):
+                    demo.codex_token(90)
+                opened.assert_not_called()
+
+    def test_shared_session_directories_are_rejected_before_storing_data(self):
+        """Existing permissive directories are refused instead of silently reused."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("goose", "transcripts"):
+                path = root / name
+                path.mkdir(mode=0o755)
+                path.chmod(0o755)
+                with self.subTest(name=name), self.assertRaisesRegex(SystemExit, "owner-only"):
+                    demo.private_directory(path, create=True)
+                self.assertEqual(list(path.iterdir()), [])
+            root.chmod(0o755)
+            with mock.patch.object(demo, "binary") as binary:
+                with self.assertRaisesRegex(SystemExit, "owner-only"):
+                    demo.session(root)
+                binary.assert_not_called()
+            root.chmod(0o700)
+            with mock.patch.object(demo.os, "getuid", return_value=-1):
+                with self.assertRaisesRegex(SystemExit, "owner-only"):
+                    demo.private_directory(root)
+
+    def test_api_key_setup_and_read_refuse_a_redirected_config_ancestor(self):
+        """The optional API path rejects redirection before prompting or writing."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            external = home / "elsewhere"
+            external.mkdir()
+            (home / ".config").symlink_to(external, target_is_directory=True)
+            with mock.patch.object(demo.Path, "home", return_value=home), mock.patch.object(demo.getpass, "getpass") as prompt:
+                for action in (demo.configure, demo.key_from_file):
+                    with self.subTest(action=action.__name__), self.assertRaisesRegex(SystemExit, "symlink"):
+                        action()
+                prompt.assert_not_called()
+            self.assertEqual(list(external.iterdir()), [])
 
     def test_untrusted_existing_binary_is_rejected_by_content(self):
         """A fake executable cannot gain trust from its own version output."""

@@ -91,8 +91,9 @@ view and one review view. Return to the runtime behavior.
 ## 10–17 minutes: real goose through the MCP boundary
 
 Introduce [goose](https://aaif.io/projects/goose) as an AAIF project and the
-replaceable agent runtime for this slice. Goose uses OpenAI for this demonstration;
-GAAP's core has no provider dependency.
+replaceable agent runtime for this slice. Goose uses its ChatGPT Codex provider
+with `gpt-5.5` and an existing ChatGPT sign-in. Goose owns the model interaction;
+GAAP evaluates the requested operation. The core has no provider dependency.
 
 Label this **Goose view: real model-driven MCP requests, RunCoordinator decisions,
 real file effects**. This narrower adapter has decision records, not the full
