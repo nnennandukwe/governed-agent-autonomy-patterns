@@ -4,10 +4,16 @@ GAAP is a Rust library and CLI that evaluates normalized plan, permission,
 tool-trust, verification, runtime, mutation, and completion decisions for an
 agent run.
 
-The current executable slice provides the integrity coordinator, frozen
+The core executable slice provides the integrity coordinator, frozen
 contracts, and a deterministic Rust runtime that calls explicit adapter ports
-before protected effects. It does not yet include provider adapters,
+before protected effects. It does not yet include production provider adapters,
 persistence, signing, sandbox enforcement, or ThreadLoop integration.
+
+The isolated [goose MCP example](./examples/goose-mcp/README.md) adds a real
+model-driven file operation through `RunCoordinator`, operator approval, and a
+local decision log. It also provides a separate deterministic `AgentRunEngine`
+view. The example does not integrate goose into the full engine or change the
+core contracts.
 
 ## Current Interfaces And Evidence
 
@@ -65,7 +71,7 @@ Implemented and tested now:
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
   unknown-outcome Protected Effect examples.
 
-Not implemented yet:
+Not implemented in the core runtime yet:
 
 - OpenAI, Anthropic, MCP, or other provider adapters;
 - production Protected Effect executor adapters, retry orchestration,

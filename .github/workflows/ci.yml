@@ -80,6 +80,21 @@ jobs:
       - name: Build subject binary
         run: cargo build --locked
 
+      - name: Check goose MCP example formatting
+        run: cargo fmt --manifest-path examples/goose-mcp/Cargo.toml --check
+
+      - name: Check goose MCP example warnings
+        run: cargo clippy --locked --manifest-path examples/goose-mcp/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test goose MCP boundary without provider credentials
+        run: cargo test --locked --manifest-path examples/goose-mcp/Cargo.toml
+
+      - name: Build goose MCP example
+        run: cargo build --locked --manifest-path examples/goose-mcp/Cargo.toml
+
+      - name: Test goose operator launcher without provider credentials
+        run: python3 -m unittest discover -s examples/goose-mcp/tests -p 'test_*.py' -v
+
   contract:
     needs: classify
     if: needs.classify.outputs.contract == 'true'

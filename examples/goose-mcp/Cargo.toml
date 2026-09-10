@@ -1,0 +1,24 @@
+[package]
+name = "gaap-goose-demo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# Keep protocol dependencies out of GAAP's provider-neutral core.
+[workspace]
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+rmcp = { version = "=3.3.0", features = ["server", "transport-io"] }
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
+schemars = "=1.2.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+serde_jcs = "=0.2.0"
+sha2 = "=0.10.9"
+tempfile = "=3.27.0"
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "io-std"] }
+
+[dev-dependencies]
+rmcp = { version = "=3.3.0", features = ["client", "transport-child-process"] }
