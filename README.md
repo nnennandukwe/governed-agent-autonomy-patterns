@@ -183,6 +183,15 @@ available from the
 [`legacy-ts-boundarybench-v0.1.0`](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/tree/legacy-ts-boundarybench-v0.1.0)
 tag. BoundaryBench's frozen conformance history now lives in RunInvariant.
 
+## Shared research
+
+The [harness engineering review](./docs/research/2026-09-10-harness-engineering-review.md)
+is the shared, dated research snapshot for GAAP, ThreadLoop, and RunInvariant.
+The [adoption decision tracker](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29)
+records candidate owners, prerequisites, proposed experiments, and follow-up
+issues. Research candidates require an explicit decision before entering a
+repository roadmap.
+
 ## License
 
 GAAP is licensed under the [Apache License 2.0](./LICENSE).
