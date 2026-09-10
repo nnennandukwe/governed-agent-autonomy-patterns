@@ -314,6 +314,49 @@ def find_proposal(root, version):
     return matches[0][0]
 
 
+def desktop(root, provider="chatgpt_codex", model=None):
+    """Open a fresh, three-tool recipe in the installed Goose desktop application."""
+    verify_binary(GOOSE)
+    root = Path(root).absolute()
+    binary("init", root)
+    root = session(root)
+    recipe = {
+        "version": "1.0.0",
+        "title": "Governed autonomy: Goose + GAAP",
+        "description": "Propose a release version change, inspect GAAP's decision, then apply only after exact operator approval.",
+        "instructions": (
+            "Demonstrate governed file operations using the three GAAP tools. "
+            "read_file observes release.json. propose_write records complete proposed contents without changing the file. "
+            "When approval is required, report the exact request_id and decision, then stop. "
+            "Only the human operator can approve in a separate terminal. "
+            "Call apply_change only when explicitly asked, using the exact recorded request_id. "
+            "After applying, report the decision and read the actual file. "
+            "If a request is blocked, report that decision and stop; do not propose an alternative unless asked. "
+            "These are MCP boundary decision records, not full AgentRunEngine terminal receipts."
+        ),
+        "activities": [
+            "message: Goose requests the operation. GAAP checks authority. The operator approves the exact proposal in a separate terminal.",
+            propose_prompt("1.1.0"),
+            "Read release.json and report its actual version.",
+        ],
+        "extensions": [{
+            "type": "stdio", "name": "gaap", "cmd": sys.executable,
+            "args": [str(HERE / "demo.py"), "mcp-server", str(root)],
+            "env_keys": [], "timeout": 30,
+            "description": "GAAP governed release.json operations; approval is operator-only.",
+            "available_tools": ["read_file", "propose_write", "apply_change"],
+        }],
+        "settings": {"goose_provider": provider, "goose_model": model or DEFAULT_MODELS[provider], "max_turns": 6},
+    }
+    path = root / "desktop-recipe.json"
+    with path.open("x") as handle:
+        json.dump(recipe, handle, indent=2)
+    print(f"Desktop recipe: {path}", flush=True)
+    print(f"Operator commands use this root: {root}", flush=True)
+    print("Review the recipe in Goose, then choose Trust and Execute. Only the gaap extension is listed.", flush=True)
+    subprocess.run([str(GOOSE), "recipe", "open", str(path)], check=True)
+
+
 def rehearse(root, provider="chatgpt_codex", model=None):
     """Run and assert the approved real goose sequence in a fresh disposable session."""
     model = model or DEFAULT_MODELS[provider]
@@ -378,6 +421,8 @@ def main():
     commands.add_parser("configure", help="save the API key through a hidden local terminal prompt")
     commands.add_parser("build", help="build the isolated locked Rust example")
     commands.add_parser("doctor", help="check pinned goose, binary, and selected provider authentication")
+    desktop_command = commands.add_parser("desktop", help="create a fresh fixture and open its restricted recipe in Goose Desktop")
+    desktop_command.add_argument("root", help="new disposable session directory")
     engine = commands.add_parser("engine", help="show deterministic AgentRunEngine events and receipt")
     engine.add_argument("--json", action="store_true", help="print the complete receipt and effect results as JSON")
     engine.add_argument("scenario", nargs="?", default="completed", choices=["completed","approval-required","stale-verification"])
@@ -415,6 +460,8 @@ def main():
             raise SystemExit(f"Model access check failed ({type(error).__name__}); check your local API account.") from None
     elif args.command == "engine":
         engine_view(args.scenario, args.json)
+    elif args.command == "desktop":
+        desktop(args.root, provider=args.provider, model=model)
     elif args.command == "init":
         binary("init", Path(args.root).absolute())
     elif args.command == "inspect":

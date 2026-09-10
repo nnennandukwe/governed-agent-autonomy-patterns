@@ -93,7 +93,55 @@ produce a receipt. The verifier has a separate actor identity and reads the
 in-memory artifact. This fixture does not establish process isolation or
 independently measured model cost.
 
-## Goose view: the live sequence
+## Goose Desktop: use the app for the live conversation
+
+With Goose Desktop installed and signed in to ChatGPT Codex:
+
+```sh
+python3 demo.py desktop /tmp/conference-desktop-1
+```
+
+This initializes a fresh disposable fixture, writes `desktop-recipe.json`
+outside the tool-accessible workspace, and opens the recipe in Goose Desktop.
+Review its instructions and choose **Trust and Execute**. The recipe explicitly
+lists only the GAAP extension and its three tools. Goose's
+[recipe extension configuration](https://github.com/aaif-goose/goose/blob/v1.50.0/documentation/docs/guides/recipes/recipe-reference.md#extensions)
+replaces default extensions for that recipe session. Check the session's
+extension menu: only **gaap** should be enabled. Developer, Extension Manager,
+Summon, and other ambient tools should be disabled for this chat. Normal app
+extension defaults are not changed by this launcher.
+
+Use the proposal activity button or type:
+
+> Read release.json and propose changing only its version to 1.1.0. Return the
+> request_id and GAAP decision, then stop for operator approval.
+
+In your separate operator terminal:
+
+```sh
+python3 demo.py status /tmp/conference-desktop-1
+python3 demo.py approve /tmp/conference-desktop-1 REQUEST_ID
+```
+
+Back in the **same Goose chat**, ask it to apply that exact request ID and read
+the resulting file. Continue with the stale-approval audience prediction below.
+The conversation and tool calls are visible in Goose; the diff, operator
+approval, deterministic engine walkthrough, and authoritative decision log are
+visible in your terminal. The app's recipe trust confirmation permits loading
+the recipe; it does not approve a GAAP file-change proposal.
+
+To reopen the same recipe, use the pinned CLI's `recipe open` command with the
+printed JSON path. To reset for a new demonstration, run `desktop` with a new
+directory. The launcher never overwrites or resets an existing session.
+
+The desktop session uses the app's existing authentication and session storage.
+The recipe sets a six-turn limit and a 30-second MCP tool timeout. The CLI
+launcher's 90-second process watchdog, temporary authentication copies, and
+per-call terminal transcripts apply only to CLI runs; they are not desktop
+guarantees. Use Goose's chat history for the app conversation and `inspect` for
+the separate GAAP decision log. Stop the chat in Goose if a model call stalls.
+
+## Goose CLI: the live sequence
 
 Use two terminal panes: goose requests in one, operator inspection and approval
 in the other. Both panes can use this directory as their working directory.

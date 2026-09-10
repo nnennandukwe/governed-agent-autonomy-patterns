@@ -99,6 +99,12 @@ Label this **Goose view: real model-driven MCP requests, RunCoordinator decision
 real file effects**. This narrower adapter has decision records, not the full
 engine's Terminal Run Receipt.
 
+For the app presentation, launch `python3 demo.py desktop /tmp/conference-desktop-1`
+with a fresh directory. Use the Goose Desktop conversation for requests and tool
+results, and a separate terminal for the operator's diff, approval, and decision
+log. Check that only the recipe's `gaap` extension is enabled. Trusting the recipe
+in Goose loads the tools; it does not grant approval for a proposed file change.
+
 1. Ask goose to read `release.json` and propose version `1.1.0`. Explain the
    request ID: a digest of the exact proposal and its bindings.
 2. Inspect the decision and unchanged file. `ask` is a normal governed state.
