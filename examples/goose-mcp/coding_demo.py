@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -38,6 +39,42 @@ def fresh_session():
 def inspect(root):
     """Read and integrity-check a coding session through the Rust consumer."""
     return legacy.binary('coding-inspect', root, capture=True)
+
+
+def write_metadata(root, name, value):
+    """Replace local metadata without following destination links or aliases."""
+    if name not in {'inspector.json', 'rehearsal.json'}:
+        raise ValueError('Unknown session metadata file')
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.' + name + '-' + secrets.token_hex(12)
+
+    def validate_destination():
+        """Reject linked and non-regular existing metadata entries."""
+        try:
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError(f'{name} must be an unlinked regular file')
+
+    try:
+        validate_destination()
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+        with os.fdopen(descriptor, 'w') as handle:
+            json.dump(value, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        validate_destination()
+        # Rename replaces the entry itself, never a late symlink's target.
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(directory)
 
 
 def recipe(root):
@@ -111,17 +148,17 @@ def serve(root, open_browser=True, launch_goose=False, recorded=False):
     server = ThreadingHTTPServer(('127.0.0.1', 0), handler(root, token, recorded))
     server.daemon_threads = True
     url = f'http://127.0.0.1:{server.server_port}/{token}/'
-    (root / 'inspector.json').write_text(json.dumps({'url': url, 'pid': os.getpid()}, indent=2))
-    print(f'Workspace: {root / "workspace"}', flush=True)
-    print(f'Inspector: {url}', flush=True)
-    print('Keep this terminal open. Ctrl+C stops the inspector; session records remain.', flush=True)
-    if launch_goose:
-        path = recipe(root)
-        subprocess.run([str(legacy.GOOSE), 'recipe', 'open', str(path)], check=True)
-        print('In Goose, choose Trust and Execute, then select the coding activity.', flush=True)
-    if open_browser:
-        webbrowser.open(url)
     try:
+        write_metadata(root, 'inspector.json', {'url': url, 'pid': os.getpid()})
+        print(f'Workspace: {root / "workspace"}', flush=True)
+        print(f'Inspector: {url}', flush=True)
+        print('Keep this terminal open. Ctrl+C stops the inspector; session records remain.', flush=True)
+        if launch_goose:
+            path = recipe(root)
+            subprocess.run([str(legacy.GOOSE), 'recipe', 'open', str(path)], check=True)
+            print('In Goose, choose Trust and Execute, then select the coding activity.', flush=True)
+        if open_browser:
+            webbrowser.open(url)
         server.serve_forever(poll_interval=0.3)
     except KeyboardInterrupt:
         print('\nInspector stopped. Session records preserved.')
@@ -148,7 +185,7 @@ def rehearse(root):
     if not completed or not denied or json.loads(state['files']['deployment.json'])['shipping_enabled'] or duration >= 420:
         raise SystemExit('Rehearsal did not meet acceptance. Inspect the actual records and transcript.')
     result = {'passed': True, 'source': 'real Goose + ChatGPT Codex via MCP; full AgentRunEngine per change', 'elapsed_seconds': duration, 'verified_code_runs': len(completed), 'denied_deployment_runs': len(denied), 'transcript': str(transcript)}
-    (root / 'rehearsal.json').write_text(json.dumps(result, indent=2))
+    write_metadata(root, 'rehearsal.json', result)
     print(json.dumps(result, indent=2))
     return result
 
