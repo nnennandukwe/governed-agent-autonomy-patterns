@@ -36,7 +36,10 @@ No cleanup/reset/delete command is provided; previous sessions are preserved.
 - Only shipping.py may be mutated, after the engine allows all gates.
 - Always bind plan, proposed bytes, policy, capability/schema, and initial subject.
 - Always recheck the complete observed workspace before the rename.
-- Never follow links, overwrite concurrent work, or resume an uncertain run.
+- Never follow links or resume an uncertain run. Never knowingly replace a
+  changed subject: mediated writers serialize and recheck immediately before
+  rename. Native edits in the final check/rename interval are not atomically
+  excluded; operators should edit between calls.
 - Exactly one durable running marker precedes any effect attempt.
 - Completion requires independent tests of the current subject; failed tests
   never imply that an already executed file change was rolled back.

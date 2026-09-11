@@ -19,7 +19,7 @@ function humanReason(run) {
 function pillars(run) {
   const p = $('pillars'); p.replaceChildren();
   let data;
-  if (!run) data = [['Planning','Waiting for a plan','Task scope is configured'],['Permissions','Policy ready','Code allowed · production denied'],['Tool trust','Awaiting request','Identity checked before execution'],['Verification','Not evaluated','Independent acceptance checks'],['Runtime','No runs yet','Bounded effects and verification']];
+  if (!run) data = [['Planning','Waiting for a plan','Task scope is configured'],['Permissions','Policy ready','Code allowed / production denied'],['Tool trust','Awaiting request','Identity checked before execution'],['Verification','Not evaluated','Independent acceptance checks'],['Runtime','No runs yet','Bounded effects and verification']];
   else {
     const perm = decision(run,'permission'), trust = decision(run,'tool_trust'), runtime = decision(run,'runtime');
     const v = run.verification;
@@ -28,19 +28,19 @@ function pillars(run) {
       ['Permissions',perm?.outcome ?? 'Not evaluated',perm?'Scope policy evaluated':'Gate not reached',tone(perm?.outcome)],
       ['Tool trust',trust?.outcome==='allow'?'Identity matched':trust?.outcome ?? 'Not evaluated',trust?'Capability and schema checked':'Stopped before this gate',tone(trust?.outcome)],
       ['Verification',v?(v.passed?'Passed':'Failed'):'Not evaluated',v?`${(v.cases??[]).filter(c=>c.passed).length} / ${(v.cases??[]).length} acceptance cases`:'Stopped before verification',v?(v.passed?'good':'blocked'):'muted'],
-      ['Runtime',runtime?.outcome==='allow'?'Within budget':runtime?.outcome ?? 'Not evaluated',`${run.elapsed_ms} ms measured · ${run.receipt.body.usage.tool_calls} accounted calls`,tone(runtime?.outcome)]
+      ['Runtime',runtime?.outcome==='allow'?'Within budget':runtime?.outcome ?? 'Not evaluated',`${run.elapsed_ms} ms measured / ${run.receipt.body.usage.tool_calls} accounted calls`,tone(runtime?.outcome)]
     ];
   }
   for (const [name,value,note,cls] of data) { const item=el('div',undefined,'pillar');item.append(el('h2',name),el('strong',value,cls),el('small',note));p.append(item); }
 }
 function eventDescription(event) {
-  if (event.decision) return `${event.gate.replaceAll('_',' ')}: ${event.decision.outcome} · ${event.decision.code}`;
-  if (event.event_type==='status_transition') return `${event.from} → ${event.to}`;
+  if (event.decision) return `${event.gate.replaceAll('_',' ')}: ${event.decision.outcome} / ${event.decision.code}`;
+  if (event.event_type==='status_transition') return `${event.from} -> ${event.to}`;
   if (event.event_type==='plan_recorded') return 'Plan recorded and bound to proposed change';
   if (event.event_type==='approval_recorded') return 'Preauthorized local task scope recorded';
   if (event.event_type==='mutation') return 'File changed; before and after subjects recorded';
   if (event.event_type==='verification') return `Independent verification: ${event.verdict}`;
-  if (event.event_type==='usage') return `${event.usage.elapsed_ms} ms · ${event.usage.tool_calls} accounted calls`;
+  if (event.event_type==='usage') return `${event.usage.elapsed_ms} ms / ${event.usage.tool_calls} accounted calls`;
   return event.event_type.replaceAll('_',' ');
 }
 function details(run) {
@@ -53,7 +53,7 @@ function details(run) {
   node.append(flow);
   const diff=el('div',undefined,'split');
   for(const [label,content] of [['Before',run.before],['Observed after',run.after]]) {const col=el('div');heading(col,label);col.append(el('pre',content ?? 'No accessible file at this path'));diff.append(col);}node.append(diff);
-  if(effects.includes('denied')) {const proposed=el('details');proposed.append(el('summary','Requested change · not executed'),el('pre',run.proposed));node.append(proposed);}
+  if(effects.includes('denied')) {const proposed=el('details');proposed.append(el('summary','Requested change / not executed'),el('pre',run.proposed));node.append(proposed);}
   heading(node,'Independent verification');
   if(run.verification) {
     if(run.verification.validation_error) node.append(el('p',run.verification.validation_error,'blocked'));
@@ -71,20 +71,20 @@ function render(next) {
   const run=runs[selected];
   $('location').textContent=state.workspace;
   $('count').textContent=runs.length;
-  $('limits').textContent='Per run: 1 effect · 2 accounted calls · 10 seconds. Verification: 5-second deadline.';
+  $('limits').textContent='Per run: 1 effect / 2 accounted calls / 10 seconds. Verification: 5-second deadline.';
   const nav=$('runs');nav.replaceChildren();
-  runs.forEach((item,index)=>{const button=el('button',undefined,'run');button.setAttribute('aria-current',String(index===selected));button.append(el('strong',`${index+1}. ${title(item)}`),el('span',`${runStatus(item)} · ${item.elapsed_ms} ms`,tone(runStatus(item))));button.addEventListener('click',()=>{selected=index;render(state);});nav.append(button);});
+  runs.forEach((item,index)=>{const button=el('button',undefined,'run');button.setAttribute('aria-current',String(index===selected));button.append(el('strong',`${index+1}. ${title(item)}`),el('span',`${runStatus(item)} / ${item.elapsed_ms} ms`,tone(runStatus(item))));button.addEventListener('click',()=>{selected=index;render(state);});nav.append(button);});
   if(state.inflight) { $('headline').textContent='An operation is in progress.';$('summary').textContent='A durable attempt is recorded. If execution stops unexpectedly, its outcome requires inspection.'; }
   else if(runs.some(r=>r.path==='deployment.json' && runStatus(r)==='blocked')) { const currentVerified=runs.some(r=>r.verification?.passed && r.verification.subject_digest===state.subject_digest); $('headline').textContent=currentVerified?'Code verified. Production protected.':'Production change blocked.';$('summary').textContent='Inspect the implementation evidence and the separate production request below.'; }
-  else if(runs.length) {$('headline').textContent=runStatus(runs.at(-1))==='completed'?'A verified code change.':'Completion requirements not met.';$('summary').textContent='Every outcome is backed by the engine’s recorded decisions and observations.';}
+  else if(runs.length) {$('headline').textContent=runStatus(runs.at(-1))==='completed'?'A verified code change.':'Completion requirements not met.';$('summary').textContent='Every outcome is backed by the engine\'s recorded decisions and observations.';}
   else {$('headline').textContent='A coding task. Explicit boundaries.';$('summary').textContent='Goose implements the shipping rules. GAAP evaluates each proposed change.';}
   pillars(run);if(run)details(run);
 }
 async function refresh(){
   try {const response=await fetch('state',{cache:'no-store'});const next=await response.json();if(!response.ok||next.error)throw new Error(next.error||'Inspector unavailable');
     const signature=JSON.stringify(next);if(signature!==fingerprint){if(state && next.runs.length>state.runs.length)selected=next.runs.length-1;fingerprint=signature;render(next);}
-    $('connection').textContent=next.view_mode==='recorded'?'● Recorded session · connected':'● Live · local records';$('connection').className='good';
-  }catch(error){$('connection').textContent='Disconnected · last observed data';$('connection').className='blocked';}
+    $('connection').textContent=next.view_mode==='recorded'?'Recorded session / connected':'Live / local records';$('connection').className='good';
+  }catch(error){$('connection').textContent='Disconnected / last observed data';$('connection').className='blocked';}
   setTimeout(refresh,750);
 }
 refresh();

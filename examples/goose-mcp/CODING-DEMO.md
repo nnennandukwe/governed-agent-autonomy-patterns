@@ -55,7 +55,9 @@ production request to show the permission block. Later gates correctly read
 The verifier permits a small arithmetic/conditional Python subset. Imports,
 attributes, loops, arbitrary calls, and unbounded integer growth are excluded.
 This is an example execution boundary, not production OS isolation. Other
-native processes running as the same user are outside the threat model. Do not
+native processes running as the same user are outside the threat model. The
+file lock serializes mediated writers; it is not an atomic compare-and-swap
+against native editors. Make operator edits between calls. Do not
 enable ambient shell/filesystem tools in this Goose recipe.
 
 Engine usage covers local execution and verification. Goose's model tokens,
