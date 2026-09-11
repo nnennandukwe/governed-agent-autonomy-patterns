@@ -22,6 +22,7 @@ pub fn evaluate(source: &str) -> Result<Value> {
     evaluate_program(source, PROGRAM, Duration::from_secs(5))
 }
 fn evaluate_program(source: &str, program: &str, timeout: Duration) -> Result<Value> {
+    let started = Instant::now();
     let mut child = Command::new("/usr/bin/python3")
         .args(["-I", "-S", "-B", "-c", program])
         .env_clear()
@@ -31,11 +32,9 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration) -> Result<Va
         .spawn()
         .map_err(|e| format!("verifier spawn failed: {e}"))?;
     let payload = json!({"source":source,"inputs":CASES.iter().map(|(q,p,_,_)| json!([q,p])).collect::<Vec<_>>()});
-    let input_result = child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.to_string().as_bytes());
+    let mut stdin = child.stdin.take().unwrap();
+    let payload = payload.to_string();
+    let input = thread::spawn(move || stdin.write_all(payload.as_bytes()));
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
     let output = thread::spawn(move || {
@@ -46,7 +45,6 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration) -> Result<Va
         let mut b = Vec::new();
         err.take(8193).read_to_end(&mut b).map(|_| b)
     });
-    let started = Instant::now();
     let mut timed_out = false;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -67,6 +65,7 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration) -> Result<Va
         .join()
         .map_err(|_| "verifier stderr thread failed")?
         .map_err(|e| e.to_string())?;
+    let input_result = input.join().map_err(|_| "verifier input thread failed")?;
     if timed_out
         || !status.success()
         || input_result.is_err()
@@ -148,7 +147,12 @@ mod tests {
     #[test]
     fn verifier_deadline_terminates_the_child() {
         let started = Instant::now();
-        let report = evaluate_program("", "while True: pass", Duration::from_millis(50)).unwrap();
+        let report = evaluate_program(
+            &"x".repeat(32768),
+            "while True: pass",
+            Duration::from_millis(50),
+        )
+        .unwrap();
         assert_eq!(report["passed"], false);
         assert_eq!(report["reason"], "verifier time limit exceeded");
         assert!(started.elapsed() < Duration::from_secs(2));
