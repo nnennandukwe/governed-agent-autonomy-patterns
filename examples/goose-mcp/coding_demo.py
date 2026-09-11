@@ -154,7 +154,7 @@ def main():
     run.add_argument('--root', type=Path, help='use an already initialized fresh coding session')
     state = commands.add_parser('status', help='print a saved session and its verified receipts')
     state.add_argument('root', type=Path)
-    mcp = commands.add_parser('mcp', help=argparse.SUPPRESS)
+    mcp = commands.add_parser('mcp', help='internal: start the coding MCP server')
     mcp.add_argument('root', type=Path)
     args = parser.parse_args()
     if args.command == 'mcp':
