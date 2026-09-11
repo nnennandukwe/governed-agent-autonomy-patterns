@@ -112,6 +112,9 @@ def handler(root, token, recorded=False):
                 return
             prefix = '/' + token + '/'
             resources = {'': ('index.html', 'text/html'), 'app.js': ('app.js', 'text/javascript'), 'style.css': ('style.css', 'text/css')}
+            for weight in ('regular', 'medium', 'semibold'):
+                font = f'fonts/ibm-plex-sans-{weight}.woff2'
+                resources[font] = (font, 'font/woff2')
             suffix = self.path[len(prefix):] if self.path.startswith(prefix) else None
             if suffix == 'state':
                 try:
@@ -135,7 +138,7 @@ def handler(root, token, recorded=False):
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(body)
     return Handler

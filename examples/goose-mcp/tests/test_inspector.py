@@ -109,13 +109,20 @@ class InspectorTests(unittest.TestCase):
 
     def test_real_assets_and_state_have_restrictive_headers(self):
         """Check that the real assets and JSON responses use restrictive headers."""
-        for path in ['', 'app.js', 'style.css', 'state']:
+        for path in ['', 'app.js', 'style.css', 'state',
+                     'fonts/ibm-plex-sans-regular.woff2',
+                     'fonts/ibm-plex-sans-medium.woff2',
+                     'fonts/ibm-plex-sans-semibold.woff2']:
             status, headers, body = self.request('/session-token/' + path)
             self.assertEqual(status, 200)
             self.assertTrue(body)
             self.assertEqual(headers['Cache-Control'], 'no-store')
             self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
+            self.assertIn("font-src 'self'", headers['Content-Security-Policy'])
             self.assertNotIn('Access-Control-Allow-Origin', headers)
+            if path.endswith('.woff2'):
+                self.assertTrue(body.startswith(b'wOF2'))
+                self.assertEqual(headers['Content-Type'], 'font/woff2; charset=utf-8')
 
     def test_foreign_origins_hosts_tokens_and_mutations_are_rejected(self):
         """Prove the HTTP boundary rejects foreign origins and mutation attempts."""
