@@ -3,17 +3,17 @@ let state = null, selected = null, fingerprint = '';
 const $ = id => document.getElementById(id);
 function el(tag, text, cls) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; }
 function heading(parent, text) { parent.append(el('h3', text)); }
-function status(run) { return run.receipt.body.terminal_status; }
+function runStatus(run) { return run.receipt.body.terminal_status; }
 function events(run) { return run.receipt.body.events; }
 function decision(run, gate) { return events(run).filter(e => e.gate === gate).at(-1)?.decision; }
 function tone(value) { return ['completed', 'allow', 'pass'].includes(value) ? 'good' : ['blocked', 'block', 'ask'].includes(value) ? 'blocked' : 'muted'; }
 function title(run) { return run.path === 'shipping.py' ? 'Shipping implementation' : run.path === 'deployment.json' ? 'Production activation' : 'Outside-scope change'; }
 function humanReason(run) {
   const reason = run.receipt.body.terminal_reason;
-  if (reason === 'permission.policy_denied') return 'The session permits application code changes. Production configuration is outside that authority.';
+  if (reason === 'permission.denied') return 'The session permits application code changes. Production configuration is outside that authority.';
   if (reason.includes('stale_subject')) return 'The project changed since this request was prepared. Earlier authority does not cover the new state.';
   if (reason.includes('verification')) return 'The proposed code was checked, but completion requirements were not satisfied. Inspect the actual file and test evidence below.';
-  if (status(run) === 'completed') return 'The code change executed and independent acceptance checks passed for the resulting project.';
+  if (runStatus(run) === 'completed') return 'The code change executed and independent acceptance checks passed for the resulting project.';
   return 'The engine stopped this bounded run. Its recorded reason and observed effects are shown below.';
 }
 function pillars(run) {
@@ -45,11 +45,11 @@ function eventDescription(event) {
 }
 function details(run) {
   const node=$('detail');node.replaceChildren();
-  node.append(el('p',status(run),`outcome ${tone(status(run))}`),el('h2',title(run)),el('p',humanReason(run)),el('p',run.receipt.body.terminal_reason,'reason'));
+  node.append(el('p',runStatus(run),`outcome ${tone(runStatus(run))}`),el('h2',title(run)),el('p',humanReason(run)),el('p',run.receipt.body.terminal_reason,'reason'));
   heading(node,'Recorded plan');node.append(el('p',run.plan));
   const effects=run.protected_effect_results.map(r=>r.body.execution_status);
   const flow=el('ul',undefined,'flow');
-  for (const text of [`Effect: ${effects.join(', ') || 'not dispatched'}`,`Completion: ${status(run)}`,`Receipt: ${run.terminal_receipt_verified?'integrity verified':'not verified'}`]) flow.append(el('li',text));
+  for (const text of [`Effect: ${effects.join(', ') || 'not dispatched'}`,`Completion: ${runStatus(run)}`,`Receipt: ${run.terminal_receipt_verified?'integrity verified':'not verified'}`]) flow.append(el('li',text));
   node.append(flow);
   const diff=el('div',undefined,'split');
   for(const [label,content] of [['Before',run.before],['Observed after',run.after]]) {const col=el('div');heading(col,label);col.append(el('pre',content ?? 'No accessible file at this path'));diff.append(col);}node.append(diff);
@@ -67,16 +67,16 @@ function details(run) {
 }
 function render(next) {
   state=next;const runs=state.runs??[];
-  if(selected===null && runs.length) { const completed=runs.findLastIndex(r=>status(r)==='completed');selected=state.view_mode==='recorded' && completed>=0?completed:runs.length-1; }
+  if(selected===null && runs.length) { const completed=runs.findLastIndex(r=>runStatus(r)==='completed');selected=state.view_mode==='recorded' && completed>=0?completed:runs.length-1; }
   const run=runs[selected];
   $('location').textContent=state.workspace;
   $('count').textContent=runs.length;
   $('limits').textContent='Per run: 1 effect · 2 accounted calls · 10 seconds. Verification: 5-second deadline.';
   const nav=$('runs');nav.replaceChildren();
-  runs.forEach((item,index)=>{const button=el('button',undefined,'run');button.setAttribute('aria-current',String(index===selected));button.append(el('strong',`${index+1}. ${title(item)}`),el('span',`${status(item)} · ${item.elapsed_ms} ms`,tone(status(item))));button.addEventListener('click',()=>{selected=index;render(state);});nav.append(button);});
+  runs.forEach((item,index)=>{const button=el('button',undefined,'run');button.setAttribute('aria-current',String(index===selected));button.append(el('strong',`${index+1}. ${title(item)}`),el('span',`${runStatus(item)} · ${item.elapsed_ms} ms`,tone(runStatus(item))));button.addEventListener('click',()=>{selected=index;render(state);});nav.append(button);});
   if(state.inflight) { $('headline').textContent='An operation is in progress.';$('summary').textContent='A durable attempt is recorded. If execution stops unexpectedly, its outcome requires inspection.'; }
-  else if(runs.some(r=>r.path==='deployment.json' && status(r)==='blocked')) { const currentVerified=runs.some(r=>r.verification?.passed && r.verification.subject_digest===state.subject_digest); $('headline').textContent=currentVerified?'Code verified. Production protected.':'Production change blocked.';$('summary').textContent='Inspect the implementation evidence and the separate production request below.'; }
-  else if(runs.length) {$('headline').textContent=status(runs.at(-1))==='completed'?'A verified code change.':'Completion requirements not met.';$('summary').textContent='Every outcome is backed by the engine’s recorded decisions and observations.';}
+  else if(runs.some(r=>r.path==='deployment.json' && runStatus(r)==='blocked')) { const currentVerified=runs.some(r=>r.verification?.passed && r.verification.subject_digest===state.subject_digest); $('headline').textContent=currentVerified?'Code verified. Production protected.':'Production change blocked.';$('summary').textContent='Inspect the implementation evidence and the separate production request below.'; }
+  else if(runs.length) {$('headline').textContent=runStatus(runs.at(-1))==='completed'?'A verified code change.':'Completion requirements not met.';$('summary').textContent='Every outcome is backed by the engine’s recorded decisions and observations.';}
   else {$('headline').textContent='A coding task. Explicit boundaries.';$('summary').textContent='Goose implements the shipping rules. GAAP evaluates each proposed change.';}
   pillars(run);if(run)details(run);
 }
