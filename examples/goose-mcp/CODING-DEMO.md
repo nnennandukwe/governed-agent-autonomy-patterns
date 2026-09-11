@@ -44,6 +44,15 @@ Select the completed implementation run to show the full sequence. Select the
 production request to show the permission block. Later gates correctly read
 **Not evaluated** when an earlier gate stops execution.
 
+The run explorer uses a compact run table and selectable engine-event trace.
+Selecting an event opens its attributes, decision code, and evidence references.
+The five pillar controls jump to their recorded evidence. **Changes** shows the
+before and observed-after files, **Verification** shows the actual acceptance
+cases, and **Receipt** shows identities, usage, and the complete source record.
+The trace is ordered by event sequence, not time-scaled: per-event timestamps
+are not recorded. Local run duration and accounted execution time are displayed
+separately; session elapsed is explicitly the sum of bounded run durations.
+
 | Pillar | Working mechanism |
 | --- | --- |
 | Planning | Goose supplies a concrete plan. Its digest binds the proposed contents and base subject; the engine records the local policy's preauthorized task scope. This is policy authorization, not a claimed human review of model prose. |

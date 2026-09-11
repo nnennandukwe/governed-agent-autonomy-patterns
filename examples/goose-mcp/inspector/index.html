@@ -1,8 +1,59 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GAAP / Run inspector</title><link rel="stylesheet" href="style.css"><script src="app.js" defer></script></head>
-<body><header><a class="brand" href="./">GAAP<span> / run inspector</span></a><span id="connection" role="status">Connecting</span></header>
-<main><section class="intro"><p class="eyebrow">GOOSE + GOVERNED AGENT AUTONOMY</p><h1 id="headline">A coding task. Explicit boundaries.</h1><p id="summary">Waiting for the local session.</p><p class="location" id="location"></p></section>
-<section id="pillars" aria-label="Five governance pillars"></section>
-<div class="workspace"><aside><h2>Bounded runs <span id="count">0</span></h2><p class="muted">One proposed change per engine run.</p><nav id="runs" aria-label="Select a run"></nav><div class="policy"><h3>Session authority</h3><p>Application code: permitted<br>Production configuration: protected</p><p id="limits"></p></div></aside>
-<article id="detail"><h2>Ready for Goose</h2><p>Start the coding activity in Goose. Decisions, actual file changes, and verification results appear here as each bounded run finishes.</p><h3>The task</h3><p>Implement bulk discounts and delivery thresholds in a shipping-price function. Verify the result, then request production activation.</p><p class="muted">The inspector reads GAAP records. It does not grant authority.</p></article></div>
-<footer>Local execution evidence / AgentRunEngine receipts / Model tokens and cost are not measured by this MCP boundary.</footer></main></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Inspect GAAP agent runs, governance decisions, execution evidence, and verification results.">
+  <title>GAAP | Run explorer</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">G</span>GAAP<span class="brand-divider">/</span><span class="brand-context">Observability</span></a>
+    <div class="connection"><span id="mode" class="tag">Local session</span><span id="connection" role="status">Connecting</span></div>
+  </header>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="sidebar-label">WORKSPACE</div>
+      <div class="project-name">Goose / shipping</div>
+      <nav aria-label="Inspector sections">
+        <a class="nav-link active" href="#explorer"><span aria-hidden="true">&#9638;</span>Run explorer</a>
+        <a class="nav-link" href="#run-detail"><span aria-hidden="true">&#8801;</span>Execution detail</a>
+        <a class="nav-link" href="#session-policy"><span aria-hidden="true">&#9671;</span>Session policy</a>
+      </nav>
+      <div class="sidebar-section" id="session-policy">
+        <div class="sidebar-label">AUTHORITY</div>
+        <div class="scope-item"><span class="status-dot good"></span><code>shipping.py</code><span class="muted">allow</span></div>
+        <div class="scope-item"><span class="status-dot blocked"></span><code>deployment.json</code><span class="muted">deny</span></div>
+        <p class="sidebar-note">All other writes denied.</p>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">RUN LIMITS</div>
+        <dl class="compact-list"><dt>Protected effects</dt><dd>1</dd><dt>Accounted calls</dt><dd>2</dd><dt>Engine budget</dt><dd>10 s</dd><dt>Verifier deadline</dt><dd>5 s</dd><dt>Session runs</dt><dd>12</dd></dl>
+      </div>
+      <div class="sidebar-bottom"><span class="status-dot accent"></span>AgentRunEngine<div>MCP / local filesystem</div></div>
+    </aside>
+    <main>
+      <section id="explorer" aria-labelledby="page-title">
+        <div class="page-heading"><div><p class="breadcrumb">Sessions <span>/</span> <span id="session-name">Local coding session</span></p><h1 id="page-title">Run explorer</h1></div><span class="tag mono">gaap.submit_change</span></div>
+        <p id="session-state" role="status" class="session-state">Waiting for local execution records.</p>
+        <div class="metrics" id="metrics" aria-label="Session totals"></div>
+        <div class="section-bar"><h2>Bounded runs <span id="count" class="counter">0</span></h2><span class="muted">One proposed change per run</span></div>
+        <div class="table-scroll"><table class="run-table"><thead><tr><th scope="col">Run / operation</th><th scope="col">Status</th><th scope="col">Target</th><th scope="col">Local elapsed</th><th scope="col">Calls</th><th scope="col">Verification</th></tr></thead><tbody id="runs"></tbody></table></div>
+      </section>
+      <section id="run-detail" aria-label="Selected run">
+        <div id="empty" class="empty"><span class="empty-mark" aria-hidden="true">[ ]</span><h2>Waiting for an agent run</h2><p>Start the coding activity in Goose. Each submitted change will appear with its decisions, observed effects, and verification evidence.</p><p class="muted">Task: implement shipping discounts and delivery thresholds, then request activation.</p></div>
+        <div id="selection" hidden>
+          <div class="detail-heading"><div><div class="run-breadcrumb" id="run-id"></div><h2 id="run-title"></h2></div><div id="run-outcome"></div></div>
+          <div id="run-reason" class="decision-summary"></div>
+          <div id="pillars" class="pillars" aria-label="Five governance pillars"></div>
+          <div class="detail-toolbar"><div id="tabs" class="tabs" role="tablist" aria-label="Run details"></div><span id="receipt-state" class="receipt-state"></span></div>
+          <div id="detail" role="tabpanel" tabindex="0"></div>
+        </div>
+      </section>
+      <footer><span id="location" class="mono"></span><span>Local evidence only. Model tokens and provider cost not measured.</span></footer>
+    </main>
+  </div>
+</body>
+</html>
