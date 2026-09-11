@@ -25,7 +25,7 @@ function pillars(run) {
     const v = run.verification;
     data = [
       ['Planning',events(run).some(e=>e.event_type==='plan_recorded')?'Plan recorded':'Not evaluated','Proposal and permitted scope are bound','good'],
-      ['Permissions',perm?.outcome ?? 'Not evaluated',perm?.code ?? 'Gate not reached',tone(perm?.outcome)],
+      ['Permissions',perm?.outcome ?? 'Not evaluated',perm?'Scope policy evaluated':'Gate not reached',tone(perm?.outcome)],
       ['Tool trust',trust?.outcome==='allow'?'Identity matched':trust?.outcome ?? 'Not evaluated',trust?'Capability and schema checked':'Stopped before this gate',tone(trust?.outcome)],
       ['Verification',v?(v.passed?'Passed':'Failed'):'Not evaluated',v?`${(v.cases??[]).filter(c=>c.passed).length} / ${(v.cases??[]).length} acceptance cases`:'Stopped before verification',v?(v.passed?'good':'blocked'):'muted'],
       ['Runtime',runtime?.outcome==='allow'?'Within budget':runtime?.outcome ?? 'Not evaluated',`${run.elapsed_ms} ms measured · ${run.receipt.body.usage.tool_calls} accounted calls`,tone(runtime?.outcome)]
@@ -67,7 +67,7 @@ function details(run) {
 }
 function render(next) {
   state=next;const runs=state.runs??[];
-  if(selected===null && runs.length) selected=runs.length-1;
+  if(selected===null && runs.length) { const completed=runs.findLastIndex(r=>status(r)==='completed');selected=state.view_mode==='recorded' && completed>=0?completed:runs.length-1; }
   const run=runs[selected];
   $('location').textContent=state.workspace;
   $('count').textContent=runs.length;
@@ -83,7 +83,7 @@ function render(next) {
 async function refresh(){
   try {const response=await fetch('state',{cache:'no-store'});const next=await response.json();if(!response.ok||next.error)throw new Error(next.error||'Inspector unavailable');
     const signature=JSON.stringify(next);if(signature!==fingerprint){if(state && next.runs.length>state.runs.length)selected=next.runs.length-1;fingerprint=signature;render(next);}
-    $('connection').textContent='● Live · local records';$('connection').className='good';
+    $('connection').textContent=next.view_mode==='recorded'?'● Recorded session · connected':'● Live · local records';$('connection').className='good';
   }catch(error){$('connection').textContent='Disconnected · last observed data';$('connection').className='blocked';}
   setTimeout(refresh,750);
 }

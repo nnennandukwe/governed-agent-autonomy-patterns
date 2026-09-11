@@ -56,7 +56,7 @@ def recipe(root):
     return path
 
 
-def handler(root, token):
+def handler(root, token, recorded=False):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -71,7 +71,9 @@ def handler(root, token):
             suffix = self.path[len(prefix):] if self.path.startswith(prefix) else None
             if suffix == 'state':
                 try:
-                    body = json.dumps(inspect(root)).encode()
+                    snapshot = inspect(root)
+                    snapshot['view_mode'] = 'recorded' if recorded else 'live'
+                    body = json.dumps(snapshot).encode()
                     status = 200
                 except (SystemExit, subprocess.CalledProcessError, OSError, ValueError):
                     body = json.dumps({'error': 'The session could not be inspected. Preserve its files and check the terminal.'}).encode()
@@ -95,10 +97,10 @@ def handler(root, token):
     return Handler
 
 
-def serve(root, open_browser=True, launch_goose=False):
+def serve(root, open_browser=True, launch_goose=False, recorded=False):
     inspect(root)
     token = secrets.token_urlsafe(24)
-    server = ThreadingHTTPServer(('127.0.0.1', 0), handler(root, token))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler(root, token, recorded))
     server.daemon_threads = True
     url = f'http://127.0.0.1:{server.server_port}/{token}/'
     (root / 'inspector.json').write_text(json.dumps({'url': url, 'pid': os.getpid()}, indent=2))
@@ -163,7 +165,7 @@ def main():
     elif args.command == 'status':
         print(json.dumps(inspect(args.root.absolute()), indent=2))
     elif args.command == 'view':
-        serve(args.root.absolute(), not args.no_open)
+        serve(args.root.absolute(), not args.no_open, recorded=True)
     else:
         build()
         legacy.verify_binary(legacy.GOOSE)
