@@ -102,11 +102,21 @@ impl VerifierPort for ShippingVerifier {
     ) -> std::result::Result<PortObservation<VerificationReport>, RuntimePortError> {
         let start = Instant::now();
         let result = (|| -> Result<_> {
-            let before = self.store.snapshot()?;
-            let observed_digest = snapshot_digest(&before)?;
-            let mut report = evaluate(&before["shipping.py"].content)?;
-            let after = self.store.snapshot()?;
-            let fresh = before == after && observed_digest == context.current_subject.digest;
+            // Both snapshots are after the executor has finished the file change.
+            let before_verification = self.store.snapshot()?;
+            let observed_digest = snapshot_digest(&before_verification)?;
+            let mut report = evaluate(&before_verification["shipping.py"].content)?;
+            #[cfg(test)]
+            if self.store.fault == Some("verification_drift") {
+                fs::write(
+                    self.store.workspace().join("shipping.py"),
+                    "operator edit during verification\n",
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let after_verification = self.store.snapshot()?;
+            let fresh = before_verification == after_verification
+                && observed_digest == context.current_subject.digest;
             report["subject_digest"] = json!(observed_digest);
             report["fresh"] = json!(fresh);
             report["passed"] = json!(report["passed"] == true && fresh);

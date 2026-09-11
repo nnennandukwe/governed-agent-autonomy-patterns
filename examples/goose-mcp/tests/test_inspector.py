@@ -12,6 +12,7 @@ import coding_demo
 
 class InspectorTests(unittest.TestCase):
     def setUp(self):
+        """Start a real loopback HTTP server with a controlled record source."""
         self.patcher = patch.object(coding_demo, 'inspect', return_value={'runs': [], 'files': {}})
         self.patcher.start()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), coding_demo.handler(Path('/unused'), 'session-token'))
@@ -19,12 +20,14 @@ class InspectorTests(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        """Stop the HTTP server and restore the record source after each test."""
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=1)
         self.patcher.stop()
 
     def request(self, path, method='GET', headers=None):
+        """Issue a real HTTP request and return its status, headers, and body."""
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=2)
         connection.request(method, path, headers=headers or {})
         response = connection.getresponse()
@@ -33,6 +36,7 @@ class InspectorTests(unittest.TestCase):
         return result
 
     def test_real_assets_and_state_have_restrictive_headers(self):
+        """Check that the real assets and JSON responses use restrictive headers."""
         for path in ['', 'app.js', 'style.css', 'state']:
             status, headers, body = self.request('/session-token/' + path)
             self.assertEqual(status, 200)
@@ -42,6 +46,7 @@ class InspectorTests(unittest.TestCase):
             self.assertNotIn('Access-Control-Allow-Origin', headers)
 
     def test_foreign_origins_hosts_tokens_and_mutations_are_rejected(self):
+        """Prove the HTTP boundary rejects foreign origins and mutation attempts."""
         self.assertEqual(self.request('/session-token/state', headers={'Host': 'attacker.example'})[0], 403)
         self.assertEqual(self.request('/session-token/state', headers={'Origin': 'https://attacker.example'})[0], 403)
         self.assertEqual(self.request('/wrong/state')[0], 404)
@@ -49,6 +54,7 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(self.request('/session-token/state', method='POST')[0], 501)
 
     def test_inspection_failure_returns_unavailable_not_empty_success(self):
+        """Keep invalid evidence distinct from a valid empty session."""
         with patch.object(coding_demo, 'inspect', side_effect=ValueError('invalid receipt')):
             status, _, body = self.request('/session-token/state')
         self.assertEqual(status, 503)

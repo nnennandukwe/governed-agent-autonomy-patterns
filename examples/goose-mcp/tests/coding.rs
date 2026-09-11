@@ -90,3 +90,44 @@ fn inspector_revalidates_receipts_and_verification_evidence() {
     std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
     assert!(store.inspect().unwrap_err().contains("receipt integrity"));
 }
+
+#[test]
+fn rust_commands_accept_the_same_relative_session_path() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let parent = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_gaap-goose-demo");
+    let init = Command::new(binary)
+        .args(["coding-init", "coding"])
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let inspect = Command::new(binary)
+        .args(["coding-inspect", "coding"])
+        .current_dir(parent.path())
+        .output()
+        .unwrap();
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let state: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let mut child = Command::new(binary)
+        .args(["coding-submit", "coding"])
+        .current_dir(parent.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(json!({"path":"shipping.py","content":GOOD,"plan":"Implement shipping rules","base_digest":state["subject_digest"]}).to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");
+}

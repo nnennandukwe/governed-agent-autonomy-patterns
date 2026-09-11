@@ -80,7 +80,8 @@ async fn coding_tools_use_real_engine_receipts_over_stdio() {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gaap-goose-demo"));
     command
         .arg("coding-serve")
-        .arg(store.workspace().parent().unwrap())
+        .arg("coding")
+        .current_dir(parent.path())
         .env_clear();
     let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
     let tools = client.list_all_tools().await.unwrap();

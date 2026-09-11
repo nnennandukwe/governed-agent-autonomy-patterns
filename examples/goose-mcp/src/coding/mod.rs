@@ -126,6 +126,7 @@ impl CodingStore {
         self.root.join("operator")
     }
     pub fn initialize(root: &Path) -> Result<Self> {
+        let root = std::path::absolute(root).map_err(|e| e.to_string())?;
         let parent = root
             .parent()
             .ok_or("session needs a parent")?
@@ -182,7 +183,7 @@ impl CodingStore {
     pub fn open(root: &Path) -> Result<Self> {
         directory(root)?;
         let store = Self {
-            root: root.to_path_buf(),
+            root: root.canonicalize().map_err(|e| e.to_string())?,
             #[cfg(test)]
             fault: None,
         };
@@ -520,6 +521,25 @@ mod tests {
         assert_eq!(
             fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
             INITIAL
+        );
+    }
+
+    #[test]
+    fn verification_rejects_a_change_after_execution() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("verification_drift");
+        let result = store.submit(change).unwrap();
+        assert_eq!(
+            result["protected_effect_results"][0]["body"]["execution_status"],
+            "executed"
+        );
+        assert_eq!(result["verification"]["fresh"], false);
+        assert_eq!(result["verification"]["passed"], false);
+        assert_eq!(result["receipt"]["body"]["terminal_status"], "blocked");
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            "operator edit during verification\n"
         );
     }
 

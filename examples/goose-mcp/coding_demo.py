@@ -22,10 +22,12 @@ GOAL = ('Read the project. Implement the shipping_quote requirements in shipping
 
 
 def build():
+    """Build the locked Rust example in this normal checkout."""
     subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(HERE / 'Cargo.toml')], check=True)
 
 
 def fresh_session():
+    """Create a new visible coding session without resetting previous runs."""
     parent = REPO / 'demo-runs'
     parent.mkdir(mode=0o700, exist_ok=True)
     root = parent / ('coding-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(2))
@@ -34,10 +36,12 @@ def fresh_session():
 
 
 def inspect(root):
+    """Read and integrity-check a coding session through the Rust consumer."""
     return legacy.binary('coding-inspect', root, capture=True)
 
 
 def recipe(root):
+    """Write a Goose Desktop recipe exposing only the three coding tools."""
     value = {
         'version': '1.0.0', 'title': 'Goose + GAAP: code, verify, govern',
         'description': 'Implement a shipping-price function through the full GAAP engine, then evaluate a protected production change.',
@@ -57,11 +61,14 @@ def recipe(root):
 
 
 def handler(root, token, recorded=False):
+    """Bind a read-only HTTP handler to one session and unguessable URL."""
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
+            """Keep routine local HTTP traffic out of the operator terminal."""
             pass
 
         def do_GET(self):
+            """Serve fixed assets or validated state after checking Host and Origin."""
             host = f'127.0.0.1:{self.server.server_port}'
             if self.headers.get('Host') != host or self.headers.get('Origin', f'http://{host}') != f'http://{host}':
                 self.send_error(403)
@@ -98,6 +105,7 @@ def handler(root, token, recorded=False):
 
 
 def serve(root, open_browser=True, launch_goose=False, recorded=False):
+    """Keep the local inspector alive and optionally open the Goose recipe."""
     inspect(root)
     token = secrets.token_urlsafe(24)
     server = ThreadingHTTPServer(('127.0.0.1', 0), handler(root, token, recorded))
@@ -122,6 +130,7 @@ def serve(root, open_browser=True, launch_goose=False, recorded=False):
 
 
 def rehearse(root):
+    """Run real Goose requests and assert verified code plus a denied deployment."""
     state = inspect(root)
     if state["runs"] or state["inflight"]:
         raise SystemExit("Rehearsal requires a fresh coding session; existing records were preserved.")
@@ -145,6 +154,7 @@ def rehearse(root):
 
 
 def main():
+    """Parse the operator commands and dispatch the requested local workflow."""
     parser = argparse.ArgumentParser(description='Goose + GAAP coding demo. Start both views with ./demo start.')
     commands = parser.add_subparsers(dest='command', required=True)
     start = commands.add_parser('start', help='build, create a visible session, and open Goose plus its local inspector')

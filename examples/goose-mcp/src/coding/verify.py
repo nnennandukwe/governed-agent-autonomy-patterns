@@ -6,6 +6,7 @@ import sys
 
 
 def validate(source):
+    """Validate and normalize the bounded arithmetic function before execution."""
     tree = ast.parse(source)
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
         raise ValueError('Provide exactly one shipping_quote function; imports and top-level execution are forbidden.')
