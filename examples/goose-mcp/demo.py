@@ -258,11 +258,12 @@ def goose(root, prompt, timeout=90, provider="chatgpt_codex", model=None):
         return run_goose(root, prompt, timeout, provider, model, env, secrets)
 
 
-def run_goose(root, prompt, timeout, provider, model, env, secrets):
+def run_goose(root, prompt, timeout, provider, model, env, secrets, *, mcp_entry=None, max_turns=6):
     """Execute the verified runtime and capture the actual provider-backed result."""
-    extension = "gaap:" + shlex.join([sys.executable, str(HERE / "demo.py"), "mcp-server", str(root)])
+    entry = mcp_entry or [sys.executable, str(HERE / "demo.py"), "mcp-server", str(root)]
+    extension = "gaap:" + shlex.join(entry)
     command = [str(GOOSE), "run", "--no-profile", "--no-session", "--provider", provider, "--model", model,
-               "--with-extension", extension, "--max-turns", "6", "--max-tool-repetitions", "2",
+               "--with-extension", extension, "--max-turns", str(max_turns), "--max-tool-repetitions", "2",
                "--output-format", "text", "--text", prompt]
     logs = root / "transcripts"
     private_directory(logs, create=True)

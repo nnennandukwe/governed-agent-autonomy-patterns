@@ -1,0 +1,3 @@
+#!/bin/sh
+# The demo lives in the normal repository checkout.
+exec python3 "$(dirname "$0")/examples/goose-mcp/coding_demo.py" "$@"

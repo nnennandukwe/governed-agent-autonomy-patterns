@@ -1,4 +1,8 @@
-# Governed agent autonomy: engine and goose demo
+# Governed agent autonomy: release-file approval example
+
+For the live coding task and five-pillar inspector, use the
+[new coding demo](./CODING-DEMO.md): `./demo start` from the repository root.
+The rest of this page documents the original, narrower approval example.
 
 This example shows an agent proposing a real file change, GAAP requesting
 approval, and an operator approving the exact operation. Goose then performs

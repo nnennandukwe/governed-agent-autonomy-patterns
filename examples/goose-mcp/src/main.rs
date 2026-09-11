@@ -1,11 +1,16 @@
-use gaap_goose_demo::{engine, protocol::BoundaryServer, store::Store};
+use gaap_goose_demo::{
+    coding::{CodingStore, mcp::CodingServer},
+    engine,
+    protocol::BoundaryServer,
+    store::Store,
+};
 use rmcp::ServiceExt;
 use std::{
     io::{self, IsTerminal, Write},
     path::Path,
 };
 
-const HELP: &str = "GAAP conference example\n\n  gaap-goose-demo init ROOT\n  gaap-goose-demo serve --state-dir ROOT/operator\n  gaap-goose-demo inspect ROOT/operator\n  gaap-goose-demo approve ROOT/operator REQUEST_ID [--yes]\n  gaap-goose-demo engine [completed|approval-required|stale-verification]\n\nApproval is operator-only. --yes explicitly approves without an interactive prompt.\nUse a fresh ROOT for every rehearsal; existing sessions are never reset.";
+const HELP: &str = "GAAP conference example\n\n  gaap-goose-demo coding-init ROOT\n  gaap-goose-demo coding-serve ROOT\n  gaap-goose-demo coding-inspect ROOT\n  gaap-goose-demo coding-submit ROOT  (JSON on stdin)\n\n  gaap-goose-demo init ROOT\n  gaap-goose-demo serve --state-dir ROOT/operator\n  gaap-goose-demo inspect ROOT/operator\n  gaap-goose-demo approve ROOT/operator REQUEST_ID [--yes]\n  gaap-goose-demo engine [completed|approval-required|stale-verification]\n\nApproval is operator-only. --yes explicitly approves without an interactive prompt.\nUse a fresh ROOT for every rehearsal; existing sessions are never reset.";
 fn print(value: impl serde::Serialize) -> Result<(), String> {
     println!(
         "{}",
@@ -26,6 +31,20 @@ async fn run() -> Result<(), String> {
     match args.as_slice() {
         [] | ["--help"] | ["-h"] => {
             println!("{HELP}");
+            Ok(())
+        }
+        ["coding-init", root] => print(CodingStore::initialize(Path::new(root))?.inspect()?),
+        ["coding-inspect", root] => print(CodingStore::open(Path::new(root))?.inspect()?),
+        ["coding-submit", root] => {
+            let input = serde_json::from_reader(io::stdin()).map_err(|e| e.to_string())?;
+            print(CodingStore::open(Path::new(root))?.submit(input)?)
+        }
+        ["coding-serve", root] => {
+            let service = CodingServer(CodingStore::open(Path::new(root))?)
+                .serve(rmcp::transport::stdio())
+                .await
+                .map_err(|e| e.to_string())?;
+            service.waiting().await.map_err(|e| e.to_string())?;
             Ok(())
         }
         ["init", root] => {

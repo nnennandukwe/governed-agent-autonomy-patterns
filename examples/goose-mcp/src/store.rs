@@ -41,12 +41,12 @@ fn block(code: &str) -> Decision {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Identity {
+pub(crate) struct Identity {
     device: u64,
     inode: u64,
     mode: u32,
 }
-fn identity(path: &Path, directory: bool) -> Result<Identity> {
+pub(crate) fn identity(path: &Path, directory: bool) -> Result<Identity> {
     let m = fs::symlink_metadata(path).map_err(err)?;
     if m.file_type().is_symlink()
         || if directory {
@@ -63,7 +63,7 @@ fn identity(path: &Path, directory: bool) -> Result<Identity> {
         mode: m.mode() & 0o777,
     })
 }
-fn directory(path: &Path) -> Result<()> {
+pub(crate) fn directory(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part);
@@ -71,7 +71,7 @@ fn directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn trusted_parent(path: &Path) -> Result<()> {
+pub(crate) fn trusted_parent(path: &Path) -> Result<()> {
     directory(path)?;
     let mut current = PathBuf::new();
     let owner = rustix::process::geteuid().as_raw();
@@ -86,7 +86,7 @@ fn trusted_parent(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn open_regular(path: &Path, write: bool) -> Result<File> {
+pub(crate) fn open_regular(path: &Path, write: bool) -> Result<File> {
     identity(path, false)?;
     let flags = if write { OFlags::RDWR } else { OFlags::RDONLY };
     let fd = rustix::fs::open(
@@ -110,7 +110,7 @@ fn open_regular(path: &Path, write: bool) -> Result<File> {
     }
     Ok(file)
 }
-fn read(path: &Path, limit: usize) -> Result<(String, Identity)> {
+pub(crate) fn read(path: &Path, limit: usize) -> Result<(String, Identity)> {
     let f = open_regular(path, false)?;
     let m = f.metadata().map_err(err)?;
     let mut content = String::new();

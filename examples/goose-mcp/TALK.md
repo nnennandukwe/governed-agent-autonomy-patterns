@@ -1,3 +1,13 @@
+# Current live segment
+
+Use [the coding demo and live inspector](./CODING-DEMO.md) for the hands-on
+portion: Goose implements a shipping function, the full engine verifies it, and
+a later protected deployment-configuration request is denied. Each change is
+one bounded run; all five pillars are visible in the inspector. Qodo supports
+the development walkthrough; ThreadLoop remains the outer lifecycle roadmap.
+
+The release-file approval sequence below is retained as an earlier alternative.
+
 # Governed Agent Autonomy: Building a Control Plane for Agentic Systems
 
 AGNTCon + MCPCon Japan · September 11, 2026 · 15:35–16:00 JST · Hall C.

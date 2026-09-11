@@ -9,34 +9,33 @@ contracts, and a deterministic Rust runtime that calls explicit adapter ports
 before protected effects. It does not yet include production provider adapters,
 persistence, signing, sandbox enforcement, or ThreadLoop integration.
 
-The isolated [goose MCP example](./examples/goose-mcp/README.md) adds a real
-model-driven file operation through `RunCoordinator`, operator approval, and a
-local decision log. It also provides a separate deterministic `AgentRunEngine`
-view. The example does not integrate goose into the full engine or change the
-core contracts.
+The [Goose coding demo](./examples/goose-mcp/CODING-DEMO.md) connects real Goose
+proposals to the existing `AgentRunEngine`, a filesystem executor, and an
+independent verifier. A local inspector shows all five governance pillars,
+actual effects, and validated terminal receipts. Each proposed change is one
+bounded Agent Run; the inspector groups runs into the Goose session.
 
 ## Run the demo from your checkout
 
-With the [example prerequisites](./examples/goose-mcp/README.md#setup-on-the-conference-laptop)
-installed, run these commands from the repository root:
+With Rust, Python, and the [pinned Goose setup](./examples/goose-mcp/README.md#setup-on-the-conference-laptop)
+installed and Goose Desktop signed in to ChatGPT Codex:
 
 ```sh
-python3 examples/goose-mcp/demo.py build
-mkdir -p demo-runs
-python3 examples/goose-mcp/demo.py desktop demo-runs/agentcon-1
+cd ~/Code/governed-agent-autonomy-patterns
+./demo start
 ```
 
-Goose opens the recipe using this checkout's MCP server. The fixture is at
-`demo-runs/agentcon-1/workspace/release.json`; its operator records and recipe
-are beside `workspace/`. Demo sessions stay in this visible, Git-ignored folder.
-Use a new session name for another run; existing sessions are never reset.
+Choose **Trust and Execute** in Goose, then select the coding activity. Goose
+implements and verifies a shipping-price function; GAAP blocks a subsequent
+protected deployment-configuration change. The inspector opens alongside Goose.
+Session files stay in the visible, Git-ignored `demo-runs/` folder. Keep the
+launcher terminal open for the inspector.
 
-The engine and current session can be inspected from the same terminal:
-
-```sh
-python3 examples/goose-mcp/demo.py engine
-python3 examples/goose-mcp/demo.py status demo-runs/agentcon-1
-```
+Use `./demo rehearse` for a recorded real CLI run, `./demo status PATH` to inspect
+one, and `./demo view PATH` to reopen its inspector. See the
+[coding runbook](./examples/goose-mcp/CODING-DEMO.md) for the five-pillar walkthrough,
+limits, and recovery behavior. The earlier
+[release-file approval example](./examples/goose-mcp/README.md) remains available.
 
 ## Current Interfaces And Evidence
 
