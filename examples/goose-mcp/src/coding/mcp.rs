@@ -20,7 +20,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         tool::<Change>(
             "submit_change",
-            "Submit a concrete plan and complete proposed file contents to GAAP's full AgentRunEngine. GAAP evaluates authority and capability before writing, measures execution, independently verifies shipping behavior, and returns its terminal receipt. A blocked result must be reported accurately. Check effect status: verification can block completion after a file change executed. Never claim production activation when authority was denied.",
+            "Submit a concrete plan and complete proposed file contents for one file change. GAAP evaluates authority and capability before writing, measures execution, independently verifies shipping behavior, and returns its terminal receipt. Inspect the execution status as well as the completion status: a write can execute even when verification fails.",
         ),
         tool::<Empty>(
             "run_status",

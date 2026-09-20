@@ -31,6 +31,40 @@ There is no claim that the workspace rename and receipt publication are one
 transaction. A running marker is deliberately conservative after interruption.
 No cleanup/reset/delete command is provided; previous sessions are preserved.
 
+## Persistent launcher
+
+`demo-runs/current.json` selects one session by its immediate child directory
+name. Each session's `inspector.json` records its loopback URL. Neither file is
+run evidence: the launcher never writes `operator/state.json`, changes workspace
+files, clears an uncertain run, or refreshes capability trust.
+
+| Starting state | Operation and commit point | Result and recovery |
+| --- | --- | --- |
+| No selection, or explicit `--new-session` | initialize a separate root and recipe; start and identify its HTTP server; publish `inspector.json`; atomically replace `current.json` | selected session is visible before opening either UI |
+| Selected session, server alive | validate saved URL and token-protected service/root identity | reuse it; do not reopen Goose or the browser |
+| Selected session, server stopped | bind the saved port/token; publish updated server metadata | the existing browser tab reconnects to the same records |
+| Explicit `--root` | inspect the existing root and identify/start its Inspector before replacing `current.json` | change selection without changing either session's evidence |
+| Failure before selection replacement | close only the server started by this attempt | preserve previous selection and any staged root for inspection |
+| UI launch fails after selection replacement | retain selected root and running Inspector | print the retained URL and a deliberate recipe-opening recovery command |
+| Directory sync fails after replacement | retain the visible published metadata and print a warning | power-loss durability is uncertain; do not report rollback |
+
+A filesystem lock serializes launcher selection, probing, binding, and
+publication. Saved PIDs do not authorize reuse or process termination. A foreign
+listener, malformed metadata, escaped root, link, or nonfile is rejected without
+replacing the recorded address. `view` and `rehearse` do not change selection.
+
+`test_coding_persistence.py` exercises first start, concurrent starts, live reuse,
+stopped restart, explicit selection, UI launch failure, port conflicts, metadata
+validation, and publication failures. `test_coding_history.py` uses real Rust
+receipts and HTTP requests to check history across two server restarts, a new
+proposal, and an identical replay. The original receipts and protected deployment
+file must remain unchanged.
+
+These checks cover cooperating launchers and normal process restarts. They do
+not establish protection against arbitrary native writes by the same OS user or
+simulate hardware power failure. There is no automatic fixture reset, run-budget
+reset, archived-session merge, or deletion during resume.
+
 ## Invariants and fault matrix
 
 - Only shipping.py may be mutated, after the engine allows all gates.

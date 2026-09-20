@@ -25,11 +25,16 @@ cd ~/Code/governed-agent-autonomy-patterns
 ./demo start
 ```
 
-Choose **Trust and Execute** in Goose, then select the coding activity. Goose
-implements and verifies a shipping-price function; GAAP blocks a subsequent
-protected deployment-configuration change. The inspector opens alongside Goose.
-Session files stay in the visible, Git-ignored `demo-runs/` folder. Keep the
-launcher terminal open for the inspector.
+On the first start, choose **Trust and Execute** in Goose, then select the coding
+activity. Goose works on a shipping-price function and may request a protected
+deployment-configuration change, which GAAP denies if submitted. The inspector
+opens alongside Goose. Session files stay in the visible, Git-ignored `demo-runs/`
+folder. Keep the launcher terminal open for the inspector.
+
+Continue in the same Goose conversation to accumulate runs. Browser refresh
+reloads their saved history. Running `./demo start` again resumes the selected
+session at the same inspector address without opening another Goose recipe.
+Use `./demo start --new-session` only for a separate fresh fixture and Goose session.
 
 Use `./demo rehearse` for a recorded real CLI run, `./demo status PATH` to inspect
 one, and `./demo view PATH` to reopen its inspector. See the
