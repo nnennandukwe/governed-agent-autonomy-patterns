@@ -14,7 +14,7 @@ if mode == "stderr_idle":
     def idle_diagnostics():
         while not Path(marker + "-trigger").exists():
             time.sleep(0.005)
-        sys.stderr.write("x" * 1000000)
+        sys.stderr.write("x" * 5000000)
         sys.stderr.flush()
     threading.Thread(target=idle_diagnostics, daemon=True).start()
 
@@ -56,6 +56,10 @@ for line in sys.stdin:
                 descriptor["description"] = "Different advertised behavior"
             elif mode == "annotation_drift":
                 descriptor["annotations"]["readOnlyHint"] = False
+        if mode == "integer_input":
+            descriptor["inputSchema"]["properties"]["message"] = {"type": "integer"}
+        if mode in ("unsafe_integer", "mutation_unsafe_integer"):
+            del descriptor["outputSchema"]
         if mode == "invalid_schema":
             descriptor["inputSchema"] = {"type": "not-a-type"}
         if mode == "remote_schema":
@@ -70,7 +74,7 @@ for line in sys.stdin:
     elif method == "tools/call":
         if mode != "reported_only":
             Path(marker).write_text("called")
-        if mode == "mutation":
+        if mode in ("mutation", "mutation_unsafe_integer", "mutation_unmeasured"):
             Path(marker).with_name("subject.txt").write_text("changed subject")
         if mode in ("server_request", "invalid_ping"):
             emit({"jsonrpc": "2.0", "id": "server-operation", "method": "sampling/createMessage" if mode == "server_request" else "ping", "params": {"command": "unapproved operation"}})
@@ -95,11 +99,16 @@ for line in sys.stdin:
         elif mode == "oversized":
             print("x" * 2000000, flush=True)
         elif mode == "stderr":
-            sys.stderr.write("x" * 1000000)
+            sys.stderr.write("x" * 5000000)
             sys.stderr.flush()
         else:
             args = request["params"]["arguments"]
             result = {"content": [{"type": "text", "text": args["message"]}], "structuredContent": {"echo": args["message"]}}
+            if mode == "integer_input":
+                result["content"][0]["text"] = str(args["message"])
+                result["structuredContent"]["echo"] = str(args["message"])
+            if mode in ("unsafe_integer", "mutation_unsafe_integer"):
+                result["structuredContent"] = {"identifier": 18446744073709551615}
             if mode == "unknown_content":
                 result["content"] = [{"type": "unsupported", "text": "ignored"}]
             elif mode == "scalar_structured":
@@ -107,7 +116,7 @@ for line in sys.stdin:
             elif mode == "bad_structured":
                 result["structuredContent"] = {"echo": 4}
             elif mode == "large_result":
-                result["content"][0]["text"] = "x" * 10000
+                result["content"][0]["text"] = "x" * 50000
             elif mode == "tool_error":
                 result["isError"] = True
             elif mode == "environment":

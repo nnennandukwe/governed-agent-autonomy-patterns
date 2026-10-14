@@ -27,6 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 pub const MCP_SDK_VERSION: &str = "3.5.1";
+pub const MAX_SUBJECT_BYTES: usize = 8192;
+pub const MAX_CANONICAL_NUMBER: u64 = 9_007_199_254_740_991;
 
 /// Host-approved bytes for a launch artifact, including the server and interpreter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,10 +146,10 @@ pub struct SubjectObservation {
     pub subject: Subject,
     /// Independent host evidence confirms the operation occurred; server success isn't proof.
     pub effect_confirmed: bool,
-    /// Host-measured external cost. Unknown usage must return an error.
-    pub cost_micros: u64,
+    /// Host-measured invocation cost; None preserves explicit measurement uncertainty.
+    pub cost_micros: Option<u64>,
     /// Host-measured tool model usage. Pure local fixture tools explicitly report zero.
-    pub model_tokens: u64,
+    pub model_tokens: Option<u64>,
 }
 
 pub trait SubjectObserver: Send {
@@ -338,6 +340,7 @@ impl McpExecutor {
                 "use a fresh executor for a new run",
             ));
         }
+        validate_subject_size(&request.subject)?;
         validate_request(&request, &support)
             .map_err(|e| McpError::new("mcp.invalid_run", e.to_string()))?;
         self.policy = policy;
@@ -398,6 +401,7 @@ impl McpExecutor {
         subject: Subject,
         effect_class: EffectClass,
     ) -> Result<ProtectedEffectRequest, McpError> {
+        validate_subject_size(&subject)?;
         if self.prepared.len() >= self.limits.max_calls {
             return Err(McpError::new("mcp.call_limit", "start a fresh bounded run"));
         }
@@ -427,6 +431,7 @@ impl McpExecutor {
                 "retained inputs exceed the run's configured bound",
             ));
         }
+        validate_canonical_numbers(&arguments)?;
         worker::validate_arguments(&tool.descriptor, &arguments)?;
         let binding = self.binding.as_ref().ok_or_else(|| {
             McpError::new(
@@ -580,13 +585,19 @@ impl McpExecutor {
                 )
             })?
             .observe(effect)?;
+        if !usage_is_valid(&preflight) {
+            return Err(McpError::new(
+                "mcp.invalid_usage",
+                "host usage exceeds the frozen contract range",
+            ));
+        }
         if preflight.subject != effect.subject {
             return Err(McpError::new(
                 "mcp.stale_subject",
                 "fresh host observation differs from the requested subject",
             ));
         }
-        const RECONCILIATION_RESERVE: usize = 2048;
+        const RECONCILIATION_RESERVE: usize = 2048 + MAX_SUBJECT_BYTES;
         if self.retained_bytes.saturating_add(RECONCILIATION_RESERVE)
             > self.limits.max_retained_bytes
         {
@@ -608,9 +619,9 @@ impl McpExecutor {
             observed_subject: None,
             host_usage: None,
             last_known_usage: EffectUsage {
-                cost_micros: preflight.cost_micros,
+                cost_micros: preflight.cost_micros.expect("validated preflight usage"),
                 elapsed_ms: 0,
-                model_tokens: preflight.model_tokens,
+                model_tokens: preflight.model_tokens.expect("validated preflight usage"),
                 tool_calls: 0,
             },
             output_digest: None,
@@ -677,9 +688,14 @@ impl McpExecutor {
         let output_digest = output.as_ref().map(digest).transpose()?;
         let mut observed = None;
         let mut effect_confirmed = None;
-        let mut cost_micros = if dispatched { preflight.cost_micros } else { 0 };
+        let mut usage_measured = false;
+        let mut cost_micros = if dispatched {
+            preflight.cost_micros.expect("validated preflight usage")
+        } else {
+            0
+        };
         let mut model_tokens = if dispatched {
-            preflight.model_tokens
+            preflight.model_tokens.expect("validated preflight usage")
         } else {
             0
         };
@@ -696,6 +712,7 @@ impl McpExecutor {
             };
             match observation {
                 Ok(observation) => {
+                    let observation_usage_valid = usage_is_valid(&observation);
                     effect_confirmed = Some(observation.effect_confirmed);
                     if !observation.effect_confirmed {
                         final_status = EffectExecutionStatus::UnknownOutcome;
@@ -712,9 +729,20 @@ impl McpExecutor {
                             "mcp.unexpected_subject_change: observation changed the subject".into(),
                         );
                     }
-                    observed = Some(observation.subject);
-                    cost_micros = observation.cost_micros;
-                    model_tokens = observation.model_tokens;
+                    if let Err(error) = validate_subject_size(&observation.subject) {
+                        final_status = EffectExecutionStatus::UnknownOutcome;
+                        final_reason = Some(error.to_string());
+                    } else {
+                        observed = Some(observation.subject);
+                    }
+                    if observation_usage_valid {
+                        usage_measured = true;
+                        cost_micros = observation.cost_micros.expect("validated measured cost");
+                        model_tokens = observation.model_tokens.expect("validated measured tokens");
+                    } else {
+                        final_status = EffectExecutionStatus::UnknownOutcome;
+                        final_reason = Some("mcp.usage_unavailable: final host measurement is absent or outside the contract range".into());
+                    }
                 }
                 Err(error) => {
                     final_status = EffectExecutionStatus::UnknownOutcome;
@@ -741,7 +769,7 @@ impl McpExecutor {
             dispatched,
             effect_confirmed,
             observed_subject: observed.clone(),
-            host_usage: observed.as_ref().map(|_| usage.clone()),
+            host_usage: usage_measured.then(|| usage.clone()),
             last_known_usage: usage.clone(),
             output_digest: output_digest.clone(),
             output,
@@ -755,7 +783,6 @@ impl McpExecutor {
         if retained_before_call.saturating_add(record_bytes) > self.limits.max_retained_bytes {
             record.output = None;
             record.output_omitted = true;
-            record.observed_subject = None;
             record.error = record.error.map(|error| {
                 error
                     .chars()
@@ -900,4 +927,57 @@ pub(crate) fn digest(value: &impl Serialize) -> Result<String, McpError> {
     let bytes =
         serde_jcs::to_vec(value).map_err(|e| McpError::new("mcp.canonical_json", e.to_string()))?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_subject_size(subject: &Subject) -> Result<(), McpError> {
+    if subject.locator.len().saturating_add(subject.digest.len()) > MAX_SUBJECT_BYTES
+        || serde_json::to_vec(subject)
+            .map_err(|e| McpError::new("mcp.subject_limit", e.to_string()))?
+            .len()
+            > MAX_SUBJECT_BYTES
+    {
+        return Err(McpError::new(
+            "mcp.subject_limit",
+            "host subject metadata must fit the 8 KiB profile bound",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_canonical_numbers(value: &Value) -> Result<(), McpError> {
+    let invalid = match value {
+        Value::Number(number) => number
+            .as_f64()
+            .is_none_or(|n| !n.is_finite() || n.abs() > MAX_CANONICAL_NUMBER as f64),
+        Value::Array(values) => {
+            for value in values {
+                validate_canonical_numbers(value)?;
+            }
+            false
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                validate_canonical_numbers(value)?;
+            }
+            false
+        }
+        _ => false,
+    };
+    if invalid {
+        Err(McpError::new(
+            "mcp.number_range",
+            "encode larger identifiers as schema-supported strings; implicit numeric rounding isn't permitted",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn usage_is_valid(observation: &SubjectObservation) -> bool {
+    observation
+        .cost_micros
+        .is_some_and(|cost| cost <= MAX_CANONICAL_NUMBER)
+        && observation
+            .model_tokens
+            .is_some_and(|tokens| tokens <= MAX_CANONICAL_NUMBER)
 }

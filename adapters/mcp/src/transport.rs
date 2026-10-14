@@ -466,12 +466,25 @@ impl<'de> Deserialize<'de> for StrictValue {
                 Ok(StrictValue(Value::Bool(v)))
             }
             fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                if v.unsigned_abs() > crate::MAX_CANONICAL_NUMBER {
+                    return Err(E::custom(
+                        "integer exceeds the exact canonical profile range",
+                    ));
+                }
                 Ok(StrictValue(Value::from(v)))
             }
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                if v > crate::MAX_CANONICAL_NUMBER {
+                    return Err(E::custom(
+                        "integer exceeds the exact canonical profile range",
+                    ));
+                }
                 Ok(StrictValue(Value::from(v)))
             }
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                if !v.is_finite() || v.abs() > crate::MAX_CANONICAL_NUMBER as f64 {
+                    return Err(E::custom("number exceeds the canonical profile range"));
+                }
                 serde_json::Number::from_f64(v)
                     .map(Value::Number)
                     .map(StrictValue)

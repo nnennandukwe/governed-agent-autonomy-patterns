@@ -675,6 +675,12 @@ impl Session {
                 )
             })?
             .observe(effect)?;
+        if !crate::usage_is_valid(&fresh) {
+            return Err(McpError::new(
+                "mcp.invalid_usage",
+                "host usage exceeds the frozen contract range",
+            ));
+        }
         if fresh.subject != effect.subject {
             return Err(McpError::new(
                 "mcp.stale_subject",

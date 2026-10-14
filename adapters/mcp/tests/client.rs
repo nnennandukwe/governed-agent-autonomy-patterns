@@ -82,8 +82,8 @@ fn fixture(mode: &str, allowed: bool) -> (TempDir, McpExecutor, ProtectedEffectR
                 Ok(SubjectObservation {
                     effect_confirmed: confirmation.exists(),
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -174,6 +174,7 @@ fn uncertain_transport_and_malicious_outputs_preserve_attempted_effects() {
         "unknown_content",
         "bad_structured",
         "scalar_structured",
+        "unsafe_integer",
         "notify_drift",
     ] {
         let (dir, mut executor, effect) = fixture(mode, true);
@@ -487,8 +488,8 @@ fn explicit_environment_allowlist_is_the_only_child_environment() {
                 Ok(SubjectObservation {
                     effect_confirmed: true,
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -533,8 +534,8 @@ fn host_permission_denial_blocks_an_approved_tool_before_dispatch() {
                 Ok(SubjectObservation {
                     effect_confirmed: true,
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -558,117 +559,133 @@ fn host_permission_denial_blocks_an_approved_tool_before_dispatch() {
 }
 
 #[test]
-fn actual_mutation_survives_failed_independent_verification() {
-    let dir = TempDir::new().unwrap();
-    let subject_path = dir.path().join("subject.txt");
-    std::fs::write(&subject_path, "initial subject").unwrap();
-    let mut executor = McpExecutor::discover(server("mutation", &dir), limits()).unwrap();
-    let capability = executor.tools()[0].capability.clone();
-    let (mut run, support) = request(capability.clone());
-    run.subject.kind = gaap::contracts::SubjectKind::Artifact;
-    run.subject.locator = subject_path.display().to_string();
-    run.subject.digest = hash(b"initial subject");
-    for approval in &mut run.approval_context {
-        approval.subject_digest = run.subject.digest.clone();
-    }
-    let locator = run.subject.locator.clone();
-    executor
-        .bind_run(
-            run.clone(),
+fn actual_mutation_survives_failed_verification_or_rejected_output() {
+    for mode in ["mutation", "mutation_unsafe_integer", "mutation_unmeasured"] {
+        let dir = TempDir::new().unwrap();
+        let subject_path = dir.path().join("subject.txt");
+        std::fs::write(&subject_path, "initial subject").unwrap();
+        let mut executor = McpExecutor::discover(server(mode, &dir), limits()).unwrap();
+        let capability = executor.tools()[0].capability.clone();
+        let (mut run, support) = request(capability.clone());
+        run.subject.kind = gaap::contracts::SubjectKind::Artifact;
+        run.subject.locator = subject_path.display().to_string();
+        run.subject.digest = hash(b"initial subject");
+        for approval in &mut run.approval_context {
+            approval.subject_digest = run.subject.digest.clone();
+        }
+        let locator = run.subject.locator.clone();
+        executor
+            .bind_run(
+                run.clone(),
+                support.clone(),
+                PermissionPolicy {
+                    policy_decision: Some(PolicyDecision::Allow),
+                    risk_tags: vec![],
+                    wrapper_chain: vec![],
+                    approvals: vec![],
+                },
+                move |_: &ProtectedEffectRequest| {
+                    let bytes = std::fs::read(&subject_path).unwrap();
+                    Ok(SubjectObservation {
+                        effect_confirmed: bytes == b"changed subject",
+                        subject: gaap::contracts::Subject {
+                            kind: gaap::contracts::SubjectKind::Artifact,
+                            locator: locator.clone(),
+                            digest: hash(&bytes),
+                        },
+                        cost_micros: if mode == "mutation_unmeasured" && bytes == b"changed subject"
+                        {
+                            None
+                        } else {
+                            Some(0)
+                        },
+                        model_tokens: Some(0),
+                    })
+                },
+            )
+            .unwrap();
+        executor.approve_capability(&capability).unwrap();
+        let effect = executor
+            .prepare_effect(
+                "echo",
+                json!({"message":"hello"}),
+                "mutation".into(),
+                1,
+                run.subject.clone(),
+                EffectClass::Mutation,
+            )
+            .unwrap();
+        let runtime_support = gaap::runtime::RuntimeSupport::new(
             support.clone(),
+            vec![capability],
             PermissionPolicy {
                 policy_decision: Some(PolicyDecision::Allow),
                 risk_tags: vec![],
                 wrapper_chain: vec![],
                 approvals: vec![],
             },
-            move |_: &ProtectedEffectRequest| {
-                Ok(SubjectObservation {
-                    effect_confirmed: true,
-                    subject: gaap::contracts::Subject {
-                        kind: gaap::contracts::SubjectKind::Artifact,
-                        locator: locator.clone(),
-                        digest: hash(&std::fs::read(&subject_path).unwrap()),
-                    },
-                    cost_micros: 0,
-                    model_tokens: 0,
-                })
+            gaap::contracts::EffectUsage {
+                cost_micros: 0,
+                elapsed_ms: 0,
+                model_tokens: 0,
+                tool_calls: 1,
             },
+            vec![],
+            vec!["independent-test-verifier".into()],
+        );
+        let config = gaap::runtime::RuntimeConfig {
+            implementer_id: "test-agent".into(),
+            executor_identity: executor.identity().clone(),
+            max_effects: 1,
+            budget_thresholds: gaap::runtime::BudgetThresholds {
+                warn_micros: 100,
+                approval_micros: 1000,
+                hard_stop_micros: 1000000,
+            },
+        };
+        let mut engine = gaap::runtime::AgentRunEngine::new(
+            runtime_support,
+            config,
+            PlannedAgent {
+                effect: Some(effect.clone()),
+            },
+            executor,
+            IndependentVerifier { passes: false },
+        );
+        let execution = engine.run(run.clone()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("subject.txt")).unwrap(),
+            "changed subject"
+        );
+        assert_eq!(
+            execution.receipt.body.terminal_status,
+            if mode == "mutation" {
+                gaap::contracts::AgentRunStatus::Blocked
+            } else {
+                gaap::contracts::AgentRunStatus::Failed
+            }
+        );
+        assert_eq!(
+            execution.protected_effect_results[0].body.execution_status,
+            if mode == "mutation" {
+                EffectExecutionStatus::Executed
+            } else {
+                EffectExecutionStatus::UnknownOutcome
+            }
+        );
+        assert_eq!(
+            execution.receipt.body.resulting_subject_digest,
+            hash(b"changed subject")
+        );
+        gaap::contracts::verify_terminal_receipt(&run, &support, &execution.receipt).unwrap();
+        gaap::contracts::verify_protected_effect_result(
+            &run,
+            &support,
+            &effect,
+            &execution.protected_effect_results[0],
         )
         .unwrap();
-    executor.approve_capability(&capability).unwrap();
-    let effect = executor
-        .prepare_effect(
-            "echo",
-            json!({"message":"hello"}),
-            "mutation".into(),
-            1,
-            run.subject.clone(),
-            EffectClass::Mutation,
-        )
-        .unwrap();
-    let runtime_support = gaap::runtime::RuntimeSupport::new(
-        support.clone(),
-        vec![capability],
-        PermissionPolicy {
-            policy_decision: Some(PolicyDecision::Allow),
-            risk_tags: vec![],
-            wrapper_chain: vec![],
-            approvals: vec![],
-        },
-        gaap::contracts::EffectUsage {
-            cost_micros: 0,
-            elapsed_ms: 0,
-            model_tokens: 0,
-            tool_calls: 1,
-        },
-        vec![],
-        vec!["independent-test-verifier".into()],
-    );
-    let config = gaap::runtime::RuntimeConfig {
-        implementer_id: "test-agent".into(),
-        executor_identity: executor.identity().clone(),
-        max_effects: 1,
-        budget_thresholds: gaap::runtime::BudgetThresholds {
-            warn_micros: 100,
-            approval_micros: 1000,
-            hard_stop_micros: 1000000,
-        },
-    };
-    let mut engine = gaap::runtime::AgentRunEngine::new(
-        runtime_support,
-        config,
-        PlannedAgent {
-            effect: Some(effect.clone()),
-        },
-        executor,
-        IndependentVerifier { passes: false },
-    );
-    let execution = engine.run(run.clone()).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("subject.txt")).unwrap(),
-        "changed subject"
-    );
-    assert_eq!(
-        execution.receipt.body.terminal_status,
-        gaap::contracts::AgentRunStatus::Blocked
-    );
-    assert_eq!(
-        execution.protected_effect_results[0].body.execution_status,
-        EffectExecutionStatus::Executed
-    );
-    assert_eq!(
-        execution.receipt.body.resulting_subject_digest,
-        hash(b"changed subject")
-    );
-    gaap::contracts::verify_terminal_receipt(&run, &support, &execution.receipt).unwrap();
-    gaap::contracts::verify_protected_effect_result(
-        &run,
-        &support,
-        &effect,
-        &execution.protected_effect_results[0],
-    )
-    .unwrap();
+    }
 }
 
 #[test]
@@ -742,8 +759,8 @@ fn stale_host_subject_blocks_dispatch_at_the_observation_guard() {
                 Ok(SubjectObservation {
                     effect_confirmed: true,
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -768,7 +785,7 @@ fn stale_host_subject_blocks_dispatch_at_the_observation_guard() {
 fn full_output_budget_keeps_a_minimal_attempt_record_and_the_output_digest() {
     let dir = TempDir::new().unwrap();
     let mut tight = limits();
-    tight.max_retained_bytes = 4096;
+    tight.max_retained_bytes = 16384;
     let mut executor = McpExecutor::discover(server("large_result", &dir), tight).unwrap();
     let capability = executor.tools()[0].capability.clone();
     let (run, support) = request(capability.clone());
@@ -787,8 +804,8 @@ fn full_output_budget_keeps_a_minimal_attempt_record_and_the_output_digest() {
                 Ok(SubjectObservation {
                     effect_confirmed: true,
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -812,6 +829,7 @@ fn full_output_budget_keeps_a_minimal_attempt_record_and_the_output_digest() {
     assert!(record.output_omitted);
     assert!(record.output.is_none());
     assert!(record.output_digest.is_some());
+    assert!(record.observed_subject.is_some());
     assert!(executor.execute(&effect).is_err());
 }
 
@@ -838,8 +856,8 @@ fn reconciliation_capacity_is_reserved_before_dispatch() {
                 Ok(SubjectObservation {
                     effect_confirmed: true,
                     subject: observed.clone(),
-                    cost_micros: 0,
-                    model_tokens: 0,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
                 })
             },
         )
@@ -908,8 +926,8 @@ fn same_subject(effect: &ProtectedEffectRequest) -> SubjectObservation {
     SubjectObservation {
         effect_confirmed: true,
         subject: effect.subject.clone(),
-        cost_micros: 0,
-        model_tokens: 0,
+        cost_micros: Some(0),
+        model_tokens: Some(0),
     }
 }
 
@@ -1152,8 +1170,8 @@ fn measurement_failure_retains_last_known_usage_and_stops_further_calls() {
             });
         }
         let mut observation = same_subject(effect);
-        observation.cost_micros = 123;
-        observation.model_tokens = 7;
+        observation.cost_micros = Some(123);
+        observation.model_tokens = Some(7);
         Ok(observation)
     });
     let result = executor.execute(&effect).unwrap();
@@ -1182,6 +1200,114 @@ fn measurement_failure_retains_last_known_usage_and_stops_further_calls() {
     assert_eq!(
         executor.execute(&next).unwrap().execution_status,
         EffectExecutionStatus::Denied
+    );
+    assert!(dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn unsafe_integer_arguments_are_rejected_before_their_approval_digest_can_alias() {
+    let dir = TempDir::new().unwrap();
+    let mut executor = McpExecutor::discover(server("integer_input", &dir), limits()).unwrap();
+    let capability = executor.tools()[0].capability.clone();
+    let (run, support) = request(capability);
+    let observed = run.subject.clone();
+    executor
+        .bind_run(
+            run.clone(),
+            support,
+            PermissionPolicy {
+                policy_decision: Some(PolicyDecision::Allow),
+                risk_tags: vec![],
+                wrapper_chain: vec![],
+                approvals: vec![],
+            },
+            move |_: &ProtectedEffectRequest| {
+                Ok(SubjectObservation {
+                    subject: observed.clone(),
+                    effect_confirmed: false,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
+                })
+            },
+        )
+        .unwrap();
+    executor
+        .prepare_effect(
+            "echo",
+            json!({"message":2}),
+            "safe".into(),
+            1,
+            run.subject.clone(),
+            EffectClass::Observation,
+        )
+        .unwrap();
+    for integer in [18446744073709551615u64, 18446744073709551614u64] {
+        let error = executor
+            .prepare_effect(
+                "echo",
+                json!({"message":integer}),
+                "unsafe".into(),
+                2,
+                run.subject.clone(),
+                EffectClass::Observation,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "mcp.number_range");
+    }
+    assert!(!dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn output_compaction_keeps_an_unexpected_host_subject_for_reconciliation() {
+    let dir = TempDir::new().unwrap();
+    let mut tight = limits();
+    tight.max_retained_bytes = 16384;
+    let mut executor = McpExecutor::discover(server("large_result", &dir), tight).unwrap();
+    let capability = executor.tools()[0].capability.clone();
+    let (run, support) = request(capability.clone());
+    let mut observations = 0;
+    executor
+        .bind_run(
+            run.clone(),
+            support,
+            PermissionPolicy {
+                policy_decision: Some(PolicyDecision::Allow),
+                risk_tags: vec![],
+                wrapper_chain: vec![],
+                approvals: vec![],
+            },
+            move |effect: &ProtectedEffectRequest| {
+                observations += 1;
+                let mut observed = same_subject(effect);
+                if observations == 3 {
+                    observed.subject.digest = hash(b"unexpected changed subject");
+                }
+                Ok(observed)
+            },
+        )
+        .unwrap();
+    executor.approve_capability(&capability).unwrap();
+    let effect = executor
+        .prepare_effect(
+            "echo",
+            json!({"message":"hello"}),
+            "compact".into(),
+            1,
+            run.subject,
+            EffectClass::Observation,
+        )
+        .unwrap();
+    let result = executor.execute(&effect).unwrap();
+    assert_eq!(
+        result.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert!(result.observed_post_effect_subject.is_none());
+    let record = &executor.call_evidence()[0];
+    assert!(record.output_omitted);
+    assert_eq!(
+        record.observed_subject.as_ref().unwrap().digest,
+        hash(b"unexpected changed subject")
     );
     assert!(dir.path().join("dispatch").exists());
 }

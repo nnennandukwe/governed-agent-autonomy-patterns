@@ -27,7 +27,7 @@ changed descriptors, mutations, cancellation and engine receipts. They don't est
    Use canonical paths. Set the manifest identity using `artifact_manifest_digest`; discovery checks listed files against those expected bytes. Existing file arguments must appear in the manifest. Python/Node require a canonical script as their first argument; direct shebangs, executable aliases, shells and implicit module/package launchers aren't supported.
 2. Call `McpExecutor::discover(config, limits)` to obtain descriptors. Discovery grants no capability authority.
 3. Bind one accepted run, `ContractSupport`, trusted `PermissionPolicy`, and a `SubjectObserver`. The observer supplies
-   independent subject observations, execution confirmation and known external cost/model usage. Confirmation must come from host evidence outside the MCP response; unavailable measurements return an error.
+   independent subject observations, execution confirmation and known external cost/model usage. Confirmation must come from host evidence outside the MCP response. Cost/token fields use `Some(value)` for measured values and `None` when unavailable; this keeps a known subject observation intact even when billing measurement fails. Return an error when subject observation itself is unavailable.
 4. Approve the exact discovered `CapabilityIdentity` through trusted host configuration. Prepare a tool invocation
    with its arguments, unique effect identity, sequence, subject and host-selected effect class.
 5. Compose the executor with `AgentRunEngine`, using its reported executor identity and local profile. Supply an
@@ -54,10 +54,10 @@ ends the session; it can't reopen a terminal run.
 
 Unknown protocol versions don't trigger automatic fallback. Server identity, protocol, full advertised tool descriptor,
 input/output schemas and annotations contribute to capability identity. Changed descriptors require fresh host approval.
-Annotations are hashed hints; they aren't an authorization policy.
+Annotations are hashed hints; they aren't an authorization policy. Numeric arguments and protocol values must stay within the exact canonical profile range (absolute value at most 9,007,199,254,740,991); larger identifiers need schema-supported strings. The client rejects them instead of silently rounding an approval digest.
 
 Default bounds are a 10-second operation timeout, 1 MiB per protocol frame, 64 KiB total server stderr, 128 discovered
-tools, 128 prepared invocations and 16 MiB retained inputs/evidence. Limits have hard validation bounds. Pagination
+tools, 128 prepared invocations, 8 KiB per host subject snapshot and 16 MiB retained inputs/evidence. Each dispatch reserves space for a full supported subject snapshot plus bounded reconciliation metadata. Limits have hard validation bounds. Pagination
 refuses repeated cursors. Incoming JSON rejects duplicate keys and unsupported messages. The SDK answers control-plane pings without effect authority. Raw server stderr isn't copied
 into receipts. Retained output can be omitted when its byte budget is exhausted; its digest and omission flag stay
 available. The host must persist needed raw evidence before dropping the executor.
@@ -84,7 +84,7 @@ The host's system runtime, transitive imports, same-user filesystem and external
 check; the host must serialize relevant subject changes when it requires stronger freshness guarantees.
 
 Cost/model usage comes from the host observer, rather than an assumed zero for an external provider. Pure local fixtures
-explicitly report zero because they don't use model or billed tool services. Missing measurements end the session and prevent successful completion. The result retains host-observed last-known usage; it doesn't claim settled cost or token totals. Its Usage evidence points to the call record, where `host_usage: null` marks unavailable final measurement. Consumers must inspect that evidence before reporting totals.
+explicitly report zero because they don't use model or billed tool services. Missing measurements end the session and prevent successful completion. The result retains host-observed last-known usage; it doesn't claim settled cost or token totals. Its Usage evidence points to the call record, where `host_usage: null` after dispatch marks unavailable final measurement. Consumers must inspect that evidence before reporting totals.
 
 Receipts are integrity-checked GAAP evidence, without signing or durable recovery added by this adapter. MCP compatibility
 doesn't establish safety or authority. ACP #12, live Goose #14, signed receipts #15, isolation #16/#17, recovery #32 and
