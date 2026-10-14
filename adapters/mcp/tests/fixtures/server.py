@@ -3,9 +3,20 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
+import time
 
 mode, marker = sys.argv[1:3]
 lists = 0
+ping_reply = None
+if mode == "stderr_idle":
+    Path(marker + "-pid").write_text(str(os.getpid()))
+    def idle_diagnostics():
+        while not Path(marker + "-trigger").exists():
+            time.sleep(0.005)
+        sys.stderr.write("x" * 1000000)
+        sys.stderr.flush()
+    threading.Thread(target=idle_diagnostics, daemon=True).start()
 
 def emit(message):
     """Write one newline-delimited JSON-RPC frame and flush stdout."""
@@ -20,6 +31,10 @@ for line in sys.stdin:
             Path(marker + "-cancelled").write_text("cancellation received")
         continue
     identity = request["id"]
+    if identity == "server-ping" and "result" in request:
+        assert request["result"] == {}
+        emit(ping_reply)
+        continue
     if method == "initialize":
         emit({"jsonrpc": "2.0", "id": identity, "result": {
             "protocolVersion": "2026-07-28" if mode == "version" else "2025-11-25",
@@ -29,7 +44,7 @@ for line in sys.stdin:
     elif method == "tools/list":
         lists += 1
         descriptor = {
-            "name": "echo", "description": "Echo one local string", 
+            "name": "echo", "description": "Echo one local string",
             "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"], "additionalProperties": False},
             "outputSchema": {"type": "object", "properties": {"echo": {"type": "string"}}, "required": ["echo"], "additionalProperties": False},
             "annotations": {"readOnlyHint": True},
@@ -53,9 +68,17 @@ for line in sys.stdin:
             response = {"tools": [], "nextCursor": str(lists)}
         emit({"jsonrpc": "2.0", "id": identity, "result": response})
     elif method == "tools/call":
-        Path(marker).write_text("called")
+        if mode != "reported_only":
+            Path(marker).write_text("called")
         if mode == "mutation":
             Path(marker).with_name("subject.txt").write_text("changed subject")
+        if mode in ("server_request", "invalid_ping"):
+            emit({"jsonrpc": "2.0", "id": "server-operation", "method": "sampling/createMessage" if mode == "server_request" else "ping", "params": {"command": "unapproved operation"}})
+            continue
+        if mode == "ping":
+            ping_reply = {"jsonrpc": "2.0", "id": identity, "result": {"content": [], "structuredContent": {"echo": "hello"}}}
+            emit({"jsonrpc": "2.0", "id": "server-ping", "method": "ping"})
+            continue
         if mode in ("timeout", "cancel"):
             continue
         elif mode == "exit":

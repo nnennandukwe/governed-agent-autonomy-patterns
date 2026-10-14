@@ -41,8 +41,8 @@ and schema-validated structured output are supported initially.
 
 Each prepared invocation retains the exact accepted run, subject, policy, profile, capability and argument identity.
 Descriptor drift requires fresh authority. After dispatch, cancellation, transport failure and malformed output retain
-unknown outcomes. Independent host observation supplies the actual resulting subject; verification remains a separate
-engine step. A failed verifier can't erase an already executed mutation.
+unknown outcomes. Independent host observation supplies execution confirmation and the actual resulting subject; verification remains a separate
+engine step. The engine also rejects a reported executor identity that differs from its configured identity, preserving the attempt with an unknown outcome. A failed verifier can't erase an already executed mutation.
 
 ## Evidence boundaries
 

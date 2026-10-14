@@ -27,7 +27,7 @@ changed descriptors, mutations, cancellation and engine receipts. They don't est
    Set the manifest identity using `artifact_manifest_digest`; discovery checks the listed files against those expected bytes.
 2. Call `McpExecutor::discover(config, limits)` to obtain descriptors. Discovery grants no capability authority.
 3. Bind one accepted run, `ContractSupport`, trusted `PermissionPolicy`, and a `SubjectObserver`. The observer supplies
-   independent subject observations and known external cost/model usage; unavailable observations return an error.
+   independent subject observations, execution confirmation and known external cost/model usage. Confirmation must come from host evidence outside the MCP response; unavailable measurements return an error.
 4. Approve the exact discovered `CapabilityIdentity` through trusted host configuration. Prepare a tool invocation
    with its arguments, unique effect identity, sequence, subject and host-selected effect class.
 5. Compose the executor with `AgentRunEngine`, using its reported executor identity and local profile. Supply an
@@ -37,7 +37,7 @@ changed descriptors, mutations, cancellation and engine receipts. They don't est
 retains the complete prepared request identity. Execution refuses altered input, scope, policy, run, subject or profile
 bindings. It rediscovers descriptors before dispatch and evaluates ToolTrust and Permission with RunCoordinator.
 Server annotations, output and self-reported success can't provide approvals, usage measurements, subject observations
-or verification authority.
+or verification authority. A normal tool response remains an unknown effect unless the host independently confirms execution.
 
 The synchronous executor owns its asynchronous SDK session on a dedicated runtime thread. An existing Tokio host can
 compose it without creating a nested runtime. Its cancellation handle can be used from another host thread. Cancellation
@@ -58,7 +58,7 @@ Annotations are hashed hints; they aren't an authorization policy.
 
 Default bounds are a 10-second operation timeout, 1 MiB per protocol frame, 64 KiB total server stderr, 128 discovered
 tools, 128 prepared invocations and 16 MiB retained inputs/evidence. Limits have hard validation bounds. Pagination
-refuses repeated cursors. Incoming JSON rejects duplicate keys and unsupported messages. Raw server stderr isn't copied
+refuses repeated cursors. Incoming JSON rejects duplicate keys and unsupported messages. The SDK answers control-plane pings without effect authority. Raw server stderr isn't copied
 into receipts. Retained output can be omitted when its byte budget is exhausted; its digest and omission flag stay
 available. The host must persist needed raw evidence before dropping the executor.
 
@@ -75,7 +75,7 @@ available. The host must persist needed raw evidence before dropping the executo
 | Independent verification fails after mutation | Preserve the changed subject and executed effect; the engine blocks completion. |
 
 The local profile is `local-stdio-unisolated/0.1`. It records host subprocess/environment settings and doesn't provide an
-OS sandbox. Cleanup kills and reaps the direct server process; it doesn't certify that descendants or remote effects
+OS sandbox. Cancellation and fatal transport health stop further dispatch. Cleanup kills and reaps the direct server process, including when stderr overflows while idle; it doesn't certify that descendants or remote effects
 stopped. A cancellation notification is advisory, and process termination isn't rollback.
 
 Discovery verifies the listed executable and launch-artifact bytes before spawning. The host must approve their expected

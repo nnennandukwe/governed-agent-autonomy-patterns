@@ -67,6 +67,7 @@ fn fixture(mode: &str, allowed: bool) -> (TempDir, McpExecutor, ProtectedEffectR
     let capability = executor.tools()[0].capability.clone();
     let (request, support) = request(capability.clone());
     let observed = request.subject.clone();
+    let confirmation = dir.path().join("dispatch");
     executor
         .bind_run(
             request.clone(),
@@ -79,6 +80,7 @@ fn fixture(mode: &str, allowed: bool) -> (TempDir, McpExecutor, ProtectedEffectR
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: confirmation.exists(),
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -328,6 +330,11 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
     for (mode, passes, expected) in [
         ("normal", true, gaap::contracts::AgentRunStatus::Completed),
         ("normal", false, gaap::contracts::AgentRunStatus::Blocked),
+        (
+            "reported_only",
+            true,
+            gaap::contracts::AgentRunStatus::Failed,
+        ),
         ("timeout", true, gaap::contracts::AgentRunStatus::Failed),
         ("tool_error", true, gaap::contracts::AgentRunStatus::Failed),
         (
@@ -386,7 +393,11 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
             &execution.protected_effect_results[0],
         )
         .unwrap();
-        assert!(dir.path().join("dispatch").exists(), "{mode}");
+        assert_eq!(
+            dir.path().join("dispatch").exists(),
+            mode != "reported_only",
+            "{mode}"
+        );
         if !passes {
             assert_eq!(
                 execution.protected_effect_results[0].body.execution_status,
@@ -464,6 +475,7 @@ fn explicit_environment_allowlist_is_the_only_child_environment() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -509,6 +521,7 @@ fn host_permission_denial_blocks_an_approved_tool_before_dispatch() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -561,6 +574,7 @@ fn actual_mutation_survives_failed_independent_verification() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: gaap::contracts::Subject {
                         kind: gaap::contracts::SubjectKind::Artifact,
                         locator: locator.clone(),
@@ -715,6 +729,7 @@ fn stale_host_subject_blocks_dispatch_at_the_observation_guard() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -759,6 +774,7 @@ fn full_output_budget_keeps_a_minimal_attempt_record_and_the_output_digest() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -809,6 +825,7 @@ fn reconciliation_capacity_is_reserved_before_dispatch() {
             },
             move |_: &ProtectedEffectRequest| {
                 Ok(SubjectObservation {
+                    effect_confirmed: true,
                     subject: observed.clone(),
                     cost_micros: 0,
                     model_tokens: 0,
@@ -878,6 +895,7 @@ fn observed_fixture(
 }
 fn same_subject(effect: &ProtectedEffectRequest) -> SubjectObservation {
     SubjectObservation {
+        effect_confirmed: true,
         subject: effect.subject.clone(),
         cost_micros: 0,
         model_tokens: 0,
@@ -975,4 +993,83 @@ fn unexpected_subject_changes_after_observation_keep_an_unknown_effect() {
     );
     assert!(executor.call_evidence()[0].dispatched);
     assert!(executor.execute(&effect).is_err());
+}
+
+#[test]
+fn server_ping_gets_an_empty_sdk_response_without_granting_effect_authority() {
+    let (dir, mut executor, effect) = fixture("ping", true);
+    let result = executor.execute(&effect).unwrap();
+    assert_eq!(result.execution_status, EffectExecutionStatus::Executed);
+    assert_eq!(result.usage.tool_calls, 1);
+    assert!(dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn undeclared_server_operations_and_ping_input_fail_at_the_message_guard() {
+    for (mode, code) in [
+        ("server_request", "mcp.unsupported_server_message"),
+        ("invalid_ping", "mcp.invalid_message"),
+    ] {
+        let (dir, mut executor, effect) = fixture(mode, true);
+        let result = executor.execute(&effect).unwrap();
+        assert_eq!(
+            result.execution_status,
+            EffectExecutionStatus::UnknownOutcome
+        );
+        assert!(result.reason.unwrap().starts_with(code));
+        assert!(dir.path().join("dispatch").exists());
+        assert!(executor.execute(&effect).is_err());
+    }
+}
+
+#[test]
+fn stderr_overflow_terminates_and_reaps_an_idle_server() {
+    let dir = TempDir::new().unwrap();
+    let executor = McpExecutor::discover(server("stderr_idle", &dir), limits()).unwrap();
+    let pid = std::fs::read_to_string(dir.path().join("dispatch-pid")).unwrap();
+    std::fs::write(dir.path().join("dispatch-trigger"), "overflow").unwrap();
+    let mut reaped = false;
+    for _ in 0..100 {
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if !alive {
+            reaped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        reaped,
+        "idle child wasn't terminated and reaped after its diagnostics overflowed"
+    );
+    assert!(!dir.path().join("dispatch").exists());
+    drop(executor);
+}
+
+#[test]
+fn cancellation_at_the_final_guard_is_a_non_execution_result() {
+    let handle = std::sync::Arc::new(std::sync::Mutex::new(None::<gaap_mcp::CancelHandle>));
+    let observed_handle = handle.clone();
+    let (dir, mut executor, effect) = observed_fixture(10000, move |count, effect| {
+        if count == 2 {
+            observed_handle.lock().unwrap().as_ref().unwrap().cancel();
+        }
+        Ok(same_subject(effect))
+    });
+    *handle.lock().unwrap() = Some(executor.cancellation_handle());
+    let result = executor.execute(&effect).unwrap();
+    assert_eq!(result.execution_status, EffectExecutionStatus::Denied);
+    assert!(
+        result
+            .reason
+            .unwrap()
+            .starts_with("mcp.cancelled_before_dispatch")
+    );
+    assert_eq!(result.usage.tool_calls, 0);
+    assert!(result.sandbox_profile.is_none());
+    assert!(!dir.path().join("dispatch").exists());
 }

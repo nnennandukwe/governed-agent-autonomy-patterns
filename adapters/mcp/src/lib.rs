@@ -142,6 +142,8 @@ impl CancelHandle {
 #[derive(Debug, Clone)]
 pub struct SubjectObservation {
     pub subject: Subject,
+    /// Independent host evidence confirms the operation occurred; server success isn't proof.
+    pub effect_confirmed: bool,
     /// Host-measured external cost. Unknown usage must return an error.
     pub cost_micros: u64,
     /// Host-measured tool model usage. Pure local fixture tools explicitly report zero.
@@ -177,6 +179,7 @@ pub struct CallEvidence {
     pub sdk_version: String,
     pub status: EffectExecutionStatus,
     pub dispatched: bool,
+    pub effect_confirmed: Option<bool>,
     pub observed_subject: Option<Subject>,
     pub host_usage: Option<EffectUsage>,
     pub output_digest: Option<String>,
@@ -212,6 +215,7 @@ pub struct McpExecutor {
     attempted: BTreeSet<String>,
     limits: TransportLimits,
     cancellation: CancellationToken,
+    state: transport::SharedState,
     identity: ExecutorIdentity,
     server_digest: String,
     profile: SandboxProfileIdentity,
@@ -249,6 +253,8 @@ impl McpExecutor {
         let cancellation = CancellationToken::new();
         let (sender, receiver) = mpsc::sync_channel(1);
         let (init_sender, init_receiver) = mpsc::channel();
+        let state = Arc::new(Mutex::new(transport::WireState::default()));
+        let worker_state = state.clone();
         let worker_cancel = cancellation.clone();
         let worker_digest = server_digest.clone();
         let worker = std::thread::Builder::new()
@@ -259,6 +265,7 @@ impl McpExecutor {
                     limits,
                     worker_digest,
                     worker_cancel,
+                    worker_state,
                     receiver,
                     init_sender,
                 );
@@ -291,6 +298,7 @@ impl McpExecutor {
             attempted: BTreeSet::new(),
             limits,
             cancellation,
+            state,
             identity,
             server_digest,
             profile,
@@ -366,6 +374,7 @@ impl McpExecutor {
     }
 
     pub fn refresh_tools(&mut self) -> Result<&[ToolCapability], McpError> {
+        transport::health(&self.state)?;
         let (reply, receiver) = mpsc::channel();
         self.sender
             .send(WorkerCommand::Refresh(reply))
@@ -535,6 +544,28 @@ impl McpExecutor {
                 "an attempted invocation can't be silently replayed",
             ));
         }
+        let refusal = transport::health(&self.state).err().or_else(|| {
+            self.cancellation
+                .is_cancelled()
+                .then(|| McpError::new("mcp.cancelled_before_dispatch", "session is terminal"))
+        });
+        if let Some(reason) = refusal {
+            return Ok(ExecutorObservation {
+                execution_status: EffectExecutionStatus::Denied,
+                observed_post_effect_subject: None,
+                exit: None,
+                usage: EffectUsage {
+                    cost_micros: 0,
+                    elapsed_ms: 0,
+                    model_tokens: 0,
+                    tool_calls: 0,
+                },
+                executor: None,
+                sandbox_profile: None,
+                reason: Some(reason.to_string()),
+                evidence: vec![],
+            });
+        }
         let preflight = self
             .binding
             .as_mut()
@@ -572,6 +603,7 @@ impl McpExecutor {
             sdk_version: MCP_SDK_VERSION.into(),
             status: EffectExecutionStatus::UnknownOutcome,
             dispatched: false,
+            effect_confirmed: None,
             observed_subject: None,
             host_usage: None,
             output_digest: None,
@@ -637,6 +669,7 @@ impl McpExecutor {
         });
         let output_digest = output.as_ref().map(digest).transpose()?;
         let mut observed = None;
+        let mut effect_confirmed = None;
         let mut cost_micros = 0;
         let mut model_tokens = 0;
         let mut final_status = status;
@@ -652,6 +685,14 @@ impl McpExecutor {
             };
             match observation {
                 Ok(observation) => {
+                    effect_confirmed = Some(observation.effect_confirmed);
+                    if !observation.effect_confirmed {
+                        final_status = EffectExecutionStatus::UnknownOutcome;
+                        final_reason = Some(
+                            "mcp.effect_unconfirmed: host evidence doesn't establish execution"
+                                .into(),
+                        );
+                    }
                     if effect.expected_effect_class == EffectClass::Observation
                         && observation.subject.digest != effect.subject.digest
                     {
@@ -687,6 +728,7 @@ impl McpExecutor {
             sdk_version: MCP_SDK_VERSION.into(),
             status: final_status,
             dispatched,
+            effect_confirmed,
             observed_subject: observed.clone(),
             host_usage: observed.as_ref().map(|_| usage.clone()),
             output_digest: output_digest.clone(),

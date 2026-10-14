@@ -21,7 +21,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
-use crate::transport::{SharedState, StdioTransport, WireState, fail, health};
+use crate::transport::{SharedState, StdioTransport, fail, health};
 use crate::{
     MCP_PROTOCOL_VERSION, McpError, ServerConfig, ToolCapability, TransportLimits, WorkerCommand,
     digest,
@@ -183,6 +183,7 @@ pub(crate) fn run(
     limits: TransportLimits,
     server_digest: String,
     cancellation: CancellationToken,
+    state: SharedState,
     receiver: mpsc::Receiver<WorkerCommand>,
     init: mpsc::Sender<Result<Vec<ToolCapability>, McpError>>,
 ) {
@@ -197,28 +198,41 @@ pub(crate) fn run(
             return;
         }
     };
-    let mut session =
-        match runtime.block_on(Session::start(config, limits, server_digest, cancellation)) {
-            Ok(mut session) => match runtime.block_on(session.discover()) {
-                Ok(tools) => {
-                    if init.send(Ok(tools)).is_err() {
-                        runtime.block_on(session.close());
-                        return;
-                    }
-                    session
-                }
-                Err(error) => {
-                    let _ = init.send(Err(error));
+    let mut session = match runtime.block_on(Session::start(
+        config,
+        limits,
+        server_digest,
+        cancellation,
+        state,
+    )) {
+        Ok(mut session) => match runtime.block_on(session.discover()) {
+            Ok(tools) => {
+                if init.send(Ok(tools)).is_err() {
                     runtime.block_on(session.close());
                     return;
                 }
-            },
+                session
+            }
             Err(error) => {
                 let _ = init.send(Err(error));
+                runtime.block_on(session.close());
                 return;
             }
+        },
+        Err(error) => {
+            let _ = init.send(Err(error));
+            return;
+        }
+    };
+    loop {
+        if health(&session.state).is_err() || session.cancellation.is_cancelled() {
+            break;
+        }
+        let command = match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-    while let Ok(command) = receiver.recv() {
         match command {
             WorkerCommand::Refresh(reply) => {
                 let _ = reply.send(runtime.block_on(session.discover()));
@@ -248,6 +262,7 @@ impl Session {
         limits: TransportLimits,
         server_digest: String,
         cancellation: CancellationToken,
+        state: SharedState,
     ) -> Result<Self, McpError> {
         // Recheck on the owning thread immediately before launch. This isn't OS isolation.
         validate_config(&config, limits)?;
@@ -264,9 +279,9 @@ impl Session {
         let mut child = command
             .spawn()
             .map_err(|e| McpError::new("mcp.spawn_failed", e.to_string()))?;
-        let state = Arc::new(Mutex::new(WireState::default()));
         let mut stderr = child.stderr.take().expect("piped stderr");
         let stderr_state = state.clone();
+        let stderr_cancel = cancellation.clone();
         let stderr_task = tokio::spawn(async move {
             let mut count = 0usize;
             let mut buffer = [0; 4096];
@@ -281,18 +296,20 @@ impl Session {
                                 "mcp.stderr_limit",
                                 "server diagnostics exceed configured bound",
                             );
+                            stderr_cancel.cancel();
                             break;
                         }
                     }
                     Err(error) => {
                         fail(&stderr_state, "mcp.stderr_read", error.to_string());
+                        stderr_cancel.cancel();
                         break;
                     }
                 }
             }
         });
         let transport = StdioTransport {
-            reader: child.stdout.take().expect("piped stdout"),
+            reader: tokio::io::BufReader::new(child.stdout.take().expect("piped stdout")),
             writer: Arc::new(tokio::sync::Mutex::new(
                 child.stdin.take().expect("piped stdin"),
             )),
@@ -565,21 +582,25 @@ impl Session {
         health(&self.state)?;
         if self.cancellation.is_cancelled() {
             return Ok(Invocation {
-                status: EffectExecutionStatus::Interrupted,
+                status: EffectExecutionStatus::Denied,
                 output: None,
                 reason: Some("mcp.cancelled_before_dispatch".into()),
                 dispatched: false,
             });
         }
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .call_generation = Some(generation);
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.call_generation = Some(generation);
+            state.call_started = false;
+        }
         let params = CallToolRequestParams::new(tool.tool_name.clone())
             .with_arguments(arguments.as_object().expect("validated arguments").clone());
         let call = tokio::select! {
             biased;
-            _=self.cancellation.cancelled()=>Err(McpError::new("mcp.cancelled","call was dispatched; effect outcome is unknown")),
+            _=self.cancellation.cancelled()=>Err(health(&self.state).err().unwrap_or_else(||McpError::new("mcp.cancelled","call cancellation prevents establishing its outcome"))),
             response=tokio::time::timeout(call_timeout,self.client.peer().call_tool(params))=>match response {
                 Ok(Ok(response))=>Ok(response),
                 Ok(Err(error))=>Err(health(&self.state).err().unwrap_or_else(||McpError::new("mcp.call_failed",error.to_string()))),
@@ -668,11 +689,20 @@ impl Session {
                 fail(&self.state, error.code, error.detail.clone());
                 let _ = self.child.kill().await;
                 let _ = self.child.wait().await;
+                let dispatched = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .call_started;
                 Ok(Invocation {
-                    status: EffectExecutionStatus::UnknownOutcome,
+                    status: if dispatched {
+                        EffectExecutionStatus::UnknownOutcome
+                    } else {
+                        EffectExecutionStatus::Denied
+                    },
                     output: None,
                     reason: Some(error.to_string()),
-                    dispatched: true,
+                    dispatched,
                 })
             }
         }
@@ -680,9 +710,9 @@ impl Session {
 
     async fn close(mut self) {
         self.cancellation.cancel();
-        let _ = tokio::time::timeout(self.limits.timeout, self.client.cancel()).await;
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
+        let _ = tokio::time::timeout(self.limits.timeout, self.client.cancel()).await;
         self.stderr.abort();
         let _ = self.stderr.await;
     }

@@ -1,7 +1,8 @@
 //! Strict stdio framing around the SDK's typed protocol messages.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use rmcp::{
     RoleClient,
@@ -13,7 +14,7 @@ use serde::{
     de::{self, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio_util::sync::CancellationToken;
 
@@ -23,8 +24,10 @@ use crate::{MCP_PROTOCOL_VERSION, McpError};
 pub(crate) struct WireState {
     pub failure: Option<McpError>,
     pub pending: BTreeMap<String, String>,
+    pub server_requests: BTreeSet<String>,
     pub generation: u64,
     pub call_generation: Option<u64>,
+    pub call_started: bool,
 }
 
 pub(crate) type SharedState = Arc<Mutex<WireState>>;
@@ -46,7 +49,7 @@ pub(crate) fn health(state: &SharedState) -> Result<(), McpError> {
 }
 
 pub(crate) struct StdioTransport {
-    pub reader: ChildStdout,
+    pub reader: BufReader<ChildStdout>,
     pub writer: Arc<tokio::sync::Mutex<ChildStdin>>,
     pub state: SharedState,
     pub cancellation: CancellationToken,
@@ -95,6 +98,19 @@ impl Transport<RoleClient> for StdioTransport {
                     return Err(io::Error::other("duplicate or excessive outgoing requests"));
                 }
             }
+            if json.get("method").is_none() {
+                let id = json
+                    .get("id")
+                    .ok_or_else(|| io::Error::other("response ID is absent"))?;
+                if !state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .server_requests
+                    .remove(&id.to_string())
+                {
+                    return Err(io::Error::other("unrequested client response"));
+                }
+            }
             bytes.push(b'\n');
             let is_cancellation =
                 json.get("method").and_then(Value::as_str) == Some("notifications/cancelled");
@@ -103,10 +119,36 @@ impl Transport<RoleClient> for StdioTransport {
                 writer.write_all(&bytes).await?;
                 return writer.flush().await;
             }
+            let is_call = json.get("method").and_then(Value::as_str) == Some("tools/call");
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => Err(io::Error::other("session cancelled")),
-                result = async { writer.write_all(&bytes).await?; writer.flush().await } => {
+                result = async {
+                    if is_call {
+                        let mut written = 0;
+                        while written < bytes.len() {
+                            let size = std::future::poll_fn(|cx| {
+                                // Hold the notification lock only for this nonblocking write poll.
+                                // No notification can commit between the generation check and these bytes.
+                                let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                if let Some(error) = &state.failure { return Poll::Ready(Err(io::Error::other(error.clone()))); }
+                                if state.call_generation != Some(state.generation) {
+                                    state.failure = Some(McpError::new("mcp.capability_drift", "inventory changed before the call frame was written"));
+                                    return Poll::Ready(Err(io::Error::other("capability drift before dispatch")));
+                                }
+                                match std::pin::Pin::new(&mut *writer).poll_write(cx, &bytes[written..]) {
+                                    Poll::Ready(Ok(size)) => { state.call_started |= size > 0; Poll::Ready(Ok(size)) }
+                                    other => other,
+                                }
+                            }).await?;
+                            if size == 0 { return Err(io::Error::new(io::ErrorKind::WriteZero, "call frame wasn't written")); }
+                            written += size;
+                        }
+                    } else {
+                        writer.write_all(&bytes).await?;
+                    }
+                    writer.flush().await
+                } => {
                     if let Err(error) = &result { fail(&state,"mcp.write_failed",error.to_string()); }
                     result
                 }
@@ -120,14 +162,14 @@ impl Transport<RoleClient> for StdioTransport {
         }
         let mut bytes = Vec::new();
         loop {
-            let mut byte = [0];
             let read = tokio::select! {
                 biased;
                 _ = self.cancellation.cancelled() => return None,
-                result = self.reader.read(&mut byte) => result,
+                result = self.reader.fill_buf() => result,
             };
-            match read {
-                Ok(0) => {
+            let chunk = match read {
+                Ok(chunk) if !chunk.is_empty() => chunk,
+                Ok(_) => {
                     fail(&self.state, "mcp.server_exit", "server closed stdout");
                     return None;
                 }
@@ -135,16 +177,21 @@ impl Transport<RoleClient> for StdioTransport {
                     fail(&self.state, "mcp.read_failed", error.to_string());
                     return None;
                 }
-                Ok(_) if byte[0] == b'\n' => break,
-                Ok(_) => bytes.push(byte[0]),
-            }
-            if bytes.len() > self.max_frame {
+            };
+            let newline = chunk.iter().position(|byte| *byte == b'\n');
+            let length = newline.unwrap_or(chunk.len());
+            if bytes.len().saturating_add(length) > self.max_frame {
                 fail(
                     &self.state,
                     "mcp.frame_limit",
                     "incoming frame exceeds configured bound",
                 );
                 return None;
+            }
+            bytes.extend_from_slice(&chunk[..length]);
+            self.reader.consume(length + usize::from(newline.is_some()));
+            if newline.is_some() {
+                break;
             }
         }
         let parsed = match strict_json(&bytes).and_then(|json| validate_message(json, &self.state))
@@ -178,10 +225,43 @@ fn validate_message(json: Value, shared: &SharedState) -> Result<Value, McpError
         ));
     }
     if let Some(method) = envelope.get("method").and_then(Value::as_str) {
+        if method == "ping" {
+            let id = envelope
+                .get("id")
+                .filter(|id| id.is_string() || id.as_i64().is_some())
+                .ok_or_else(|| {
+                    McpError::new(
+                        "mcp.invalid_message",
+                        "ping request ID is missing or invalid",
+                    )
+                })?;
+            if envelope
+                .keys()
+                .any(|key| !["jsonrpc", "id", "method", "params"].contains(&key.as_str()))
+                || envelope.get("params").is_some_and(|params| {
+                    params.as_object().is_none_or(|params| !params.is_empty())
+                })
+            {
+                return Err(McpError::new(
+                    "mcp.invalid_message",
+                    "ping doesn't accept operation input",
+                ));
+            }
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.server_requests.len() >= 8 || !state.server_requests.insert(id.to_string()) {
+                return Err(McpError::new(
+                    "mcp.request_identity",
+                    "duplicate or excessive active server pings",
+                ));
+            }
+            return Ok(json);
+        }
         if envelope.contains_key("id") || method != "notifications/tools/list_changed" {
             return Err(McpError::new(
                 "mcp.unsupported_server_message",
-                "server requests and undeclared notifications are refused",
+                "only control-plane pings and declared tool-list notifications are accepted",
             ));
         }
         if envelope
@@ -425,5 +505,67 @@ impl<'de> Deserialize<'de> for StrictValue {
             }
         }
         decoder.deserialize_any(JsonVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    #[tokio::test]
+    async fn descriptor_change_while_waiting_for_writer_blocks_the_first_call_byte() {
+        for drift in [false, true] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let marker = dir.path().join("wire");
+            let mut child = Command::new("python3").args(["-c", "import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(sys.stdin.buffer.readline())"]).arg(&marker)
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+            let state = Arc::new(Mutex::new(WireState {
+                call_generation: Some(0),
+                ..WireState::default()
+            }));
+            let writer = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
+            let held = writer.lock().await;
+            let mut transport = StdioTransport {
+                reader: BufReader::new(child.stdout.take().unwrap()),
+                writer: writer.clone(),
+                state: state.clone(),
+                cancellation: CancellationToken::new(),
+                max_frame: 4096,
+            };
+            let message: TxJsonRpcMessage<RoleClient> = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}})).unwrap();
+            let task = tokio::spawn(transport.send(message));
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while state.lock().unwrap().pending.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if drift {
+                validate_message(
+                    json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
+                    &state,
+                )
+                .unwrap();
+            }
+            drop(held);
+            let result = task.await.unwrap();
+            if drift {
+                assert!(result.is_err());
+                assert_eq!(health(&state).unwrap_err().code, "mcp.capability_drift");
+                assert!(!state.lock().unwrap().call_started);
+                child.kill().await.unwrap();
+                child.wait().await.unwrap();
+                assert!(!marker.exists());
+            } else {
+                result.unwrap();
+                assert!(child.wait().await.unwrap().success());
+                assert!(state.lock().unwrap().call_started);
+                assert!(marker.exists());
+            }
+        }
     }
 }
