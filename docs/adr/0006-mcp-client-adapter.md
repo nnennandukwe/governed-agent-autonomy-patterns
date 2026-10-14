@@ -42,7 +42,7 @@ and schema-validated structured output are supported initially.
 Each prepared invocation retains the exact accepted run, subject, policy, profile, capability and argument identity.
 Descriptor drift requires fresh authority. After dispatch, cancellation, transport failure and malformed output retain
 unknown outcomes. Independent host observation supplies execution confirmation and the actual resulting subject; verification remains a separate
-engine step. The engine also rejects a reported executor identity that differs from its configured identity, preserving the attempt with an unknown outcome. A failed verifier can't erase an already executed mutation.
+engine step. The engine also rejects a reported executor identity that differs from its configured identity, preserving the attempt with an unknown outcome. This tightens the previous runtime behavior: missing or malformed reported executor identities now get an explicit `unverified-executor` label, rather than the configured trusted identity. The canonical schemas remain unchanged. A failed verifier can't erase an already executed mutation.
 
 ## Evidence boundaries
 

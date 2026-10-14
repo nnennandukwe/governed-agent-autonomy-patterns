@@ -1019,18 +1019,34 @@ where
         observation: ExecutorObservation,
         untrusted_reason: &str,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
-        let observed_executor = observation
-            .executor
-            .filter(|executor| {
-                !executor.name.trim().is_empty()
-                    && !executor.version.trim().is_empty()
-                    && is_digest_string(&executor.digest)
-            })
-            .unwrap_or_else(|| self.config.executor_identity.clone());
+        let unverified_identity_digest = runtime_effect_evidence(
+            EffectEvidenceType::Executor,
+            &format!("unverified-executor:{:?}", observation.executor),
+        )
+        .digest;
+        let observed_executor = observation.executor.filter(|executor| {
+            !executor.name.trim().is_empty()
+                && !executor.version.trim().is_empty()
+                && is_digest_string(&executor.digest)
+        });
+        let executor_unverified = observed_executor.is_none();
+        let observed_executor = observed_executor.unwrap_or_else(|| ExecutorIdentity {
+            name: "unverified-executor".into(),
+            version: "0.1.0".into(),
+            digest: unverified_identity_digest,
+        });
         let post_subject =
             valid_observed_post_effect_subject(request, observation.observed_post_effect_subject);
         let usage = safe_effect_usage(observation.usage);
         let mut evidence = sanitize_untrusted_sandbox_evidence(observation.evidence);
+        if executor_unverified {
+            evidence.retain(|reference| reference.evidence_type != EffectEvidenceType::Executor);
+            evidence.push(EffectEvidenceReference {
+                evidence_type: EffectEvidenceType::Executor,
+                digest: observed_executor.digest.clone(),
+                locator: None,
+            });
+        }
         ensure_effect_evidence(&mut evidence, EffectEvidenceType::Executor, "executor");
         ensure_effect_evidence(
             &mut evidence,
