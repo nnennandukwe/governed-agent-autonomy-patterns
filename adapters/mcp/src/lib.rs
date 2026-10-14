@@ -658,6 +658,12 @@ impl McpExecutor {
         });
         let (status, output, reason, dispatched) = match invocation {
             Ok(call) => (call.status, call.output, call.reason, call.dispatched),
+            Err(error) if error.code == "mcp.observer_failed" => {
+                self.calls[record_index].dispatched = false;
+                self.calls[record_index].error = Some(error.to_string());
+                self.cancellation.cancel();
+                return Err(error);
+            }
             Err(error) => (
                 EffectExecutionStatus::Denied,
                 None,
@@ -739,6 +745,18 @@ impl McpExecutor {
                     final_status = EffectExecutionStatus::UnknownOutcome;
                     final_reason = Some(error.to_string());
                 }
+            }
+        }
+        if dispatched
+            && final_status == EffectExecutionStatus::Executed
+            && self.cancellation.is_cancelled()
+        {
+            if let Err(error) = transport::health(&self.state) {
+                final_status = EffectExecutionStatus::UnknownOutcome;
+                final_reason = Some(error.to_string());
+            } else {
+                final_status = EffectExecutionStatus::Interrupted;
+                final_reason = Some("mcp.cancelled_during_reconciliation".into());
             }
         }
         let usage = EffectUsage {

@@ -39,7 +39,7 @@ bindings. It rediscovers descriptors before dispatch and evaluates ToolTrust and
 Server annotations, output and self-reported success can't provide approvals, usage measurements, subject observations
 or verification authority. A normal tool response remains an unknown effect unless the host independently confirms execution.
 
-The synchronous executor owns its asynchronous SDK session on a dedicated runtime thread. A separate single host-probe worker bounds the caller's wait by the operation timeout and run deadline. Cancellation interrupts that wait. After dispatch, an expired or cancelled run gets at most 250 ms for final reconciliation observation. An existing Tokio host can
+The synchronous executor owns its asynchronous SDK session on a dedicated runtime thread. A separate single host-probe worker bounds the caller's wait by the operation timeout and run deadline. Cancellation interrupts that wait. After dispatch, an expired or cancelled run gets at most 250 ms for final reconciliation observation, including when cancellation arrives during the probe. An existing Tokio host can
 compose it without creating a nested runtime. Its cancellation handle can be used from another host thread. Cancellation
 ends the session; it can't reopen a terminal run.
 
@@ -70,7 +70,8 @@ available. The host must persist needed raw evidence before dropping the executo
 | Permission denied | No tool dispatch; inspect the policy decision. |
 | Altered prepared effect or stale host subject | Refuse invocation; inspect and prepare a new authorized action. |
 | Tool error after dispatch | Preserve output and independently observed subject; failed completion doesn't imply rollback. |
-| Timeout, cancellation, server exit or invalid/partial output after dispatch | Record an unknown effect outcome; inspect retained evidence before any new attempt. |
+| Timeout, cancellation, server exit or invalid/partial output before a complete response and host observation | Record an unknown effect outcome; inspect retained evidence before any new attempt. |
+| Cancellation during bounded reconciliation of a completed call | Preserve timely host evidence and report interruption; the engine can't complete the cancelled run. |
 | Late duplicate response | Poison further session operations; preserve the first effect and its evidence. |
 | Independent verification fails after mutation | Preserve the changed subject and executed effect; the engine blocks completion. |
 

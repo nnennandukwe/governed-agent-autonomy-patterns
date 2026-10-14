@@ -343,6 +343,11 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
             true,
             gaap::contracts::AgentRunStatus::Failed,
         ),
+        (
+            "fresh_probe_failure",
+            true,
+            gaap::contracts::AgentRunStatus::Failed,
+        ),
     ] {
         let (dir, executor, effect) = if mode == "host_subject_change" {
             observed_fixture(60000, |count, effect| {
@@ -351,6 +356,16 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
                     observation.subject.digest = hash(b"independent changed subject");
                 }
                 Ok(observation)
+            })
+        } else if mode == "fresh_probe_failure" {
+            observed_fixture(60000, |count, effect| {
+                if count == 2 {
+                    return Err(gaap_mcp::McpError {
+                        code: "host.read_failed",
+                        detail: "fresh observation unavailable".into(),
+                    });
+                }
+                Ok(same_subject(effect))
             })
         } else {
             fixture(mode, true)
@@ -406,7 +421,7 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
         .unwrap();
         assert_eq!(
             dir.path().join("dispatch").exists(),
-            mode != "reported_only",
+            !matches!(mode, "reported_only" | "fresh_probe_failure"),
             "{mode}"
         );
         if !passes {
@@ -1095,11 +1110,9 @@ fn cancellation_during_the_fresh_host_probe_is_a_non_execution_result() {
         Ok(same_subject(effect))
     });
     *handle.lock().unwrap() = Some(executor.cancellation_handle());
-    let result = executor.execute(&effect).unwrap();
-    assert_eq!(result.execution_status, EffectExecutionStatus::Denied);
-    assert!(result.reason.unwrap().starts_with("mcp.observer_cancelled"));
-    assert_eq!(result.usage.tool_calls, 0);
-    assert!(result.sandbox_profile.is_none());
+    let error = executor.execute(&effect).unwrap_err();
+    assert!(error.message().starts_with("mcp.observer_failed"));
+    assert!(error.message().contains("mcp.observer_cancelled"));
     assert!(!dir.path().join("dispatch").exists());
 }
 
@@ -1395,4 +1408,38 @@ fn cancellation_interrupts_a_stalled_host_probe_without_waiting_for_its_return()
     assert!(start.elapsed() < Duration::from_secs(1));
     assert!(!dir.path().join("dispatch").exists());
     drop(executor);
+}
+
+#[test]
+fn cancellation_during_reconciliation_keeps_timely_host_evidence() {
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = entered.clone();
+    let (dir, mut executor, effect) = observed_fixture(10000, move |count, effect| {
+        if count == 3 {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        Ok(same_subject(effect))
+    });
+    let cancellation = executor.cancellation_handle();
+    let canceller = std::thread::spawn(move || {
+        for _ in 0..200 {
+            if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                cancellation.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("post-dispatch probe didn't start");
+    });
+    let result = executor.execute(&effect).unwrap();
+    canceller.join().unwrap();
+    assert_eq!(result.execution_status, EffectExecutionStatus::Interrupted);
+    assert!(result.observed_post_effect_subject.is_some());
+    let record = &executor.call_evidence()[0];
+    assert_eq!(record.effect_confirmed, Some(true));
+    assert!(record.observed_subject.is_some());
+    assert!(record.host_usage.is_some());
+    assert!(dir.path().join("dispatch").exists());
+    assert!(executor.execute(&effect).is_err());
 }

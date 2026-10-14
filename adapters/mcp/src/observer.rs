@@ -83,9 +83,14 @@ impl ObserverPort {
                     "host probe worker is unavailable",
                 )
             })?;
-        let deadline = Instant::now() + budget;
+        let mut deadline = Instant::now() + budget;
+        let mut reconciliation_cancelled = cancelled;
         loop {
-            if !cancelled && self.cancellation.is_cancelled() {
+            if after_dispatch && !reconciliation_cancelled && self.cancellation.is_cancelled() {
+                reconciliation_cancelled = true;
+                deadline = deadline.min(Instant::now() + Duration::from_millis(250));
+            }
+            if !after_dispatch && !cancelled && self.cancellation.is_cancelled() {
                 return Err(McpError::new(
                     "mcp.observer_cancelled",
                     "host probe wait cancelled",
@@ -108,7 +113,7 @@ impl ObserverPort {
                             "late host probe result ignored",
                         ));
                     }
-                    if !cancelled && self.cancellation.is_cancelled() {
+                    if !after_dispatch && !cancelled && self.cancellation.is_cancelled() {
                         return Err(McpError::new(
                             "mcp.observer_cancelled",
                             "host probe wait cancelled",

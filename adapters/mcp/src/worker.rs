@@ -678,7 +678,9 @@ impl Session {
                 dispatched: false,
             });
         }
-        let fresh = observer.observe(effect, deadline, false)?;
+        let fresh = observer
+            .observe(effect, deadline, false)
+            .map_err(|error| McpError::new("mcp.observer_failed", error.to_string()))?;
         if !crate::usage_is_valid(&fresh) {
             return Err(McpError::new(
                 "mcp.invalid_usage",
