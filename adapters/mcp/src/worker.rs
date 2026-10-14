@@ -77,6 +77,115 @@ pub(crate) fn validate_config(
             "absolute executable/directory and trusted server artifact identity are required",
         ));
     }
+    if config.executable.canonicalize().ok().as_ref() != Some(&config.executable) {
+        return Err(McpError::new(
+            "mcp.launch_profile",
+            "use a canonical native executable path without a mutable alias",
+        ));
+    }
+    let mut executable = std::fs::File::open(&config.executable)
+        .map_err(|e| McpError::new("mcp.launch_profile", e.to_string()))?;
+    let mut header = [0; 4];
+    executable
+        .read_exact(&mut header)
+        .map_err(|e| McpError::new("mcp.launch_profile", e.to_string()))?;
+    let native = [
+        b"\x7fELF",
+        b"\xfe\xed\xfa\xce",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    ]
+    .contains(&&header)
+        || &header[..2] == b"MZ";
+    if !native {
+        return Err(McpError::new(
+            "mcp.launch_profile",
+            "direct shebang launches aren't supported; configure the approved native interpreter and script explicitly",
+        ));
+    }
+    let program = config
+        .executable
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if [
+        "env",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "cmd",
+        "powershell",
+        "pwsh",
+        "npx",
+        "npm",
+        "uvx",
+        "java",
+        "dotnet",
+        "ruby",
+        "perl",
+        "lua",
+        "deno",
+        "bun",
+        "php",
+        "rscript",
+    ]
+    .contains(&program.as_str())
+    {
+        return Err(McpError::new(
+            "mcp.launch_profile",
+            "shells and implicit module/package launchers aren't supported by this profile",
+        ));
+    }
+    if program.starts_with("python") || program == "node" {
+        let script = config
+            .arguments
+            .first()
+            .map(std::path::PathBuf::from)
+            .filter(|path| {
+                path.is_absolute()
+                    && path.is_file()
+                    && path.canonicalize().ok().as_ref() == Some(path)
+            });
+        if script
+            .as_ref()
+            .is_none_or(|path| !config.artifacts.iter().any(|asset| &asset.path == path))
+        {
+            return Err(McpError::new(
+                "mcp.launch_profile",
+                "Python/Node launches require an explicit canonical script argument in the approved manifest",
+            ));
+        }
+    }
+    for argument in &config.arguments {
+        let candidate = std::path::Path::new(
+            argument
+                .split_once('=')
+                .map_or(argument.as_str(), |(_, value)| value),
+        );
+        let candidate = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            config.working_directory.join(candidate)
+        };
+        if candidate.is_file() {
+            let canonical = candidate
+                .canonicalize()
+                .map_err(|e| McpError::new("mcp.artifact_identity", e.to_string()))?;
+            if !config.artifacts.iter().any(|asset| asset.path == canonical) {
+                return Err(McpError::new(
+                    "mcp.artifact_identity",
+                    "file arguments must be included in the approved launch manifest",
+                ));
+            }
+        }
+    }
     if limits.timeout.is_zero()
         || limits.timeout > Duration::from_secs(60)
         || !(1024..=16 * 1024 * 1024).contains(&limits.max_frame_bytes)
@@ -117,7 +226,10 @@ pub(crate) fn validate_config(
     let mut consumed = 0usize;
     let mut paths = BTreeSet::new();
     for artifact in &config.artifacts {
-        if !artifact.path.is_absolute() || !paths.insert(artifact.path.clone()) {
+        if !artifact.path.is_absolute()
+            || artifact.path.canonicalize().ok().as_ref() != Some(&artifact.path)
+            || !paths.insert(artifact.path.clone())
+        {
             return Err(McpError::new(
                 "mcp.artifact_identity",
                 "artifact paths must be absolute and unique",

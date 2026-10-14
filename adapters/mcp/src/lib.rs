@@ -182,6 +182,7 @@ pub struct CallEvidence {
     pub effect_confirmed: Option<bool>,
     pub observed_subject: Option<Subject>,
     pub host_usage: Option<EffectUsage>,
+    pub last_known_usage: EffectUsage,
     pub output_digest: Option<String>,
     pub output: Option<Value>,
     pub output_omitted: bool,
@@ -606,6 +607,12 @@ impl McpExecutor {
             effect_confirmed: None,
             observed_subject: None,
             host_usage: None,
+            last_known_usage: EffectUsage {
+                cost_micros: preflight.cost_micros,
+                elapsed_ms: 0,
+                model_tokens: preflight.model_tokens,
+                tool_calls: 0,
+            },
             output_digest: None,
             output: None,
             output_omitted: false,
@@ -670,8 +677,12 @@ impl McpExecutor {
         let output_digest = output.as_ref().map(digest).transpose()?;
         let mut observed = None;
         let mut effect_confirmed = None;
-        let mut cost_micros = 0;
-        let mut model_tokens = 0;
+        let mut cost_micros = if dispatched { preflight.cost_micros } else { 0 };
+        let mut model_tokens = if dispatched {
+            preflight.model_tokens
+        } else {
+            0
+        };
         let mut final_status = status;
         let mut final_reason = reason;
         if dispatched {
@@ -731,6 +742,7 @@ impl McpExecutor {
             effect_confirmed,
             observed_subject: observed.clone(),
             host_usage: observed.as_ref().map(|_| usage.clone()),
+            last_known_usage: usage.clone(),
             output_digest: output_digest.clone(),
             output,
             output_omitted: false,
@@ -783,7 +795,7 @@ impl McpExecutor {
             for (evidence_type, digest) in [
                 (EffectEvidenceType::Executor, digest(&self.identity)?),
                 (EffectEvidenceType::Sandbox, digest(&self.profile)?),
-                (EffectEvidenceType::Usage, digest(&usage)?),
+                (EffectEvidenceType::Usage, record_digest.clone()),
             ] {
                 evidence.push(EffectEvidenceReference {
                     evidence_type,
@@ -837,9 +849,15 @@ impl McpExecutor {
                 locator: None,
             });
         }
+        if final_status == EffectExecutionStatus::UnknownOutcome {
+            self.cancellation.cancel();
+        }
         Ok(ExecutorObservation {
             execution_status: final_status,
-            observed_post_effect_subject: observed,
+            observed_post_effect_subject: observed.filter(|subject| {
+                effect.expected_effect_class != EffectClass::Observation
+                    || subject.digest == effect.subject.digest
+            }),
             exit: None,
             usage,
             executor: if dispatched {

@@ -24,7 +24,7 @@ changed descriptors, mutations, cancellation and engine receipts. They don't est
 
 1. Construct `ServerConfig` with an absolute executable and working directory, explicit arguments and environment,
    expected server name/version, and host-approved artifact digests for the executable and launch dependencies.
-   Set the manifest identity using `artifact_manifest_digest`; discovery checks the listed files against those expected bytes.
+   Use canonical paths. Set the manifest identity using `artifact_manifest_digest`; discovery checks listed files against those expected bytes. Existing file arguments must appear in the manifest. Python/Node require a canonical script as their first argument; direct shebangs, executable aliases, shells and implicit module/package launchers aren't supported.
 2. Call `McpExecutor::discover(config, limits)` to obtain descriptors. Discovery grants no capability authority.
 3. Bind one accepted run, `ContractSupport`, trusted `PermissionPolicy`, and a `SubjectObserver`. The observer supplies
    independent subject observations, execution confirmation and known external cost/model usage. Confirmation must come from host evidence outside the MCP response; unavailable measurements return an error.
@@ -80,13 +80,14 @@ stopped. A cancellation notification is advisory, and process termination isn't 
 
 Discovery verifies the listed executable and launch-artifact bytes before spawning. The host must approve their expected
 digests independently and include the package dependencies relevant to its identity.
-The same-user filesystem and external server remain outside an isolation guarantee. Host observation is a point-in-time
+The host's system runtime, transitive imports, same-user filesystem and external server remain outside an isolation guarantee. The launch profile verifies declared launch assets; it doesn't attest the entire host or confine later server code loading. Host observation is a point-in-time
 check; the host must serialize relevant subject changes when it requires stronger freshness guarantees.
 
 Cost/model usage comes from the host observer, rather than an assumed zero for an external provider. Pure local fixtures
-explicitly report zero because they don't use model or billed tool services. Missing measurements prevent successful
-completion and remain explicit in retained evidence.
+explicitly report zero because they don't use model or billed tool services. Missing measurements end the session and prevent successful completion. The result retains host-observed last-known usage; it doesn't claim settled cost or token totals. Its Usage evidence points to the call record, where `host_usage: null` marks unavailable final measurement. Consumers must inspect that evidence before reporting totals.
 
 Receipts are integrity-checked GAAP evidence, without signing or durable recovery added by this adapter. MCP compatibility
 doesn't establish safety or authority. ACP #12, live Goose #14, signed receipts #15, isolation #16/#17, recovery #32 and
 ThreadLoop #111 remain separate work.
+
+Unexpected subject changes during an observation preserve the actual host observation in `CallEvidence` and produce an unknown effect. The frozen contract can't label a changed subject as an observation result, so that result omits its post-subject field and references the retained reconciliation record. The engine fails the run; it doesn't lose the receipt or authorize completion.

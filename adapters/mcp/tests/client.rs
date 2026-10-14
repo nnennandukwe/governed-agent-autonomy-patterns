@@ -343,7 +343,17 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
             gaap::contracts::AgentRunStatus::Failed,
         ),
     ] {
-        let (dir, executor, effect) = fixture(mode, true);
+        let (dir, executor, effect) = if mode == "host_subject_change" {
+            observed_fixture(60000, |count, effect| {
+                let mut observation = same_subject(effect);
+                if count == 3 {
+                    observation.subject.digest = hash(b"independent changed subject");
+                }
+                Ok(observation)
+            })
+        } else {
+            fixture(mode, true)
+        };
         let (request, support) = request(effect.capability.clone());
         let runtime_support = gaap::runtime::RuntimeSupport::new(
             support.clone(),
@@ -686,6 +696,7 @@ fn altered_launch_artifacts_fail_before_spawn() {
     let mut config = server("normal", &dir);
     let copy = dir.path().join("changed-server.py");
     std::fs::write(&copy, "raise RuntimeError('must never launch')").unwrap();
+    let copy = copy.canonicalize().unwrap();
     config.arguments[0] = copy.display().to_string();
     config.artifacts[1].path = copy;
     config.artifact_digest = config.artifact_manifest_digest().unwrap();
@@ -987,8 +998,13 @@ fn unexpected_subject_changes_after_observation_keep_an_unknown_effect() {
             .starts_with("mcp.unexpected_subject_change")
     );
     assert!(dir.path().join("dispatch").exists());
+    assert!(result.observed_post_effect_subject.is_none());
     assert_ne!(
-        result.observed_post_effect_subject.unwrap().digest,
+        executor.call_evidence()[0]
+            .observed_subject
+            .as_ref()
+            .unwrap()
+            .digest,
         effect.subject.digest
     );
     assert!(executor.call_evidence()[0].dispatched);
@@ -1072,4 +1088,100 @@ fn cancellation_at_the_final_guard_is_a_non_execution_result() {
     assert_eq!(result.usage.tool_calls, 0);
     assert!(result.sandbox_profile.is_none());
     assert!(!dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn implicit_interpreters_and_unlisted_file_arguments_fail_before_launch() {
+    for mode in ["script", "unlisted", "alias"] {
+        let dir = TempDir::new().unwrap();
+        let mut config = server("normal", &dir);
+        if mode == "script" {
+            let script = dir.path().join("implicit-server");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!{}\n{}",
+                    config.executable.display(),
+                    include_str!("fixtures/server.py")
+                ),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            config.arguments.remove(0);
+            config.executable = script.canonicalize().unwrap();
+            config.artifacts = vec![LaunchArtifact {
+                path: config.executable.clone(),
+                digest: hash(&std::fs::read(&config.executable).unwrap()),
+            }];
+        } else if mode == "unlisted" {
+            config.artifacts.truncate(1);
+        } else {
+            #[cfg(unix)]
+            {
+                let alias = dir.path().join("mutable-interpreter");
+                std::os::unix::fs::symlink(&config.executable, &alias).unwrap();
+                config.executable = alias;
+                config.artifacts[0].path = config.executable.clone();
+            }
+            #[cfg(not(unix))]
+            {
+                continue;
+            }
+        }
+        config.artifact_digest = config.artifact_manifest_digest().unwrap();
+        let error = McpExecutor::discover(config, limits()).err().expect(mode);
+        assert!(
+            matches!(error.code, "mcp.launch_profile" | "mcp.artifact_identity"),
+            "{mode}: {error}"
+        );
+        assert!(!dir.path().join("dispatch").exists());
+    }
+}
+
+#[test]
+fn measurement_failure_retains_last_known_usage_and_stops_further_calls() {
+    let (dir, mut executor, effect) = observed_fixture(10000, |count, effect| {
+        if count == 3 {
+            return Err(gaap_mcp::McpError {
+                code: "host.usage_unknown",
+                detail: "measurement unavailable".into(),
+            });
+        }
+        let mut observation = same_subject(effect);
+        observation.cost_micros = 123;
+        observation.model_tokens = 7;
+        Ok(observation)
+    });
+    let result = executor.execute(&effect).unwrap();
+    assert_eq!(
+        result.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(result.usage.cost_micros, 123);
+    assert_eq!(result.usage.model_tokens, 7);
+    let record = &executor.call_evidence()[0];
+    assert!(record.host_usage.is_none());
+    assert_eq!(record.last_known_usage.cost_micros, 123);
+    assert!(result.evidence.iter().any(|e| e.evidence_type
+        == gaap::contracts::EffectEvidenceType::Usage
+        && e.digest == hash(&serde_jcs::to_vec(record).unwrap())));
+    let next = executor
+        .prepare_effect(
+            "echo",
+            json!({"message":"next"}),
+            "next".into(),
+            2,
+            effect.subject,
+            EffectClass::Observation,
+        )
+        .unwrap();
+    assert_eq!(
+        executor.execute(&next).unwrap().execution_status,
+        EffectExecutionStatus::Denied
+    );
+    assert!(dir.path().join("dispatch").exists());
 }
