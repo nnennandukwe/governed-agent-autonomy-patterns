@@ -33,6 +33,21 @@ cargo build --locked
 cargo run --locked --example generate-contract-artifacts -- --check
 ```
 
+The separately pinned MCP adapter requires Rust 1.88 or newer and Python 3 for its independent stdio test fixture.
+Its dependency graph and SDK types stay outside the GAAP core crate. Run its matrix from the repository root:
+
+```bash
+cargo fmt --manifest-path adapters/mcp/Cargo.toml --check
+cargo clippy --manifest-path adapters/mcp/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/mcp/Cargo.toml --locked
+cargo build --manifest-path adapters/mcp/Cargo.toml --locked
+cargo audit --file adapters/mcp/Cargo.lock
+```
+
+CI installs `cargo-audit` 0.22.2 with its lockfile and requires the MCP adapter lane on every PR. Local dependency
+verification uses that same version. See [the adapter guide](adapters/mcp/README.md) for its compatibility profile and
+recovery rules.
+
 Changes to `RunCoordinator` decisions must also reproduce the committed packet
 through RunInvariant commit `e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44`.
 Do not edit the conformance packet by hand or update it to make a failing

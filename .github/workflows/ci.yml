@@ -143,6 +143,31 @@ jobs:
       - name: Check bounded Agent Run runtime
         run: cargo test --locked --test runtime
 
+  mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check adapter formatting
+        run: cargo fmt --manifest-path adapters/mcp/Cargo.toml --check
+
+      - name: Check adapter warnings
+        run: cargo clippy --manifest-path adapters/mcp/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Exercise real stdio and engine failure paths
+        run: cargo test --manifest-path adapters/mcp/Cargo.toml --locked
+
+      - name: Build adapter
+        run: cargo build --manifest-path adapters/mcp/Cargo.toml --locked
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit adapter dependency lockfile
+        run: cargo audit --file adapters/mcp/Cargo.lock
+
   final:
     if: always()
     needs:
@@ -151,6 +176,7 @@ jobs:
       - contract
       - coordinator
       - runtime
+      - mcp
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -164,10 +190,12 @@ jobs:
           COORDINATOR_RESULT: ${{ needs.coordinator.result }}
           RUNTIME_SELECTED: ${{ needs.classify.outputs.runtime }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
+          MCP_RESULT: ${{ needs.mcp.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
           [[ "$BASELINE_RESULT" == "success" ]]
+          [[ "$MCP_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else
