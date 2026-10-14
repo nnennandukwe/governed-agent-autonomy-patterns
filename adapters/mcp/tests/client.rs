@@ -31,7 +31,7 @@ fn server(mode: &str, dir: &TempDir) -> ServerConfig {
         mode.into(),
         dir.path().join("dispatch").display().to_string(),
     ];
-    config.working_directory = dir.path().into();
+    config.working_directory = dir.path().canonicalize().unwrap();
     config.executable = config.executable.canonicalize().unwrap();
     config.artifacts = vec![
         LaunchArtifact {
@@ -1085,7 +1085,7 @@ fn stderr_overflow_terminates_and_reaps_an_idle_server() {
 }
 
 #[test]
-fn cancellation_at_the_final_guard_is_a_non_execution_result() {
+fn cancellation_during_the_fresh_host_probe_is_a_non_execution_result() {
     let handle = std::sync::Arc::new(std::sync::Mutex::new(None::<gaap_mcp::CancelHandle>));
     let observed_handle = handle.clone();
     let (dir, mut executor, effect) = observed_fixture(10000, move |count, effect| {
@@ -1097,12 +1097,7 @@ fn cancellation_at_the_final_guard_is_a_non_execution_result() {
     *handle.lock().unwrap() = Some(executor.cancellation_handle());
     let result = executor.execute(&effect).unwrap();
     assert_eq!(result.execution_status, EffectExecutionStatus::Denied);
-    assert!(
-        result
-            .reason
-            .unwrap()
-            .starts_with("mcp.cancelled_before_dispatch")
-    );
+    assert!(result.reason.unwrap().starts_with("mcp.observer_cancelled"));
     assert_eq!(result.usage.tool_calls, 0);
     assert!(result.sandbox_profile.is_none());
     assert!(!dir.path().join("dispatch").exists());
@@ -1310,4 +1305,94 @@ fn output_compaction_keeps_an_unexpected_host_subject_for_reconciliation() {
         hash(b"unexpected changed subject")
     );
     assert!(dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn stalled_host_probes_return_within_their_bound_and_cant_replay() {
+    for stalled_probe in [1, 3] {
+        let (dir, mut executor, effect) = observed_fixture(10000, move |count, effect| {
+            if count == stalled_probe {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Ok(same_subject(effect))
+        });
+        let start = std::time::Instant::now();
+        let result = executor.execute(&effect);
+        if stalled_probe == 1 {
+            assert!(
+                result
+                    .unwrap_err()
+                    .message()
+                    .starts_with("mcp.observer_timeout")
+            );
+            assert!(!dir.path().join("dispatch").exists());
+        } else {
+            let result = result.unwrap();
+            assert_eq!(
+                result.execution_status,
+                EffectExecutionStatus::UnknownOutcome
+            );
+            assert!(result.reason.unwrap().starts_with("mcp.observer_timeout"));
+            assert!(dir.path().join("dispatch").exists());
+            assert!(executor.call_evidence()[0].dispatched);
+        }
+        assert!(start.elapsed() < Duration::from_millis(1500));
+        drop(executor);
+        assert!(start.elapsed() < Duration::from_millis(1800));
+    }
+}
+
+#[test]
+fn working_directory_replacement_revokes_the_old_capability_identity() {
+    let dir = TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let mut config = server("normal", &dir);
+    config.working_directory = work.canonicalize().unwrap();
+    let first = McpExecutor::discover(config.clone(), limits()).unwrap();
+    let old = first.tools()[0].capability.clone();
+    drop(first);
+    std::fs::rename(&work, dir.path().join("moved")).unwrap();
+    std::fs::create_dir(&work).unwrap();
+    let mut second = McpExecutor::discover(config, limits()).unwrap();
+    assert_ne!(second.tools()[0].capability.digest, old.digest);
+    assert_eq!(
+        second.approve_capability(&old).unwrap_err().code,
+        "mcp.unknown_capability"
+    );
+    assert!(!dir.path().join("dispatch").exists());
+}
+
+#[test]
+fn cancellation_interrupts_a_stalled_host_probe_without_waiting_for_its_return() {
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = entered.clone();
+    let (dir, mut executor, effect) = observed_fixture(10000, move |_, effect| {
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(2));
+        Ok(same_subject(effect))
+    });
+    let cancellation = executor.cancellation_handle();
+    let canceller = std::thread::spawn(move || {
+        for _ in 0..100 {
+            if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                cancellation.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("host probe didn't start");
+    });
+    let start = std::time::Instant::now();
+    assert!(
+        executor
+            .execute(&effect)
+            .unwrap_err()
+            .message()
+            .starts_with("mcp.observer_cancelled")
+    );
+    canceller.join().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(!dir.path().join("dispatch").exists());
+    drop(executor);
 }

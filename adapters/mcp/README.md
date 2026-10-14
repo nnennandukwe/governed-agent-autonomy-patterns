@@ -6,7 +6,7 @@ permission, budgets, independent verification and terminal receipts.
 
 ## Build and verify
 
-From the GAAP repository root, use Rust 1.88 or newer and Python 3:
+From the GAAP repository root on Linux or macOS, use Rust 1.88 or newer and Python 3:
 
 ```bash
 cargo test --manifest-path adapters/mcp/Cargo.toml --locked
@@ -39,7 +39,7 @@ bindings. It rediscovers descriptors before dispatch and evaluates ToolTrust and
 Server annotations, output and self-reported success can't provide approvals, usage measurements, subject observations
 or verification authority. A normal tool response remains an unknown effect unless the host independently confirms execution.
 
-The synchronous executor owns its asynchronous SDK session on a dedicated runtime thread. An existing Tokio host can
+The synchronous executor owns its asynchronous SDK session on a dedicated runtime thread. A separate single host-probe worker bounds the caller's wait by the operation timeout and run deadline. Cancellation interrupts that wait. After dispatch, an expired or cancelled run gets at most 250 ms for final reconciliation observation. An existing Tokio host can
 compose it without creating a nested runtime. Its cancellation handle can be used from another host thread. Cancellation
 ends the session; it can't reopen a terminal run.
 
@@ -80,7 +80,7 @@ stopped. A cancellation notification is advisory, and process termination isn't 
 
 Discovery verifies the listed executable and launch-artifact bytes before spawning. The host must approve their expected
 digests independently and include the package dependencies relevant to its identity.
-The host's system runtime, transitive imports, same-user filesystem and external server remain outside an isolation guarantee. The launch profile verifies declared launch assets; it doesn't attest the entire host or confine later server code loading. Host observation is a point-in-time
+The host's system runtime, transitive imports, same-user filesystem and external server remain outside an isolation guarantee. Launch checks use point-in-time filesystem observations; the host must serialize launch configuration and workspace changes. Canonical working-directory device/inode identity contributes to the capability context and gets rechecked before spawn. Atomic filesystem confinement remains isolation work under #16/#17. The launch profile verifies declared launch assets; it doesn't attest the entire host or confine later server code loading. Host observation is a point-in-time
 check; the host must serialize relevant subject changes when it requires stronger freshness guarantees.
 
 Cost/model usage comes from the host observer, rather than an assumed zero for an external provider. Pure local fixtures
@@ -91,3 +91,5 @@ doesn't establish safety or authority. ACP #12, live Goose #14, signed receipts 
 ThreadLoop #111 remain separate work.
 
 Unexpected subject changes during an observation preserve the actual host observation in `CallEvidence` and produce an unknown effect. The frozen contract can't label a changed subject as an observation result, so that result omits its post-subject field and references the retained reconciliation record. The engine fails the run; it doesn't lose the receipt or authorize completion.
+
+A timed-out host callback stays quarantined on its existing worker; late replies are ignored and no new callback starts for that session. The adapter can't kill arbitrary host callback code safely. Host probes must remain read-only and bound their own external I/O. This return-time bound doesn't establish process isolation or background-work termination.

@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use gaap::contracts::{CapabilityIdentity, EffectExecutionStatus, ProtectedEffectRequest};
@@ -75,6 +75,12 @@ pub(crate) fn validate_config(
         return Err(McpError::new(
             "mcp.invalid_config",
             "absolute executable/directory and trusted server artifact identity are required",
+        ));
+    }
+    if config.working_directory.canonicalize().ok().as_ref() != Some(&config.working_directory) {
+        return Err(McpError::new(
+            "mcp.launch_profile",
+            "use a canonical working directory without a mutable alias",
         ));
     }
     if config.executable.canonicalize().ok().as_ref() != Some(&config.executable) {
@@ -378,6 +384,12 @@ impl Session {
     ) -> Result<Self, McpError> {
         // Recheck on the owning thread immediately before launch. This isn't OS isolation.
         validate_config(&config, limits)?;
+        if server_identity(&config)? != server_digest {
+            return Err(McpError::new(
+                "mcp.directory_drift",
+                "working directory identity changed before launch",
+            ));
+        }
         let mut command = Command::new(&config.executable);
         command
             .args(&config.arguments)
@@ -605,7 +617,7 @@ impl Session {
         arguments: Value,
         approved: &[CapabilityIdentity],
         policy: &PermissionPolicy,
-        observer: &Arc<Mutex<Box<dyn crate::SubjectObserver>>>,
+        observer: &crate::observer::ObserverPort,
         deadline: Instant,
     ) -> Result<Invocation, McpError> {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -666,15 +678,7 @@ impl Session {
                 dispatched: false,
             });
         }
-        let fresh = observer
-            .lock()
-            .map_err(|_| {
-                McpError::new(
-                    "mcp.observer_unavailable",
-                    "host observation lock is poisoned",
-                )
-            })?
-            .observe(effect)?;
+        let fresh = observer.observe(effect, deadline, false)?;
         if !crate::usage_is_valid(&fresh) {
             return Err(McpError::new(
                 "mcp.invalid_usage",
@@ -834,4 +838,29 @@ impl Session {
         self.stderr.abort();
         let _ = self.stderr.await;
     }
+}
+
+pub(crate) fn server_identity(config: &ServerConfig) -> Result<String, McpError> {
+    let metadata = std::fs::metadata(&config.working_directory)
+        .map_err(|e| McpError::new("mcp.directory_identity", e.to_string()))?;
+    #[cfg(unix)]
+    let directory = {
+        use std::os::unix::fs::MetadataExt;
+        json!({"device":metadata.dev().to_string(),"inode":metadata.ino().to_string()})
+    };
+    #[cfg(not(unix))]
+    let directory = {
+        let _ = metadata;
+        return Err(McpError::new(
+            "mcp.unsupported_platform",
+            "this initial directory identity profile requires Unix",
+        ));
+    };
+    digest(&json!({
+        "domain":"gaap.mcp-server/0.1", "artifact_digest":config.artifact_digest,
+        "executable":config.executable,"arguments":config.arguments,
+        "environment_digest":digest(&config.environment)?,"working_directory":config.working_directory,
+        "working_directory_identity":directory,"server_name":config.expected_name,
+        "server_version":config.expected_version,"protocol":MCP_PROTOCOL_VERSION,
+    }))
 }

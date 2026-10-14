@@ -1,6 +1,7 @@
 //! Governed, bounded MCP stdio execution through GAAP's existing executor port.
 #![forbid(unsafe_code)]
 
+mod observer;
 mod transport;
 mod worker;
 
@@ -168,7 +169,7 @@ where
 struct RunBinding {
     request: AgentRunRequest,
     support: ContractSupport,
-    observer: Arc<Mutex<Box<dyn SubjectObserver>>>,
+    observer: observer::ObserverPort,
     deadline: Instant,
 }
 
@@ -198,7 +199,7 @@ pub(crate) enum WorkerCommand {
         arguments: Value,
         approved: Vec<CapabilityIdentity>,
         policy: PermissionPolicy,
-        observer: Arc<Mutex<Box<dyn SubjectObserver>>>,
+        observer: observer::ObserverPort,
         deadline: Instant,
         reply: mpsc::Sender<Result<worker::Invocation, McpError>>,
     },
@@ -230,17 +231,7 @@ impl McpExecutor {
     /// Start a host-configured stdio server, negotiate one exact version and discover tools.
     pub fn discover(config: ServerConfig, limits: TransportLimits) -> Result<Self, McpError> {
         worker::validate_config(&config, limits)?;
-        let server_digest = digest(&json!({
-            "domain": "gaap.mcp-server/0.1",
-            "artifact_digest": config.artifact_digest,
-            "executable": config.executable,
-            "arguments": config.arguments,
-            "environment_digest": digest(&config.environment)?,
-            "working_directory": config.working_directory,
-            "server_name": config.expected_name,
-            "server_version": config.expected_version,
-            "protocol": MCP_PROTOCOL_VERSION,
-        }))?;
+        let server_digest = worker::server_identity(&config)?;
         let identity = ExecutorIdentity {
             name: "gaap-mcp-stdio".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -358,7 +349,11 @@ impl McpExecutor {
             request,
             support,
             deadline,
-            observer: Arc::new(Mutex::new(Box::new(observer))),
+            observer: observer::ObserverPort::start(
+                observer,
+                self.limits.timeout,
+                self.cancellation.clone(),
+            )?,
         });
         Ok(())
     }
@@ -555,6 +550,11 @@ impl McpExecutor {
                 .is_cancelled()
                 .then(|| McpError::new("mcp.cancelled_before_dispatch", "session is terminal"))
         });
+        let refusal = refusal.or_else(|| {
+            (self.binding.as_ref().expect("validated binding").deadline <= Instant::now()).then(
+                || McpError::new("mcp.budget_elapsed", "run deadline expired before dispatch"),
+            )
+        });
         if let Some(reason) = refusal {
             return Ok(ExecutorObservation {
                 execution_status: EffectExecutionStatus::Denied,
@@ -574,17 +574,14 @@ impl McpExecutor {
         }
         let preflight = self
             .binding
-            .as_mut()
+            .as_ref()
             .expect("validated binding")
             .observer
-            .lock()
-            .map_err(|_| {
-                McpError::new(
-                    "mcp.observer_unavailable",
-                    "host observation lock is poisoned",
-                )
-            })?
-            .observe(effect)?;
+            .observe(
+                effect,
+                self.binding.as_ref().expect("validated binding").deadline,
+                false,
+            )?;
         if !usage_is_valid(&preflight) {
             return Err(McpError::new(
                 "mcp.invalid_usage",
@@ -702,14 +699,8 @@ impl McpExecutor {
         let mut final_status = status;
         let mut final_reason = reason;
         if dispatched {
-            let observer = &self.binding.as_ref().expect("validated binding").observer;
-            let observation = match observer.lock() {
-                Ok(mut observer) => observer.observe(effect),
-                Err(_) => Err(McpError::new(
-                    "mcp.observer_unavailable",
-                    "host observation lock is poisoned",
-                )),
-            };
+            let binding = self.binding.as_ref().expect("validated binding");
+            let observation = binding.observer.observe(effect, binding.deadline, true);
             match observation {
                 Ok(observation) => {
                     let observation_usage_valid = usage_is_valid(&observation);
