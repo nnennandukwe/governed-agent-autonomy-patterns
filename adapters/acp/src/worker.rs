@@ -240,7 +240,7 @@ async fn run(
                 .client_capabilities(ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true))))
                 .block_task().await?;
             let identity=init.agent_info.ok_or_else(agent_client_protocol::Error::invalid_request)?;
-            if identity.name!=config.expected_name || identity.version!=config.expected_version || !init.auth_methods.is_empty() {
+            if identity.name!=config.expected_name || identity.version!=config.expected_version {
                 setup_evidence.0.lock().expect("evidence lock").failure_code=Some("acp.agent_identity_mismatch".into());
                 return Err(agent_client_protocol::Error::invalid_request());
             }

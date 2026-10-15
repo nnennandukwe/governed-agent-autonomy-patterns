@@ -52,12 +52,17 @@ if mode == "stderr":
     sys.stderr.flush()
     time.sleep(2)
 version = 2 if mode == "wrong_version" else 1
-response(request, {"protocolVersion": version, "agentCapabilities": {"loadSession":"bad"} if mode == "malformed_capabilities" else {}, "agentInfo": {"name": "fixture-agent", "version": "1.0"}})
+response(request, {"protocolVersion": version, "agentCapabilities": {"loadSession":"bad"} if mode == "malformed_capabilities" else {}, "agentInfo": {"name": "fixture-agent", "version": "1.0"},
+    "authMethods": [{"id":"optional-login","name":"Configure provider"}] if mode == "advertised_auth" else []})
 if mode == "duplicate_response":
     response(request, {"protocolVersion": 1, "agentCapabilities": {}, "agentInfo": {"name": "fixture-agent", "version": "1.0"}})
 request = receive()
 assert request["method"] == "session/new"
 assert request["params"]["mcpServers"] == []
+if mode == "requires_auth":
+    send({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"Authentication required"}})
+    time.sleep(1)
+    sys.exit(0)
 session = "fixture-session"
 response(request, {"sessionId": session})
 prompt = receive()

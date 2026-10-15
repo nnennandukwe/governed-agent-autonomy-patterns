@@ -50,7 +50,8 @@ new callback is queued. Such an effect needs out-of-band reconciliation before a
 ## Evidence and compatibility
 
 Capability identity binds SDK/protocol version, the launch manifest/configuration and directory identity. Initialization
-requires the expected agent identity and protocol v1. Negotiated capabilities and the session response are retained by
+requires the expected agent identity and protocol v1. Advertised authentication methods are options, not proof that login
+is currently required; an actual authentication-required response ends the run before a prompt. Negotiated capabilities and the session response are retained by
 hash. Effect metadata binds protocol, SDK and session identity; effect evidence also binds that identity to the run.
 
 The SDK handles typed requests and callbacks. A strict wire guard additionally validates SDK-generated JSON schemas,

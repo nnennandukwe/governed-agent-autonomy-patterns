@@ -279,7 +279,11 @@ fn validate_message(
                 .remove(&id)
                 .ok_or_else(|| fail("acp.unexpected_response"))?;
             if object.contains_key("error") {
-                return Err(fail("acp.agent_error"));
+                return Err(fail(if value["error"]["code"].as_i64() == Some(-32000) {
+                    "acp.authentication_required"
+                } else {
+                    "acp.agent_error"
+                }));
             }
             validate_response(&method, &value["result"])?;
             match method.as_str() {

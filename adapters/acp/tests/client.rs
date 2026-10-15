@@ -789,3 +789,28 @@ fn protocol_refusal_receipt_records_no_dispatch_or_attempt_usage() {
             .any(|event| matches!(event, RunEvent::ToolExecution { .. }))
     );
 }
+
+#[test]
+fn advertised_authentication_methods_dont_mean_authentication_is_required() {
+    let (_, result, count, _) = run(fixture("advertised_auth", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Completed
+    );
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn actual_authentication_requirement_stops_before_prompt_and_dispatch() {
+    let (dir, result, count, _) = run(fixture("requires_auth", allow(), true), allow(), true);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert!(
+        result
+            .receipt
+            .body
+            .terminal_reason
+            .contains("acp.authentication_required")
+    );
+    assert_eq!(count, 0);
+    assert!(!dir.path().join("prompt-started").exists());
+}
