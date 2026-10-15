@@ -141,9 +141,10 @@ impl EvidenceHandle {
 
 /// Host-owned cancellation for this single session.
 #[derive(Clone)]
-pub struct CancelHandle(CancellationToken);
+pub struct CancelHandle(CancellationToken, Arc<std::sync::atomic::AtomicBool>);
 impl CancelHandle {
     pub fn cancel(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
         self.0.cancel();
     }
 }
@@ -167,6 +168,7 @@ struct Pending {
 struct Shared {
     pending: Option<Pending>,
     cancellation: CancellationToken,
+    cancellation_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -230,6 +232,7 @@ impl AcpAdapter {
         let shared = Arc::new(Mutex::new(Shared {
             pending: None,
             cancellation: CancellationToken::new(),
+            cancellation_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));
         let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence {
             sdk_version: ACP_SDK_VERSION.into(),
@@ -279,12 +282,10 @@ impl AcpAdapter {
         self.evidence.clone()
     }
     pub fn cancellation_handle(&self) -> CancelHandle {
+        let shared = self.shared.lock().expect("session lock");
         CancelHandle(
-            self.shared
-                .lock()
-                .expect("session lock")
-                .cancellation
-                .clone(),
+            shared.cancellation.clone(),
+            shared.cancellation_requested.clone(),
         )
     }
 
@@ -299,7 +300,7 @@ impl AcpAdapter {
                 .min(operation_deadline)
                 .saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                self.cancellation_handle().cancel();
+                self.cancellation_handle().0.cancel();
                 return Err(error("acp.timeout"));
             }
             match self
@@ -438,7 +439,7 @@ impl AgentAdapter for AcpAdapter {
     fn close(&mut self) {
         self.phase = AdapterPhase::Closed;
         self.start.take();
-        self.cancellation_handle().cancel();
+        self.cancellation_handle().0.cancel();
         self.shared.lock().expect("session lock").pending.take();
         if let Some(stopped) = self.stopped.take()
             && stopped.recv_timeout(Duration::from_secs(1)).is_err()
@@ -571,6 +572,22 @@ impl Drop for AcpAdapter {
 }
 
 impl ExecutorPort for AcpExecutor {
+    fn cancellation(&self) -> Option<Cancellation> {
+        let shared = self.shared.lock().expect("session lock");
+        shared
+            .cancellation_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then(|| Cancellation {
+                actor_id: None,
+                reason: "acp.cancelled".into(),
+                evidence: EvidenceReference {
+                    evidence_type: EvidenceType::Interruption,
+                    digest: format!("sha256:{:x}", Sha256::digest(b"acp.cancelled")),
+                    locator: None,
+                },
+            })
+    }
+
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -731,9 +748,11 @@ impl HostPort {
                         let _ = reply.send(result);
                     }
                     HostCommand::Execute(deadline, operation, request, reply) => {
-                        let result = if Instant::now() >= deadline
-                            || worker_cancel.is_cancelled()
-                            || evidence.snapshot().failure_code.is_some()
+                        let result = if let Some(code) = evidence.snapshot().failure_code {
+                            HostCompletion::Declined(code)
+                        } else if worker_cancel.is_cancelled() {
+                            HostCompletion::Declined("acp.cancelled".into())
+                        } else if Instant::now() >= deadline
                             || worker_quarantined.load(std::sync::atomic::Ordering::SeqCst)
                         {
                             HostCompletion::Declined("acp.host_expired".into())
@@ -849,4 +868,60 @@ pub(crate) fn error(code: &str) -> RuntimePortError {
 pub(crate) fn digest(value: &impl Serialize) -> Result<String, RuntimePortError> {
     let bytes = serde_jcs::to_vec(value).map_err(|_| error("acp.invalid_identity"))?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoDispatch;
+    impl AcpHost for NoDispatch {
+        fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
+            panic!("no usage")
+        }
+        fn execute(
+            &mut self,
+            _: &FileOperation,
+            _: &ProtectedEffectRequest,
+        ) -> Result<HostEffect, RuntimePortError> {
+            panic!("mustn't dispatch")
+        }
+    }
+
+    #[test]
+    fn queued_host_effect_retains_the_protocol_fault() {
+        let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence {
+            failure_code: Some("acp.duplicate_request".into()),
+            ..SessionEvidence::default()
+        })));
+        let host = HostPort::new(
+            NoDispatch,
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            evidence,
+        );
+        let (reply, receiver) = mpsc::channel();
+        // The fault has already been observed when a queued command reaches the worker.
+        // Use a valid request from the frozen public fixture; no executor can run here.
+        let request: ProtectedEffectRequest = serde_json::from_str(include_str!(
+            "../../../examples/contracts/protected-effect/v0.1.0/protected-effect-request.json"
+        ))
+        .unwrap();
+        host.sender
+            .try_send(HostCommand::Execute(
+                Instant::now() + Duration::from_secs(5),
+                FileOperation::Read {
+                    path: PathBuf::from("/unused"),
+                    line: None,
+                    limit: None,
+                },
+                Box::new(request),
+                reply,
+            ))
+            .unwrap();
+        match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            HostCompletion::Declined(code) => assert_eq!(code, "acp.duplicate_request"),
+            HostCompletion::Attempted(_) => panic!("mustn't attempt after a protocol fault"),
+        }
+    }
 }

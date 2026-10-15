@@ -69,6 +69,7 @@ struct Host {
     unknown_usage: bool,
     omit_read: bool,
     stall_usage: bool,
+    stall_effect: bool,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
@@ -98,6 +99,9 @@ impl AcpHost for Host {
                 Some(std::fs::read_to_string(path).unwrap())
             }
         };
+        if self.stall_effect {
+            std::thread::sleep(Duration::from_secs(10));
+        }
         Ok(HostEffect {
             read_text: if self.omit_read { None } else { text },
             observation: ExecutorObservation {
@@ -248,6 +252,7 @@ struct Fixture {
     calls: Arc<AtomicUsize>,
     evidence: EvidenceHandle,
     wait_for_fault: bool,
+    cancel_before_dispatch: Option<CancelHandle>,
 }
 fn fixture(mode: &str, permission: PermissionPolicy, confirm: bool) -> Fixture {
     fixture_with_usage(mode, permission, confirm, false)
@@ -290,11 +295,14 @@ fn fixture_with_usage(
             unknown_usage,
             omit_read: mode == "missing_read",
             stall_usage: mode == "stall_usage",
+            stall_effect: mode == "host_timeout",
         },
     )
     .unwrap();
     let request = request(adapter.capability().clone(), &path);
     let evidence = adapter.evidence();
+    let cancel_before_dispatch =
+        (mode == "cancel_at_dispatch").then(|| adapter.cancellation_handle());
     Fixture {
         dir,
         adapter,
@@ -303,14 +311,19 @@ fn fixture_with_usage(
         calls,
         evidence,
         wait_for_fault: mode == "duplicate_request",
+        cancel_before_dispatch,
     }
 }
 struct WaitingExecutor {
     inner: AcpExecutor,
     evidence: EvidenceHandle,
     wait_for_fault: bool,
+    cancel_before_dispatch: Option<CancelHandle>,
 }
 impl ExecutorPort for WaitingExecutor {
+    fn cancellation(&self) -> Option<Cancellation> {
+        self.inner.cancellation()
+    }
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -323,6 +336,9 @@ impl ExecutorPort for WaitingExecutor {
                 std::thread::sleep(Duration::from_millis(5));
             }
             assert!(self.evidence.snapshot().failure_code.is_some());
+        }
+        if let Some(cancel) = &self.cancel_before_dispatch {
+            cancel.cancel();
         }
         self.inner.execute(request)
     }
@@ -365,6 +381,7 @@ fn run(
             inner: fixture.executor,
             evidence: fixture.evidence.clone(),
             wait_for_fault: fixture.wait_for_fault,
+            cancel_before_dispatch: fixture.cancel_before_dispatch,
         },
         Verifier {
             path: fixture.dir.path().join("subject.txt"),
@@ -815,4 +832,38 @@ fn actual_authentication_requirement_stops_before_prompt_and_dispatch() {
     );
     assert_eq!(count, 0);
     assert!(!dir.path().join("prompt-started").exists());
+}
+
+#[test]
+fn cancellation_after_proposal_is_interrupted_without_host_dispatch() {
+    let (_, result, count, _) = run(fixture("cancel_at_dispatch", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert_eq!(count, 0);
+    let effect = &result.protected_effect_results[0].body;
+    assert_eq!(effect.execution_status, EffectExecutionStatus::Denied);
+    assert!(effect.executor.is_none());
+    assert_eq!(effect.usage.tool_calls, 0);
+    assert_eq!(result.receipt.body.usage.tool_calls, 0);
+}
+
+#[test]
+fn timed_out_host_dispatch_preserves_unknown_outcome_and_counts_attempt() {
+    let (dir, result, count, _) = run(fixture("host_timeout", allow(), true), allow(), true);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert_eq!(count, 1);
+    let effect = &result.protected_effect_results[0].body;
+    assert_eq!(
+        effect.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(effect.usage.tool_calls, 1);
+    assert_eq!(result.receipt.body.usage.tool_calls, 1);
+    assert!(effect.observed_post_effect_subject.is_none());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("subject.txt")).unwrap(),
+        "after\n"
+    );
 }

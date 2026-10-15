@@ -238,6 +238,11 @@ pub trait AgentAdapter {
 
 /// Narrow executor port used only after all mutation gates allow.
 pub trait ExecutorPort {
+    /// Explicit host cancellation, separate from a failed or uncertain dispatch.
+    fn cancellation(&self) -> Option<Cancellation> {
+        None
+    }
+
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -869,6 +874,10 @@ where
             },
         )?;
         ledger.effect_results.push(result);
+        if let Some(cancellation) = self.executor.cancellation() {
+            ledger.interruption(sanitize_cancellation(cancellation));
+            return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
+        }
         self.blocked_from_decision(ledger, decision)
     }
 
@@ -894,7 +903,12 @@ where
             execution_status: EffectExecutionStatus::UnknownOutcome,
             observed_post_effect_subject: None,
             exit: None,
-            usage: zero_effect_usage(),
+            // The port was invoked and its response was lost. Count that attempt
+            // even though its external outcome and additional usage are unknown.
+            usage: EffectUsage {
+                tool_calls: 1,
+                ..zero_effect_usage()
+            },
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: Some(format!("executor.failed: {}", error.message())),

@@ -1713,6 +1713,11 @@ fn executor_error_records_unknown_outcome_result() {
         EffectExecutionStatus::UnknownOutcome
     );
 
+    assert_eq!(execution.receipt.body.usage.tool_calls, 1);
+    assert_eq!(
+        execution.protected_effect_results[0].body.usage.tool_calls,
+        1
+    );
     verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
     verify_protected_effect_result(
         &run_request,

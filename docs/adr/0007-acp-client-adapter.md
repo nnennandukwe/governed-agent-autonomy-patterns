@@ -58,3 +58,8 @@ separate. A conductor-chain proxy is optional future composition, not a replacem
 
 Primary references: [official Rust SDK](https://github.com/agentclientprotocol/rust-sdk),
 [stable-v1 protocol](https://agentclientprotocol.com/protocol/v1/overview).
+
+Explicit cancellation between proposal and host dispatch preserves a denied effect with zero usage and an interrupted
+Agent Run. A default runtime-only executor cancellation query carries that signal without changing either frozen
+contract. Lost executor responses count the known port invocation as one tool attempt; they retain unknown outcome
+and lower-bound cost/token accounting. This keeps the emitted execution event consistent with ThreadLoop's verifier.

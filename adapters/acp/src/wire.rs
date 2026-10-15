@@ -157,7 +157,9 @@ fn validate_message(
     limits: Limits,
     evidence: &EvidenceHandle,
 ) -> io::Result<()> {
-    if line.len() > limits.max_frame_bytes {
+    // Incoming lines retain their delimiter; outgoing lines gain one at write.
+    let wire_bytes = line.len().saturating_add(usize::from(!incoming));
+    if wire_bytes > limits.max_frame_bytes {
         return Err(fail("acp.frame_limit"));
     }
     let mut decoder = serde_json::Deserializer::from_str(line);
@@ -181,7 +183,7 @@ fn validate_message(
     }
     let mut state = state.lock().expect("wire lock");
     state.messages += 1;
-    state.total_bytes = state.total_bytes.saturating_add(line.len());
+    state.total_bytes = state.total_bytes.saturating_add(wire_bytes);
     if state.total_bytes > limits.max_total_bytes {
         return Err(fail("acp.total_bytes_limit"));
     }
@@ -519,4 +521,42 @@ fn validate_response(method: &str, result: &Value) -> io::Result<()> {
         return Err(fail("acp.malformed_result"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outgoing_caps_include_the_transmitted_newline() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
+        for total in [false, true] {
+            for extra_byte in [false, true] {
+                let mut limits = Limits::default();
+                if total {
+                    limits.max_total_bytes = line.len() + usize::from(extra_byte);
+                } else {
+                    limits.max_frame_bytes = line.len() + usize::from(extra_byte);
+                }
+                let state = State::default();
+                let evidence =
+                    EvidenceHandle(Arc::new(Mutex::new(crate::SessionEvidence::default())));
+                let result = validate(line, false, &state, limits, &evidence);
+                if extra_byte {
+                    result.unwrap();
+                    assert_eq!(state.lock().unwrap().total_bytes, line.len() + 1);
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().to_string(),
+                        if total {
+                            "acp.total_bytes_limit"
+                        } else {
+                            "acp.frame_limit"
+                        }
+                    );
+                    assert!(evidence.snapshot().trace.is_empty());
+                }
+            }
+        }
+    }
 }
