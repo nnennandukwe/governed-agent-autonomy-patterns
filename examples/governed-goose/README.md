@@ -29,7 +29,7 @@ The runner checks the executable pin again, builds with the committed lockfile
 and creates disposable Git repositories containing public fixture code. It
 retains those repositories for inspection; paths appear in the output evidence.
 
-Eight cases produce JSON transcripts, sealed receipts, protected effect results,
+Eight cases produce JSON transcripts, sealed receipts, full protected effect requests and results, raw proposal inputs,
 ACP trace hashes, MCP call evidence and independent verification output:
 
 | Case | Expected outcome |

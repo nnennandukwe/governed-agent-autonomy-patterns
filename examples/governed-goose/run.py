@@ -131,7 +131,11 @@ def run_case(case, goose, binary, output):
     config_file = state / "config" / "config.yaml"
     config_file.write_text("extensions:\n  developer:\n    enabled: false\n    type: builtin\n    name: developer\n")
     (workspace / "shipping.py").write_text(BAD)
-    subprocess.run(["git", "init", "--quiet", str(workspace)], check=True, env={"PATH": os.defpath})
+    templates = root / "git-templates"
+    templates.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(workspace)], check=True,
+                   env={"PATH": os.defpath,"HOME":str(state),"GIT_CONFIG_NOSYSTEM":"1",
+                        "GIT_CONFIG_GLOBAL":os.devnull,"GIT_TEMPLATE_DIR":str(templates)})
     transcript = []
     server = provider(case, transcript, workspace)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -168,6 +172,8 @@ def run_case(case, goose, binary, output):
     if receipt["terminal_status"] != expected:
         raise AssertionError(case + ": unexpected receipt status " + receipt["terminal_status"])
     effects = record["protected_effect_results"]
+    if len(record["protected_effect_requests"]) != len(effects) or len(record["raw_proposals"]) != len(effects):
+        raise AssertionError("The exported evidence lost a proposed request or raw input")
     attempted = sum(effect["body"]["execution_status"] == "executed" for effect in effects)
     if case in ("ask", "block"):
         response = record["ingress_responses"][0]

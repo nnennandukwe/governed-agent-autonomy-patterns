@@ -29,7 +29,7 @@ pub struct LaunchArtifact {
     pub digest: String,
 }
 
-/// A trusted local agent that delegates filesystem access over ACP.
+/// A host-approved local agent launch; each adapter profile defines its delegated operations.
 /// This isn't an operating-system sandbox or an attestation of agent behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -43,7 +43,7 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    /// Pure identity for host approval; launch verification doesn't grant authority.
+    /// Delegated-filesystem identity for host approval; launch verification doesn't grant authority.
     pub fn capability(&self) -> Result<CapabilityIdentity, RuntimePortError> {
         Ok(CapabilityIdentity {
             name: "acp.filesystem".into(),

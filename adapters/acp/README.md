@@ -115,3 +115,9 @@ keyed to the exact effect request. This metadata includes subject locators,
 reported status, exit, usage, identities, reason and evidence references. It
 doesn't retain returned file text. The sealed effect stays uncertain instead of
 claiming that an observation preserved a subject the host saw change.
+
+The [pinned Goose conversation profile](../../examples/governed-goose/README.md)
+shares this SDK worker and wire guard. It uses its own `acp.goose-proposals`
+identity, disables delegated filesystem/terminal callbacks and validates an
+explicit proposal-only MCP extension before prompting. Launch artifact hashing
+streams through a finite 512 MiB cap, including the pinned Goose executable.

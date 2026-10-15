@@ -150,6 +150,8 @@ struct Ports {
     pending: Option<Pending>,
     last_meter: Instant,
     ingress_responses: Vec<Value>,
+    protected_effect_requests: Vec<ProtectedEffectRequest>,
+    raw_proposals: Vec<Value>,
 }
 struct AgentPort {
     shared: Arc<Mutex<Ports>>,
@@ -269,6 +271,11 @@ impl AgentAdapter for AgentPort {
                             EffectClass::Mutation,
                         )
                         .map_err(port_error)?;
+                    {
+                        let mut ports = self.shared.lock().expect("ports");
+                        ports.protected_effect_requests.push(effect.clone());
+                        ports.raw_proposals.push(value["arguments"].clone());
+                    }
                     self.shared.lock().expect("ports").pending = Some(Pending {
                         stream,
                         request: effect.clone(),
@@ -557,6 +564,8 @@ fn main() -> Result<()> {
         pending: None,
         last_meter: Instant::now(),
         ingress_responses: Vec::new(),
+        protected_effect_requests: Vec::new(),
+        raw_proposals: Vec::new(),
     }));
     let report = Arc::new(Mutex::new(Value::Null));
     let runtime_support = RuntimeSupport::new(
@@ -611,7 +620,8 @@ fn main() -> Result<()> {
     );
     let execution = engine.run(request.clone())?;
     let calls = shared.lock().expect("ports").mcp.call_evidence().to_vec();
-    let output = json!({"request":request,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"acp":evidence.snapshot(),"mcp":calls,"ingress_responses":shared.lock().expect("ports").ingress_responses,"verification":*report.lock().expect("report"),"after":snapshot(&root)?});
+    let ports = shared.lock().expect("ports");
+    let output = json!({"request":request,"receipt":execution.receipt,"protected_effect_requests":ports.protected_effect_requests,"raw_proposals":ports.raw_proposals,"protected_effect_results":execution.protected_effect_results,"tool_inventory":ports.mcp.tools(),"acp":evidence.snapshot(),"mcp":calls,"ingress_responses":ports.ingress_responses,"verification":*report.lock().expect("report"),"after":snapshot(&root)?});
     fs::write(config.output, serde_json::to_vec_pretty(&output)?)?;
     Ok(())
 }
