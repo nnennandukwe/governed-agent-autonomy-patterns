@@ -57,6 +57,25 @@ pub(crate) fn validate_launch(config: &AgentConfig) -> Result<(), RuntimePortErr
     {
         return Err(error("acp.invalid_launch"));
     }
+    // Explicit loader injection isn't part of this trusted launch profile.
+    if config.environment.keys().any(|key| {
+        key.starts_with("LD_")
+            || key.starts_with("DYLD_")
+            || key.starts_with("PYTHON")
+            || matches!(
+                key.as_str(),
+                "NODE_OPTIONS"
+                    | "NODE_PATH"
+                    | "RUBYOPT"
+                    | "RUBYLIB"
+                    | "PERL5OPT"
+                    | "PERL5LIB"
+                    | "BASH_ENV"
+                    | "ENV"
+            )
+    }) {
+        return Err(error("acp.loader_environment_unsupported"));
+    }
     for artifact in &config.artifacts {
         if !artifact.path.is_absolute()
             || artifact.path.canonicalize().ok().as_ref() != Some(&artifact.path)

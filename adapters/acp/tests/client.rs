@@ -73,6 +73,7 @@ struct Host {
     zero_tool_count: bool,
     late_meter_stall: bool,
     usage_calls: usize,
+    drift_read: bool,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
@@ -100,6 +101,9 @@ impl AcpHost for Host {
             }
             FileOperation::Read { path, .. } => {
                 assert_eq!(path, &self.path);
+                if self.drift_read {
+                    std::fs::write(path, "external drift during read\n").unwrap();
+                }
                 Some(std::fs::read_to_string(path).unwrap())
             }
         };
@@ -316,6 +320,7 @@ fn fixture_with_usage(
             zero_tool_count: mode == "zero_tool_count",
             late_meter_stall: mode == "cancel_meter",
             usage_calls: 0,
+            drift_read: mode == "drift_read",
         },
     )
     .unwrap();
@@ -1173,4 +1178,61 @@ fn progress_during_unknown_host_effect_is_retained_and_bound() {
             .iter()
             .any(|entry| entry.evidence_type == EffectEvidenceType::CapabilitySchema)
     );
+}
+
+#[test]
+fn changed_read_retains_an_uncertain_effect_and_terminal_receipt() {
+    let (_, result, count, _) = run(fixture("drift_read", allow(), true), allow(), true);
+    assert_eq!(count, 2);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    let read = &result.protected_effect_results[1].body;
+    assert_eq!(read.execution_status, EffectExecutionStatus::UnknownOutcome);
+    assert_eq!(read.usage.tool_calls, 1);
+    assert!(read.observed_post_effect_subject.is_none());
+    assert!(
+        read.evidence
+            .iter()
+            .any(|entry| entry.evidence_type == EffectEvidenceType::UnknownOutcome)
+    );
+}
+
+#[test]
+fn explicit_loader_injection_is_rejected_before_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    for name in [
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "NODE_OPTIONS",
+    ] {
+        let mut launch = config(root.path(), "normal");
+        launch
+            .environment
+            .insert(name.into(), "/unapproved/code".into());
+        assert!(
+            AcpAdapter::new(
+                launch,
+                Limits::default(),
+                ContractSupport::new([policy()]),
+                profile(),
+                allow(),
+                Host {
+                    path: root.path().join("subject.txt"),
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    confirm: true,
+                    unknown_usage: false,
+                    omit_read: false,
+                    stall_usage: false,
+                    stall_effect: false,
+                    zero_tool_count: false,
+                    late_meter_stall: false,
+                    usage_calls: 0,
+                    drift_read: false,
+                }
+            )
+            .is_err(),
+            "{name}"
+        );
+        assert!(!root.path().join("agent-pid").exists());
+    }
 }

@@ -737,6 +737,28 @@ impl ExecutorPort for AcpExecutor {
                     .observation
                     .evidence
                     .push(session_effect_evidence(&identity)?);
+                if matches!(pending.operation, FileOperation::Read { .. })
+                    && effect
+                        .observation
+                        .observed_post_effect_subject
+                        .as_ref()
+                        .is_some_and(|subject| subject != &request.subject)
+                {
+                    let reported = &effect.observation;
+                    let reconciliation = digest(
+                        &json!({"reported_status":reported.execution_status,"post_subject":reported.observed_post_effect_subject,"exit":reported.exit,"usage":reported.usage}),
+                    )?;
+                    effect.observation.evidence.push(EffectEvidenceReference {
+                        evidence_type: EffectEvidenceType::UnknownOutcome,
+                        digest: reconciliation,
+                        locator: None,
+                    });
+                    effect.observation.execution_status = EffectExecutionStatus::UnknownOutcome;
+                    effect.observation.observed_post_effect_subject = None;
+                    effect.observation.exit = None;
+                    effect.observation.reason = Some("acp.read_subject_changed".into());
+                    self.evidence.record_failure("acp.read_subject_changed");
+                }
                 let successful =
                     effect.observation.execution_status == EffectExecutionStatus::Executed;
                 if matches!(pending.operation, FileOperation::Read { .. })
