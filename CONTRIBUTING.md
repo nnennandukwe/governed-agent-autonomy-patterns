@@ -48,9 +48,31 @@ CI installs `cargo-audit` 0.22.2 with its lockfile and requires the MCP adapter 
 verification uses that same version. See [the adapter guide](adapters/mcp/README.md) for its compatibility profile and
 recovery rules.
 
+The separate ACP adapter also requires Rust 1.88 and Python 3. Its required CI lane tests the host toolchain and 1.88:
+
+```bash
+cargo fmt --manifest-path adapters/acp/Cargo.toml --check
+cargo clippy --manifest-path adapters/acp/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/acp/Cargo.toml --locked
+cargo +1.88.0 test --manifest-path adapters/acp/Cargo.toml --locked
+cargo build --manifest-path adapters/acp/Cargo.toml --locked
+cargo audit --file adapters/acp/Cargo.lock
+```
+
+The [ACP guide](adapters/acp/README.md) describes trusted host responsibilities, supported operations, evidence and
+failure recovery. Root schemas and coordinator behavior remain the same; runtime adapters gain a default no-op `close`
+hook that the engine invokes after every return, including errors. Ports with asynchronous cancellation also implement
+`claim_completion` to arbitrate cancellation and completion atomically before authorization; deterministic ports keep
+the default behavior. Adapter and executor ports also gain default empty cancellation
+queries so a refused operation can retain its non-execution result while the run records an explicit interruption. Lost
+executor responses count one known tool attempt; proven pre-dispatch failures use typed port metadata and stay at zero.
+An attempted host observation can't erase that known minimum with a zero counter; the runtime adds Usage evidence for
+the correction. Other usage stays a lower bound until reconciliation. Authority-required decisions retain the one-shot
+blocked result, including when cancellation follows the Ask.
+
 Changes to `RunCoordinator` decisions must also reproduce the committed packet
 through RunInvariant commit `e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44`.
-Do not edit the conformance packet by hand or update it to make a failing
+Don't edit the conformance packet by hand or update it to make a failing
 implementation appear conformant.
 
 ## Risk-Scoped CI

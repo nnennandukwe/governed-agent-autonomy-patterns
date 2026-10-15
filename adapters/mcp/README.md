@@ -94,3 +94,7 @@ ThreadLoop #111 remain separate work.
 Unexpected subject changes during an observation preserve the actual host observation in `CallEvidence` and produce an unknown effect. The frozen contract can't label a changed subject as an observation result, so that result omits its post-subject field and references the retained reconciliation record. The engine fails the run; it doesn't lose the receipt or authorize completion.
 
 A timed-out host callback stays quarantined on its existing worker; late replies are ignored and no new callback starts for that session. The adapter can't kill arbitrary host callback code safely. Host probes must remain read-only and bound their own external I/O. This return-time bound doesn't establish process isolation or background-work termination.
+
+The runtime port labels proven failures before dispatch with `RuntimePortError::before_dispatch`. The engine seals a
+denied effect with zero tool calls and no execution event. A lost response after possible dispatch keeps its unknown
+outcome and counts the known attempt; it doesn't imply settled external usage.

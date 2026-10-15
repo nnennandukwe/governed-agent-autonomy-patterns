@@ -221,6 +221,20 @@ pub struct VerificationContext<'a> {
 
 /// Narrow adapter that can propose a plan and the next bounded effect.
 pub trait AgentAdapter {
+    /// Explicit host cancellation during setup or session work.
+    fn cancellation(&self) -> Option<Cancellation> {
+        None
+    }
+
+    /// Atomically claim completion against asynchronous cancellation when supported.
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.cancellation())
+    }
+
+    /// Release run-owned resources after every engine return, including errors.
+    /// Existing deterministic adapters don't need a cleanup action.
+    fn close(&mut self) {}
+
     fn plan(
         &mut self,
         request: &AgentRunRequest,
@@ -234,6 +248,16 @@ pub trait AgentAdapter {
 
 /// Narrow executor port used only after all mutation gates allow.
 pub trait ExecutorPort {
+    /// Atomically claim completion against asynchronous cancellation when supported.
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.cancellation())
+    }
+
+    /// Explicit host cancellation, separate from a failed or uncertain dispatch.
+    fn cancellation(&self) -> Option<Cancellation> {
+        None
+    }
+
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -252,13 +276,36 @@ pub trait VerifierPort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePortError {
     message: String,
+    not_dispatched: bool,
+    evidence: Vec<EffectEvidenceReference>,
 }
 
 impl RuntimePortError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            not_dispatched: false,
+            evidence: Vec::new(),
         }
+    }
+
+    /// A trusted executor proves that no external dispatch occurred.
+    pub fn before_dispatch(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            not_dispatched: true,
+            evidence: Vec::new(),
+        }
+    }
+
+    /// Host-owned evidence retained when an attempted effect loses its response.
+    pub fn with_evidence(mut self, evidence: Vec<EffectEvidenceReference>) -> Self {
+        self.evidence = evidence;
+        self
+    }
+
+    pub fn was_not_dispatched(&self) -> bool {
+        self.not_dispatched
     }
 
     pub fn message(&self) -> &str {
@@ -353,6 +400,12 @@ where
     }
 
     pub fn run(&mut self, request: AgentRunRequest) -> Result<AgentRunExecution, RuntimeError> {
+        let result = self.run_inner(request);
+        self.agent.close();
+        result
+    }
+
+    fn run_inner(&mut self, request: AgentRunRequest) -> Result<AgentRunExecution, RuntimeError> {
         validate_config(&self.config, &request)?;
         validate_support(&self.support)?;
         let request_digest = validate_request(&request, self.support.contract_support())
@@ -388,7 +441,7 @@ where
             &plan_input(&ledger.current_subject, plan_approval),
         );
         if plan_decision.outcome != Outcome::Allow {
-            return self.finish(ledger, AgentRunStatus::Blocked, plan_decision.code);
+            return self.blocked_from_decision(ledger, plan_decision);
         }
 
         ledger.transition(AgentRunStatus::Executing, None);
@@ -656,8 +709,21 @@ where
                 None
             };
 
-        let observation = match self.executor.execute(&proposal.request) {
+        let mut observation = match self.executor.execute(&proposal.request) {
             Ok(observation) => observation,
+            Err(error) if error.was_not_dispatched() => {
+                let mut decision = Decision::block("executor.not_dispatched", &["stop_execution"]);
+                decision.effects.push(error.message().to_owned());
+                return self
+                    .decline_protected_effect(
+                        ledger,
+                        &proposal.request,
+                        &effect_digest,
+                        Gate::Permission,
+                        decision,
+                    )
+                    .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+            }
             Err(error) => {
                 let result = self.executor_error_result(
                     &ledger,
@@ -678,13 +744,13 @@ where
                     &proposal.request.capability.digest,
                     &result,
                 );
-                if let Some(reason) = ledger.record_effect_usage(&result.body.usage) {
-                    ledger.effect_results.push(result);
+                let usage_reason = ledger.record_effect_usage(&result.body.usage);
+                ledger.effect_results.push(result);
+                if let Some(reason) = usage_reason {
                     return self
                         .finish(ledger, AgentRunStatus::Blocked, reason)
                         .map(|execution| EffectHandling::Terminal(Box::new(execution)));
                 }
-                ledger.effect_results.push(result);
                 return self
                     .finish(
                         ledger,
@@ -709,6 +775,21 @@ where
                     decision,
                 )
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+        }
+        // Every remaining result represents an attempted invocation. A host's
+        // zero counter can't erase the execution event the runtime records.
+        if observation.usage.tool_calls == 0 {
+            let mut usage_identity = Sha256::new();
+            usage_identity.update(b"gaap.runtime.known-tool-attempt/1\0");
+            usage_identity.update(effect_digest.as_bytes());
+            usage_identity.update(0_u64.to_be_bytes());
+            usage_identity.update(1_u64.to_be_bytes());
+            observation.evidence.push(EffectEvidenceReference {
+                evidence_type: EffectEvidenceType::Usage,
+                digest: format!("sha256:{:x}", usage_identity.finalize()),
+                locator: None,
+            });
+            observation.usage.tool_calls = 1;
         }
         let untrusted_reason =
             if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
@@ -884,16 +965,25 @@ where
             execution_status: EffectExecutionStatus::UnknownOutcome,
             observed_post_effect_subject: None,
             exit: None,
-            usage: zero_effect_usage(),
+            // The port was invoked and its response was lost. Count that attempt
+            // even though its external outcome and additional usage are unknown.
+            usage: EffectUsage {
+                tool_calls: 1,
+                ..zero_effect_usage()
+            },
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: Some(format!("executor.failed: {}", error.message())),
-            evidence: vec![
-                runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
-                runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
-                runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
-                runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
-            ],
+            evidence: [
+                vec![
+                    runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
+                    runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
+                    runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
+                    runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
+                ],
+                error.evidence,
+            ]
+            .concat(),
         };
         seal_protected_effect_result(
             &ledger.request,
@@ -961,6 +1051,32 @@ where
                 !ledger.mutation_required || ledger.mutation_authorized,
             ),
         );
+        if completion_decision.outcome == Outcome::Allow {
+            // Completion authorization is the final commit point. Observe explicit
+            // cancellation before recording it; an authorized completion can't later
+            // be relabeled as interrupted under the frozen receipt contract.
+            let claim = self.agent.claim_completion().and_then(|cancellation| {
+                if cancellation.is_some() {
+                    Ok(cancellation)
+                } else {
+                    self.executor.claim_completion()
+                }
+            });
+            match claim {
+                Ok(Some(cancellation)) => {
+                    ledger.interruption(sanitize_cancellation(cancellation));
+                    return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
+                }
+                Ok(None) => (),
+                Err(error) => {
+                    return self.finish(
+                        ledger,
+                        AgentRunStatus::Failed,
+                        format!("completion.claim_failed: {}", error.message()),
+                    );
+                }
+            }
+        }
         let completion_decision_id = "decision-completion".to_string();
         ledger.protected_effect_decision(
             &completion_decision_id,
@@ -1169,10 +1285,29 @@ where
     fn finish(
         &self,
         mut ledger: Ledger,
-        terminal_status: AgentRunStatus,
+        mut terminal_status: AgentRunStatus,
         reason: impl Into<String>,
     ) -> Result<AgentRunExecution, RuntimeError> {
-        let reason = reason.into();
+        let mut reason = reason.into();
+        // Every other terminal path observes explicit cancellation, including
+        // failed meters and verifiers. Completion checks before its authorization;
+        // authority-required keeps its one-shot result without later events.
+        let cancellation = if !matches!(
+            terminal_status,
+            AgentRunStatus::Interrupted | AgentRunStatus::Completed
+        ) && ledger.status != AgentRunStatus::AwaitingAuthority
+        {
+            self.agent
+                .cancellation()
+                .or_else(|| self.executor.cancellation())
+        } else {
+            None
+        };
+        if let Some(cancellation) = cancellation {
+            ledger.interruption(sanitize_cancellation(cancellation));
+            terminal_status = AgentRunStatus::Interrupted;
+            reason = "runtime.interrupted".into();
+        }
         ledger.usage_event();
         ledger.transition(terminal_status, Some(reason.clone()));
         let request = ledger.request.clone();

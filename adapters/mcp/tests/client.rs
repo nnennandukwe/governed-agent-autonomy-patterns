@@ -346,7 +346,7 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
         (
             "fresh_probe_failure",
             true,
-            gaap::contracts::AgentRunStatus::Failed,
+            gaap::contracts::AgentRunStatus::Blocked,
         ),
     ] {
         let (dir, executor, effect) = if mode == "host_subject_change" {
@@ -424,6 +424,27 @@ fn real_mcp_executor_runs_through_engine_and_seals_independently_valid_receipts(
             !matches!(mode, "reported_only" | "fresh_probe_failure"),
             "{mode}"
         );
+        if mode == "fresh_probe_failure" {
+            assert_eq!(execution.receipt.body.usage.tool_calls, 0);
+            assert_eq!(
+                execution.protected_effect_results[0].body.execution_status,
+                EffectExecutionStatus::Denied
+            );
+            assert!(
+                execution.protected_effect_results[0]
+                    .body
+                    .executor
+                    .is_none()
+            );
+            assert!(
+                !execution
+                    .receipt
+                    .body
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, gaap::contracts::RunEvent::ToolExecution { .. }))
+            );
+        }
         if !passes {
             assert_eq!(
                 execution.protected_effect_results[0].body.execution_status,

@@ -7,7 +7,7 @@ agent run.
 The current executable slice provides the integrity coordinator, frozen
 contracts, and a deterministic Rust runtime that calls explicit adapter ports
 before protected effects. A separate MCP stdio client executes external tools through that runtime.
-Agent-provider adapters, persistence, signing, sandbox enforcement and ThreadLoop integration remain pending.
+A stable-v1 ACP client mediates delegated agent filesystem operations through the same runtime. Provider-specific integrations, persistence, signing, sandbox enforcement and ThreadLoop integration remain pending.
 
 ## Current Interfaces And Evidence
 
@@ -61,6 +61,7 @@ Implemented and tested now:
   one-shot ask blocking, duplicate-effect rejection, unknown-outcome
   separation, interruption evidence, and stale-verification rejection;
 - a separate MCP stdio client with exact capability approval, bounded transport and retained invocation evidence;
+- a separate ACP v1 client with session ownership, delegated filesystem effects, host metering and strict protocol checks;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
@@ -68,7 +69,7 @@ Implemented and tested now:
 
 Not implemented yet:
 
-- ACP agent-session adapters and OpenAI, Anthropic or other agent-provider integrations;
+- OpenAI, Anthropic or other provider-specific integrations;
 - production Protected Effect executor adapters, retry orchestration,
   reconciliation, or persistence;
 - repository mutation interception;
@@ -156,6 +157,7 @@ Architecture decisions:
 - [`0004: Separate Protected Effect contracts from execution`](./docs/adr/0004-protected-effect-contract-boundary.md)
 - [`0005: Add a bounded Agent Run engine`](./docs/adr/0005-bounded-agent-run-engine.md)
 - [`0006: Add the MCP client and map conference reuse`](./docs/adr/0006-mcp-client-adapter.md)
+- [`0007: Add the ACP client and mediate delegated effects`](./docs/adr/0007-acp-client-adapter.md)
 
 The normative contract guide is
 [`Agent Run Contract 0.1.0`](./docs/contracts/agent-run-v0.1.md). Contract
@@ -197,6 +199,17 @@ repository roadmap.
 ## License
 
 GAAP is licensed under the [Apache License 2.0](./LICENSE).
+
+## ACP agent-session adapter
+
+The [ACP adapter](adapters/acp/README.md) pins the official Rust SDK 3.3.0 and stable protocol v1. One session belongs
+to one accepted Agent Run. Delegated file reads and writes pause until the engine's gates admit their exact protected
+effect; the host executor and independent verifier supply outcome evidence. Permission prompts don't authorize ambient
+agent execution, terminal capabilities aren't advertised, and draft-v2 features aren't enabled.
+
+This profile requires a trusted local agent that delegates filesystem access over ACP and a host meter for model usage.
+It doesn't isolate the agent's own system calls or prove that arbitrary agents comply. See the compatibility and recovery
+policy in [ADR 0007](docs/adr/0007-acp-client-adapter.md). Live Goose interoperability remains #14.
 
 ## MCP stdio client adapter
 

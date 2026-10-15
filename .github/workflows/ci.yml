@@ -168,6 +168,37 @@ jobs:
       - name: Audit adapter dependency lockfile
         run: cargo audit --file adapters/mcp/Cargo.lock
 
+  acp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check adapter formatting
+        run: cargo fmt --manifest-path adapters/acp/Cargo.toml --check
+
+      - name: Check adapter warnings
+        run: cargo clippy --manifest-path adapters/acp/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Exercise ACP v1 session and engine failure paths
+        run: cargo test --manifest-path adapters/acp/Cargo.toml --locked
+
+      - name: Install declared minimum Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check minimum Rust compatibility
+        run: cargo +1.88.0 test --manifest-path adapters/acp/Cargo.toml --locked
+
+      - name: Build adapter
+        run: cargo build --manifest-path adapters/acp/Cargo.toml --locked
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit adapter dependency lockfile
+        run: cargo audit --file adapters/acp/Cargo.lock
+
   final:
     if: always()
     needs:
@@ -177,6 +208,7 @@ jobs:
       - coordinator
       - runtime
       - mcp
+      - acp
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -191,11 +223,13 @@ jobs:
           RUNTIME_SELECTED: ${{ needs.classify.outputs.runtime }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
           MCP_RESULT: ${{ needs.mcp.result }}
+          ACP_RESULT: ${{ needs.acp.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
           [[ "$BASELINE_RESULT" == "success" ]]
           [[ "$MCP_RESULT" == "success" ]]
+          [[ "$ACP_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else

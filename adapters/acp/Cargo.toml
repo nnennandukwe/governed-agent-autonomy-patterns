@@ -1,0 +1,26 @@
+[package]
+name = "gaap-acp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+# Protocol SDK types and async transport stay outside the core domain crate.
+[workspace]
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+agent-client-protocol = { version = "=3.3.0", default-features = false, features = ["schemars"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+futures = "=0.3.32"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+serde_jcs = "=0.2.0"
+schemars = "=1.2.3"
+jsonschema = { version = "=0.52.1", default-features = false }
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
