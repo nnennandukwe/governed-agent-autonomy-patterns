@@ -208,10 +208,23 @@ async fn run(
     let write_events = events.clone();
     let permission_events = events.clone();
     let setup_evidence = evidence.clone();
+    let notification_events = events.clone();
     let run_budget = request.resource_budget.max_elapsed_ms;
     let prompt_cancel = cancel.clone();
     let session=Client.builder()
-        .on_receive_notification(async move |_notification:SessionNotification,_cx| { Ok(()) },agent_client_protocol::on_receive_notification!())
+        .on_receive_notification(async move |notification:SessionNotification,_cx| {
+            let update=serde_json::to_value(notification.update).map_err(|_|agent_client_protocol::Error::internal_error())?;
+            let kind=update["sessionUpdate"].as_str().unwrap_or("");
+            if matches!(kind,"tool_call"|"tool_call_update") {
+                let tool_id_digest=crate::digest(&update["toolCallId"]).map_err(|_|agent_client_protocol::Error::internal_error())?;
+                notification_events.send(Event::ToolProgress(crate::ToolProgress {
+                    tool_id_digest,
+                    status:update["status"].as_str().map(str::to_owned),
+                    is_update:kind=="tool_call_update",
+                })).map_err(|_|agent_client_protocol::Error::internal_error())?;
+            }
+            Ok(())
+        },agent_client_protocol::on_receive_notification!())
         .on_receive_request(async move |request:ReadTextFileRequest,responder,_cx| {
             let (reply,result)=oneshot::channel();
             read_events.send(Event::Effect(FileOperation::Read { path:request.path,line:request.line,limit:request.limit },reply))

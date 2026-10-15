@@ -62,8 +62,12 @@ method and frame hash; they don't retain raw prompts, file content, file paths o
 around secret-bearing input.
 
 A missing read payload ends the session while preserving the host's known execution observation. A queued effect loses
-authority as soon as the wire guard records a protocol failure. The host worker preserves that fixed failure code
-when it refuses a queued operation.
+authority if the wire guard records a protocol failure before the worker claims dispatch. The claim and fault recording
+share one lock; ordered claim digests remain in session evidence. After a claim, the operation is in flight and its
+actual observation or uncertainty must be retained. Cleanup keeps both the primary fault and a separate cleanup failure.
+
+Tool-call notifications become bounded adapter progress events with hashed tool IDs and normalized status. They
+remain in `SessionEvidence` and effect evidence; they aren't canonical execution events or billing authority.
 
 A session can't complete solely from an agent's `end_turn` or tool-success report: this delegated-effect profile requires
 at least one host-executed effect, and the engine independently verifies the resulting subject. Approval of an earlier
@@ -71,8 +75,8 @@ subject isn't copied onto later filesystem states. A later mutation without matc
 
 | Event | Outcome and recovery |
 | --- | --- |
-| Permission or engine gate refuses | No host dispatch; inspect the reason and start a newly authorized run. There isn't durable resumption. |
-| Cancellation | Explicit cancellation before dispatch seals a denied, zero-use effect and an interrupted run. An interrupted run retains the dispatched effect's actual observation, including an unknown outcome after a lost host response. No replay. |
+| Permission or engine gate refuses | Authority-required remains blocked even if cancellation follows the Ask. No host dispatch; inspect the reason and start a newly authorized run. There isn't durable resumption. |
+| Cancellation | Explicit cancellation during setup interrupts the run. Before dispatch it seals a denied, zero-use effect and an interrupted run. An interrupted run retains the dispatched effect's actual observation, including an unknown outcome after a lost host response. No replay. |
 | Timeout, agent exit, partial frame/output or transport failure | Separate `acp.*` diagnostics; the run can't complete. Earlier confirmed effects and subject changes remain in receipts. |
 | Host execution times out | Unknown attempted effect with one known tool attempt; cost/tokens remain lower bounds. The host port is quarantined and late results are ignored. Reconcile the physical state before retrying. |
 | Host usage is unavailable | Failed run with the last known usage lower bound; it isn't a settled total. |

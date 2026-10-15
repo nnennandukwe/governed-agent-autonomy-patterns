@@ -221,6 +221,11 @@ pub struct VerificationContext<'a> {
 
 /// Narrow adapter that can propose a plan and the next bounded effect.
 pub trait AgentAdapter {
+    /// Explicit host cancellation during setup or session work.
+    fn cancellation(&self) -> Option<Cancellation> {
+        None
+    }
+
     /// Release run-owned resources after every engine return, including errors.
     /// Existing deterministic adapters don't need a cleanup action.
     fn close(&mut self) {}
@@ -261,13 +266,27 @@ pub trait VerifierPort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePortError {
     message: String,
+    not_dispatched: bool,
 }
 
 impl RuntimePortError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            not_dispatched: false,
         }
+    }
+
+    /// A trusted executor proves that no external dispatch occurred.
+    pub fn before_dispatch(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            not_dispatched: true,
+        }
+    }
+
+    pub fn was_not_dispatched(&self) -> bool {
+        self.not_dispatched
     }
 
     pub fn message(&self) -> &str {
@@ -378,6 +397,10 @@ where
         let plan_observation = match self.agent.plan(&request) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(cancellation) = self.agent.cancellation() {
+                    ledger.interruption(sanitize_cancellation(cancellation));
+                    return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -671,8 +694,21 @@ where
                 None
             };
 
-        let observation = match self.executor.execute(&proposal.request) {
+        let mut observation = match self.executor.execute(&proposal.request) {
             Ok(observation) => observation,
+            Err(error) if error.was_not_dispatched() => {
+                let mut decision = Decision::block("executor.not_dispatched", &["stop_execution"]);
+                decision.effects.push(error.message().to_owned());
+                return self
+                    .decline_protected_effect(
+                        ledger,
+                        &proposal.request,
+                        &effect_digest,
+                        Gate::Permission,
+                        decision,
+                    )
+                    .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+            }
             Err(error) => {
                 let result = self.executor_error_result(
                     &ledger,
@@ -730,6 +766,21 @@ where
                     decision,
                 )
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+        }
+        // Every remaining result represents an attempted invocation. A host's
+        // zero counter can't erase the execution event the runtime records.
+        if observation.usage.tool_calls == 0 {
+            let mut usage_identity = Sha256::new();
+            usage_identity.update(b"gaap.runtime.known-tool-attempt/1\0");
+            usage_identity.update(effect_digest.as_bytes());
+            usage_identity.update(0_u64.to_be_bytes());
+            usage_identity.update(1_u64.to_be_bytes());
+            observation.evidence.push(EffectEvidenceReference {
+                evidence_type: EffectEvidenceType::Usage,
+                digest: format!("sha256:{:x}", usage_identity.finalize()),
+                locator: None,
+            });
+            observation.usage.tool_calls = 1;
         }
         let untrusted_reason =
             if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
@@ -880,7 +931,9 @@ where
             },
         )?;
         ledger.effect_results.push(result);
-        if let Some(cancellation) = self.executor.cancellation() {
+        if decision.outcome != Outcome::Ask
+            && let Some(cancellation) = self.executor.cancellation()
+        {
             ledger.interruption(sanitize_cancellation(cancellation));
             return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
         }

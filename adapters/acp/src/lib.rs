@@ -128,6 +128,10 @@ pub struct SessionEvidence {
     pub capability_digest: String,
     pub trace: Vec<TraceEntry>,
     pub failure_code: Option<String>,
+    pub cleanup_failure: Option<String>,
+    pub tool_progress: Vec<ToolProgress>,
+    /// Ordered effect digests admitted under the same lock as protocol faults.
+    pub dispatch_claims: Vec<String>,
 }
 
 /// Read-only access to retained session evidence after shutdown.
@@ -137,6 +141,22 @@ impl EvidenceHandle {
     pub fn snapshot(&self) -> SessionEvidence {
         self.0.lock().expect("evidence lock").clone()
     }
+
+    fn cleanup_timeout(&self) {
+        let mut retained = self.0.lock().expect("evidence lock");
+        retained.cleanup_failure = Some("acp.cleanup_timeout".into());
+        retained
+            .failure_code
+            .get_or_insert_with(|| "acp.cleanup_timeout".into());
+    }
+}
+
+/// Agent-reported progress, never execution or billing authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolProgress {
+    pub tool_id_digest: String,
+    pub status: Option<String>,
+    pub is_update: bool,
 }
 
 /// Host-owned cancellation for this single session.
@@ -151,6 +171,7 @@ impl CancelHandle {
 
 pub(crate) enum Event {
     Ready,
+    ToolProgress(ToolProgress),
     Effect(
         FileOperation,
         oneshot::Sender<Result<Option<String>, String>>,
@@ -169,6 +190,22 @@ struct Shared {
     pending: Option<Pending>,
     cancellation: CancellationToken,
     cancellation_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Shared {
+    fn explicit_cancellation(&self) -> Option<Cancellation> {
+        self.cancellation_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then(|| Cancellation {
+                actor_id: None,
+                reason: "acp.cancelled".into(),
+                evidence: EvidenceReference {
+                    evidence_type: EvidenceType::Interruption,
+                    digest: format!("sha256:{:x}", Sha256::digest(b"acp.cancelled")),
+                    locator: None,
+                },
+            })
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -313,6 +350,15 @@ impl AcpAdapter {
                     if self.cancellation_handle().0.is_cancelled() {
                         return Err(error("acp.cancelled"));
                     }
+                    if let Event::ToolProgress(progress) = event {
+                        self.evidence
+                            .0
+                            .lock()
+                            .expect("evidence lock")
+                            .tool_progress
+                            .push(progress);
+                        continue;
+                    }
                     return Ok(event);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => (),
@@ -436,6 +482,13 @@ impl AcpAdapter {
 }
 
 impl AgentAdapter for AcpAdapter {
+    fn cancellation(&self) -> Option<Cancellation> {
+        self.shared
+            .lock()
+            .expect("session lock")
+            .explicit_cancellation()
+    }
+
     fn close(&mut self) {
         self.phase = AdapterPhase::Closed;
         self.start.take();
@@ -444,8 +497,7 @@ impl AgentAdapter for AcpAdapter {
         if let Some(stopped) = self.stopped.take()
             && stopped.recv_timeout(Duration::from_secs(1)).is_err()
         {
-            self.evidence.0.lock().expect("evidence lock").failure_code =
-                Some("acp.cleanup_timeout".into());
+            self.evidence.cleanup_timeout();
         }
     }
 
@@ -557,6 +609,7 @@ impl AgentAdapter for AcpAdapter {
                 return Err(error(&code));
             }
             Event::Ready => return Err(error("acp.duplicate_setup")),
+            Event::ToolProgress(_) => unreachable!("progress is consumed by event()"),
         };
         Ok(PortObservation {
             value: step,
@@ -573,19 +626,10 @@ impl Drop for AcpAdapter {
 
 impl ExecutorPort for AcpExecutor {
     fn cancellation(&self) -> Option<Cancellation> {
-        let shared = self.shared.lock().expect("session lock");
-        shared
-            .cancellation_requested
-            .load(std::sync::atomic::Ordering::SeqCst)
-            .then(|| Cancellation {
-                actor_id: None,
-                reason: "acp.cancelled".into(),
-                evidence: EvidenceReference {
-                    evidence_type: EvidenceType::Interruption,
-                    digest: format!("sha256:{:x}", Sha256::digest(b"acp.cancelled")),
-                    locator: None,
-                },
-            })
+        self.shared
+            .lock()
+            .expect("session lock")
+            .explicit_cancellation()
     }
 
     fn execute(
@@ -644,7 +688,7 @@ impl ExecutorPort for AcpExecutor {
                 effect.observation.evidence.push(EffectEvidenceReference {
                     evidence_type:EffectEvidenceType::CapabilitySchema,
                     digest:digest(&json!({"sdk":identity.sdk_version,"protocol":identity.protocol_version,"session":identity.session_digest,
-                        "run":identity.run_request_digest,"capability":identity.capability_digest}))?,locator:None,
+                        "run":identity.run_request_digest,"capability":identity.capability_digest,"tool_progress":identity.tool_progress,"dispatch_claims":identity.dispatch_claims}))?,locator:None,
                 });
                 let successful =
                     effect.observation.execution_status == EffectExecutionStatus::Executed;
@@ -748,20 +792,32 @@ impl HostPort {
                         let _ = reply.send(result);
                     }
                     HostCommand::Execute(deadline, operation, request, reply) => {
-                        let result = if let Some(code) = evidence.snapshot().failure_code {
-                            HostCompletion::Declined(code)
-                        } else if worker_cancel.is_cancelled() {
-                            HostCompletion::Declined("acp.cancelled".into())
-                        } else if Instant::now() >= deadline
-                            || worker_quarantined.load(std::sync::atomic::Ordering::SeqCst)
-                        {
-                            HostCompletion::Declined("acp.host_expired".into())
-                        } else {
-                            HostCompletion::Attempted(
+                        // The claim and wire-fault recording share one lock. A fault
+                        // before the claim revokes queued work; after it, the operation
+                        // is in flight and its actual outcome must be retained.
+                        let claim = {
+                            let mut retained = evidence.0.lock().expect("evidence lock");
+                            if let Some(code) = retained.failure_code.clone() {
+                                Err(code)
+                            } else if worker_cancel.is_cancelled() {
+                                Err("acp.cancelled".into())
+                            } else if Instant::now() >= deadline
+                                || worker_quarantined.load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                Err("acp.host_expired".into())
+                            } else {
+                                digest(&request)
+                                    .map(|claim| retained.dispatch_claims.push(claim))
+                                    .map_err(|_| "acp.invalid_identity".into())
+                            }
+                        };
+                        let result = match claim {
+                            Err(code) => HostCompletion::Declined(code),
+                            Ok(()) => HostCompletion::Attempted(
                                 host.execute(&operation, &request)
                                     .map(Box::new)
                                     .map_err(|_| error("acp.host_effect_unknown")),
-                            )
+                            ),
                         };
                         worker_busy.store(false, std::sync::atomic::Ordering::SeqCst);
                         let _ = reply.send(result);
@@ -898,7 +954,7 @@ mod tests {
             NoDispatch,
             Duration::from_secs(5),
             CancellationToken::new(),
-            evidence,
+            evidence.clone(),
         );
         let (reply, receiver) = mpsc::channel();
         // The fault has already been observed when a queued command reaches the worker.
@@ -923,5 +979,92 @@ mod tests {
             HostCompletion::Declined(code) => assert_eq!(code, "acp.duplicate_request"),
             HostCompletion::Attempted(_) => panic!("mustn't attempt after a protocol fault"),
         }
+        assert!(evidence.snapshot().dispatch_claims.is_empty());
+    }
+
+    #[test]
+    fn cleanup_retains_primary_fault_and_its_own_diagnostic() {
+        for primary in [None, Some("acp.duplicate_request".to_owned())] {
+            let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence {
+                failure_code: primary.clone(),
+                ..SessionEvidence::default()
+            })));
+            evidence.cleanup_timeout();
+            let retained = evidence.snapshot();
+            assert_eq!(
+                retained.failure_code.as_deref(),
+                primary.as_deref().or(Some("acp.cleanup_timeout"))
+            );
+            assert_eq!(
+                retained.cleanup_failure.as_deref(),
+                Some("acp.cleanup_timeout")
+            );
+        }
+    }
+
+    struct PausedHost {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl AcpHost for PausedHost {
+        fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
+            panic!("no usage")
+        }
+        fn execute(
+            &mut self,
+            _: &FileOperation,
+            _: &ProtectedEffectRequest,
+        ) -> Result<HostEffect, RuntimePortError> {
+            self.entered.send(()).unwrap();
+            self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+            Err(error("fixture.host_response_lost"))
+        }
+    }
+
+    #[test]
+    fn a_fault_after_dispatch_claim_preserves_the_in_flight_attempt() {
+        let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence::default())));
+        let (entered, started) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let host = HostPort::new(
+            PausedHost {
+                entered,
+                release: resume,
+            },
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            evidence.clone(),
+        );
+        let request: ProtectedEffectRequest = serde_json::from_str(include_str!(
+            "../../../examples/contracts/protected-effect/v0.1.0/protected-effect-request.json"
+        ))
+        .unwrap();
+        let expected = digest(&request).unwrap();
+        let (reply, receiver) = mpsc::channel();
+        host.sender
+            .try_send(HostCommand::Execute(
+                Instant::now() + Duration::from_secs(5),
+                FileOperation::Read {
+                    path: PathBuf::from("/unused"),
+                    line: None,
+                    limit: None,
+                },
+                Box::new(request),
+                reply,
+            ))
+            .unwrap();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(evidence.snapshot().dispatch_claims, vec![expected]);
+        // The protocol guard can retain a later fault while the callback runs.
+        evidence.0.lock().unwrap().failure_code = Some("acp.duplicate_request".into());
+        release.send(()).unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            HostCompletion::Attempted(Err(_))
+        ));
+        assert_eq!(
+            evidence.snapshot().failure_code.as_deref(),
+            Some("acp.duplicate_request")
+        );
     }
 }

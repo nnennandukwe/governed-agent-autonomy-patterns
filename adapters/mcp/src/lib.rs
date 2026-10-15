@@ -917,8 +917,18 @@ impl ExecutorPort for McpExecutor {
         &mut self,
         effect: &ProtectedEffectRequest,
     ) -> Result<ExecutorObservation, RuntimePortError> {
-        self.execute_effect(effect)
-            .map_err(|e| RuntimePortError::new(e.to_string()))
+        let records_before = self.calls.len();
+        self.execute_effect(effect).map_err(|error| {
+            // A new dispatched record survives every uncertain invocation. An error
+            // without one proves this port call didn't dispatch an external effect.
+            if self.calls.len() == records_before
+                || self.calls.last().is_some_and(|call| !call.dispatched)
+            {
+                RuntimePortError::before_dispatch(error.to_string())
+            } else {
+                RuntimePortError::new(error.to_string())
+            }
+        })
     }
 }
 

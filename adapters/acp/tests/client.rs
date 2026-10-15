@@ -70,6 +70,7 @@ struct Host {
     omit_read: bool,
     stall_usage: bool,
     stall_effect: bool,
+    zero_tool_count: bool,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
@@ -116,7 +117,7 @@ impl AcpHost for Host {
                     cost_micros: 0,
                     elapsed_ms: 0,
                     model_tokens: 0,
-                    tool_calls: 1,
+                    tool_calls: u64::from(!self.zero_tool_count),
                 },
                 executor: Some(identity()),
                 sandbox_profile: Some(profile()),
@@ -253,6 +254,7 @@ struct Fixture {
     evidence: EvidenceHandle,
     wait_for_fault: bool,
     cancel_before_dispatch: Option<CancelHandle>,
+    cancel_after_dispatch: Option<CancelHandle>,
 }
 fn fixture(mode: &str, permission: PermissionPolicy, confirm: bool) -> Fixture {
     fixture_with_usage(mode, permission, confirm, false)
@@ -296,11 +298,13 @@ fn fixture_with_usage(
             omit_read: mode == "missing_read",
             stall_usage: mode == "stall_usage",
             stall_effect: mode == "host_timeout",
+            zero_tool_count: mode == "zero_tool_count",
         },
     )
     .unwrap();
     let request = request(adapter.capability().clone(), &path);
     let evidence = adapter.evidence();
+    let cancel_after_dispatch = (mode == "cancel_after_ask").then(|| adapter.cancellation_handle());
     let cancel_before_dispatch =
         (mode == "cancel_at_dispatch").then(|| adapter.cancellation_handle());
     Fixture {
@@ -312,6 +316,7 @@ fn fixture_with_usage(
         evidence,
         wait_for_fault: mode == "duplicate_request",
         cancel_before_dispatch,
+        cancel_after_dispatch,
     }
 }
 struct WaitingExecutor {
@@ -319,6 +324,7 @@ struct WaitingExecutor {
     evidence: EvidenceHandle,
     wait_for_fault: bool,
     cancel_before_dispatch: Option<CancelHandle>,
+    cancel_after_dispatch: Option<CancelHandle>,
 }
 impl ExecutorPort for WaitingExecutor {
     fn cancellation(&self) -> Option<Cancellation> {
@@ -340,7 +346,11 @@ impl ExecutorPort for WaitingExecutor {
         if let Some(cancel) = &self.cancel_before_dispatch {
             cancel.cancel();
         }
-        self.inner.execute(request)
+        let result = self.inner.execute(request);
+        if let Some(cancel) = &self.cancel_after_dispatch {
+            cancel.cancel();
+        }
+        result
     }
 }
 
@@ -382,6 +392,7 @@ fn run(
             evidence: fixture.evidence.clone(),
             wait_for_fault: fixture.wait_for_fault,
             cancel_before_dispatch: fixture.cancel_before_dispatch,
+            cancel_after_dispatch: fixture.cancel_after_dispatch,
         },
         Verifier {
             path: fixture.dir.path().join("subject.txt"),
@@ -782,7 +793,12 @@ fn a_stalled_usage_callback_expires_without_starting_the_agent_prompt() {
 
 #[test]
 fn valid_tool_progress_preserves_the_governed_effect_path() {
-    let (_, result, count, _) = run(fixture("tool_progress", allow(), true), allow(), true);
+    let (_, result, count, evidence) = run(fixture("tool_progress", allow(), true), allow(), true);
+    assert_eq!(evidence.tool_progress.len(), 3);
+    assert_eq!(
+        evidence.tool_progress.last().unwrap().status.as_deref(),
+        Some("completed")
+    );
     assert_eq!(
         result.receipt.body.terminal_status,
         AgentRunStatus::Completed
@@ -913,4 +929,66 @@ fn signed_json_rpc_ids_preserve_the_governed_effect_path() {
         AgentRunStatus::Completed
     );
     assert_eq!(count, 2);
+}
+
+#[test]
+fn setup_cancellation_is_interrupted_without_prompt_or_dispatch() {
+    let f = fixture("missing_response", allow(), true);
+    let cancel = f.adapter.cancellation_handle();
+    let marker = f.dir.path().join("agent-pid");
+    let canceller = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            if marker.exists() {
+                cancel.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("agent didn't start");
+    });
+    let (dir, result, count, _) = run(f, allow(), true);
+    canceller.join().unwrap();
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert_eq!(count, 0);
+    assert!(!dir.path().join("prompt-started").exists());
+}
+
+#[test]
+fn a_zero_host_counter_cant_erase_the_known_dispatch() {
+    let (_, result, count, _) = run(fixture("zero_tool_count", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Completed
+    );
+    assert_eq!(count, 2);
+    assert_eq!(result.receipt.body.usage.tool_calls, 2);
+    for effect in result.protected_effect_results {
+        assert_eq!(effect.body.usage.tool_calls, 1);
+    }
+}
+
+#[test]
+fn authority_required_stays_blocked_when_cancellation_arrives_after_ask() {
+    let ask = PermissionPolicy {
+        policy_decision: Some(PolicyDecision::Ask),
+        ..allow()
+    };
+    let (_, result, count, _) = run(fixture("cancel_after_ask", ask, true), allow(), true);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+    assert_eq!(count, 0);
+    assert_eq!(
+        result.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::AwaitingAuthority
+    );
+    assert!(
+        !result
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Interruption { .. }))
+    );
 }

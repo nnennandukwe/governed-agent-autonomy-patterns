@@ -61,9 +61,12 @@ cargo audit --file adapters/acp/Cargo.lock
 
 The [ACP guide](adapters/acp/README.md) describes trusted host responsibilities, supported operations, evidence and
 failure recovery. Root schemas and coordinator behavior remain the same; runtime adapters gain a default no-op `close`
-hook that the engine invokes after every return, including errors. Executor ports also gain a default empty cancellation
-query so a refused operation can retain its non-execution result while the run records an explicit interruption. Lost
-executor responses count one known tool attempt; other usage stays a lower bound until reconciliation.
+hook that the engine invokes after every return, including errors. Adapter and executor ports also gain default empty cancellation
+queries so a refused operation can retain its non-execution result while the run records an explicit interruption. Lost
+executor responses count one known tool attempt; proven pre-dispatch failures use typed port metadata and stay at zero.
+An attempted host observation can't erase that known minimum with a zero counter; the runtime adds Usage evidence for
+the correction. Other usage stays a lower bound until reconciliation. Authority-required decisions retain the one-shot
+blocked result, including when cancellation follows the Ask.
 
 Changes to `RunCoordinator` decisions must also reproduce the committed packet
 through RunInvariant commit `e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44`.
