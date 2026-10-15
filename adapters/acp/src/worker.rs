@@ -96,7 +96,12 @@ pub(crate) fn validate_launch(config: &AgentConfig) -> Result<(), RuntimePortErr
             .arguments
             .first()
             .ok_or_else(|| error("acp.script_required"))?;
-        if !config.artifacts.iter().any(|a| a.path == Path::new(script)) {
+        let script = config
+            .working_directory
+            .join(script)
+            .canonicalize()
+            .map_err(|_| error("acp.script_unapproved"))?;
+        if !config.artifacts.iter().any(|a| a.path == script) {
             return Err(error("acp.script_unapproved"));
         }
     }
@@ -147,10 +152,7 @@ pub(crate) fn start(
         };
         let _ = stopped.send(());
         if let Err(code) = result {
-            let mut retained = evidence.0.lock().expect("evidence lock");
-            let code = retained.failure_code.clone().unwrap_or_else(|| code.into());
-            retained.failure_code = Some(code.clone());
-            drop(retained);
+            let code = evidence.record_failure(code);
             // Error codes come from fixed transport checks, never raw server diagnostics.
             let _ = events.send(Event::Fault(code));
         }
@@ -250,7 +252,7 @@ async fn run(
             }
         },agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |_request:RequestPermissionRequest,responder,_cx| {
-            permission_evidence.0.lock().expect("evidence lock").failure_code.get_or_insert_with(|| "acp.authority_required".into());
+            permission_evidence.record_failure("acp.authority_required");
             let result=responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
             let _=permission_events.send(Event::Fault("acp.authority_required".into()));
             result
@@ -261,7 +263,7 @@ async fn run(
                 .block_task().await?;
             let identity=init.agent_info.ok_or_else(agent_client_protocol::Error::invalid_request)?;
             if identity.name!=config.expected_name || identity.version!=config.expected_version {
-                setup_evidence.0.lock().expect("evidence lock").failure_code=Some("acp.agent_identity_mismatch".into());
+                setup_evidence.record_failure("acp.agent_identity_mismatch");
                 return Err(agent_client_protocol::Error::invalid_request());
             }
             let session=connection.send_request(NewSessionRequest::new(config.working_directory)).block_task().await?;

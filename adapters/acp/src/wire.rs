@@ -89,12 +89,11 @@ pub(crate) fn transport(
                 });
                 if let Err(ref problem) = result {
                     let code = problem.to_string();
-                    evidence.0.lock().expect("evidence lock").failure_code =
-                        Some(if code.starts_with("acp.") {
-                            code
-                        } else {
-                            "acp.read_failed".into()
-                        });
+                    evidence.record_failure(if code.starts_with("acp.") {
+                        code
+                    } else {
+                        "acp.read_failed".into()
+                    });
                 }
                 let done = result.is_err();
                 Some((result, (reader, done)))
@@ -145,7 +144,7 @@ fn validate(
     let result = validate_message(line, incoming, state, limits, evidence);
     if let Err(ref e) = result {
         let code = e.to_string();
-        evidence.0.lock().expect("evidence lock").failure_code = Some(code);
+        evidence.record_failure(code);
     }
     result
 }

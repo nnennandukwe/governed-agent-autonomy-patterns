@@ -1100,3 +1100,44 @@ fn relative_launch_files_need_approved_bytes_in_the_child_directory() {
         assert_eq!(result.is_ok(), approved);
     }
 }
+
+#[test]
+fn approved_relative_python_script_resolves_in_the_child_directory() {
+    struct NeverHost;
+    impl AcpHost for NeverHost {
+        fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
+            Ok(zero())
+        }
+        fn execute(
+            &mut self,
+            _: &FileOperation,
+            _: &ProtectedEffectRequest,
+        ) -> Result<HostEffect, RuntimePortError> {
+            panic!("mustn't dispatch")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut launch = config(dir.path(), "normal");
+    let copied = dir.path().join("agent.py");
+    std::fs::copy(&launch.artifacts[1].path, &copied).unwrap();
+    launch.artifacts[1].path = copied.canonicalize().unwrap();
+    launch.arguments[0] = "agent.py".into();
+    let capability = launch.capability().unwrap();
+    let path = dir.path().join("subject.txt");
+    std::fs::write(&path, "before\n").unwrap();
+    let run_request = request(capability.clone(), &path);
+    let (mut adapter, _) = AcpAdapter::new(
+        launch,
+        Limits::default(),
+        ContractSupport::new([policy()]),
+        profile(),
+        allow(),
+        NeverHost,
+    )
+    .unwrap();
+    assert_eq!(adapter.capability(), &capability);
+    adapter.plan(&run_request).unwrap();
+    assert!(dir.path().join("agent-pid").exists());
+    assert!(!dir.path().join("prompt-started").exists());
+    adapter.close();
+}

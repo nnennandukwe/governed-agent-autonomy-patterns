@@ -226,6 +226,11 @@ pub trait AgentAdapter {
         None
     }
 
+    /// Atomically claim completion against asynchronous cancellation when supported.
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.cancellation())
+    }
+
     /// Release run-owned resources after every engine return, including errors.
     /// Existing deterministic adapters don't need a cleanup action.
     fn close(&mut self) {}
@@ -243,6 +248,11 @@ pub trait AgentAdapter {
 
 /// Narrow executor port used only after all mutation gates allow.
 pub trait ExecutorPort {
+    /// Atomically claim completion against asynchronous cancellation when supported.
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.cancellation())
+    }
+
     /// Explicit host cancellation, separate from a failed or uncertain dispatch.
     fn cancellation(&self) -> Option<Cancellation> {
         None
@@ -1021,17 +1031,6 @@ where
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);
         }
-        // Completion authorization is the final commit point. Observe explicit
-        // cancellation before recording it; an authorized completion can't later
-        // be relabeled as interrupted under the frozen receipt contract.
-        if let Some(cancellation) = self
-            .agent
-            .cancellation()
-            .or_else(|| self.executor.cancellation())
-        {
-            ledger.interruption(sanitize_cancellation(cancellation));
-            return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
-        }
         let completion_decision = self.coordinator.evaluate(
             Gate::Workflow,
             &workflow_completion_input(
@@ -1039,6 +1038,32 @@ where
                 !ledger.mutation_required || ledger.mutation_authorized,
             ),
         );
+        if completion_decision.outcome == Outcome::Allow {
+            // Completion authorization is the final commit point. Observe explicit
+            // cancellation before recording it; an authorized completion can't later
+            // be relabeled as interrupted under the frozen receipt contract.
+            let claim = self.agent.claim_completion().and_then(|cancellation| {
+                if cancellation.is_some() {
+                    Ok(cancellation)
+                } else {
+                    self.executor.claim_completion()
+                }
+            });
+            match claim {
+                Ok(Some(cancellation)) => {
+                    ledger.interruption(sanitize_cancellation(cancellation));
+                    return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
+                }
+                Ok(None) => (),
+                Err(error) => {
+                    return self.finish(
+                        ledger,
+                        AgentRunStatus::Failed,
+                        format!("completion.claim_failed: {}", error.message()),
+                    );
+                }
+            }
+        }
         let completion_decision_id = "decision-completion".to_string();
         ledger.protected_effect_decision(
             &completion_decision_id,

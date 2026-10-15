@@ -143,6 +143,15 @@ impl EvidenceHandle {
         self.0.lock().expect("evidence lock").clone()
     }
 
+    pub(crate) fn record_failure(&self, code: impl Into<String>) -> String {
+        self.0
+            .lock()
+            .expect("evidence lock")
+            .failure_code
+            .get_or_insert_with(|| code.into())
+            .clone()
+    }
+
     fn cleanup_timeout(&self) {
         let mut retained = self.0.lock().expect("evidence lock");
         retained.cleanup_failure = Some("acp.cleanup_timeout".into());
@@ -162,11 +171,22 @@ pub struct ToolProgress {
 
 /// Host-owned cancellation for this single session.
 #[derive(Clone)]
-pub struct CancelHandle(CancellationToken, Arc<std::sync::atomic::AtomicBool>);
+pub struct CancelHandle(CancellationToken, Arc<std::sync::atomic::AtomicU8>);
 impl CancelHandle {
     pub fn cancel(&self) {
-        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.0.cancel();
+        use std::sync::atomic::Ordering::SeqCst;
+        if self
+            .1
+            .compare_exchange(
+                SessionOutcome::Active as u8,
+                SessionOutcome::Cancelled as u8,
+                SeqCst,
+                SeqCst,
+            )
+            .is_ok()
+        {
+            self.0.cancel();
+        }
     }
 }
 
@@ -190,13 +210,30 @@ struct Pending {
 struct Shared {
     pending: Option<Pending>,
     cancellation: CancellationToken,
-    cancellation_requested: Arc<std::sync::atomic::AtomicBool>,
+    outcome: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[repr(u8)]
+enum SessionOutcome {
+    Active,
+    Cancelled,
+    CompletionClaimed,
 }
 
 impl Shared {
+    fn claim_completion(&self) -> Option<Cancellation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let _ = self.outcome.compare_exchange(
+            SessionOutcome::Active as u8,
+            SessionOutcome::CompletionClaimed as u8,
+            SeqCst,
+            SeqCst,
+        );
+        self.explicit_cancellation()
+    }
+
     fn explicit_cancellation(&self) -> Option<Cancellation> {
-        self.cancellation_requested
-            .load(std::sync::atomic::Ordering::SeqCst)
+        (self.outcome.load(std::sync::atomic::Ordering::SeqCst) == SessionOutcome::Cancelled as u8)
             .then(|| Cancellation {
                 actor_id: None,
                 reason: "acp.cancelled".into(),
@@ -270,7 +307,9 @@ impl AcpAdapter {
         let shared = Arc::new(Mutex::new(Shared {
             pending: None,
             cancellation: CancellationToken::new(),
-            cancellation_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            outcome: Arc::new(std::sync::atomic::AtomicU8::new(
+                SessionOutcome::Active as u8,
+            )),
         }));
         let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence {
             sdk_version: ACP_SDK_VERSION.into(),
@@ -321,10 +360,7 @@ impl AcpAdapter {
     }
     pub fn cancellation_handle(&self) -> CancelHandle {
         let shared = self.shared.lock().expect("session lock");
-        CancelHandle(
-            shared.cancellation.clone(),
-            shared.cancellation_requested.clone(),
-        )
+        CancelHandle(shared.cancellation.clone(), shared.outcome.clone())
     }
 
     fn meter(&self) -> Result<ResourceUsage, RuntimePortError> {
@@ -490,6 +526,10 @@ impl AcpAdapter {
 }
 
 impl AgentAdapter for AcpAdapter {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.shared.lock().expect("session lock").claim_completion())
+    }
+
     fn cancellation(&self) -> Option<Cancellation> {
         self.shared
             .lock()
@@ -633,6 +673,10 @@ impl Drop for AcpAdapter {
 }
 
 impl ExecutorPort for AcpExecutor {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        Ok(self.shared.lock().expect("session lock").claim_completion())
+    }
+
     fn cancellation(&self) -> Option<Cancellation> {
         self.shared
             .lock()
@@ -704,8 +748,7 @@ impl ExecutorPort for AcpExecutor {
                     && successful
                     && effect.read_text.is_none()
                 {
-                    self.evidence.0.lock().expect("evidence lock").failure_code =
-                        Some("acp.read_evidence_missing".into());
+                    self.evidence.record_failure("acp.read_evidence_missing");
                     let _ = pending.reply.send(Err("acp.read_evidence_missing".into()));
                     return Ok(effect.observation);
                 }
@@ -1007,6 +1050,51 @@ mod tests {
                 retained.cleanup_failure.as_deref(),
                 Some("acp.cleanup_timeout")
             );
+        }
+    }
+
+    #[test]
+    fn cancellation_and_completion_share_one_atomic_winner() {
+        for order in 0..10 {
+            let shared = Arc::new(Shared {
+                pending: None,
+                cancellation: CancellationToken::new(),
+                outcome: Arc::new(std::sync::atomic::AtomicU8::new(
+                    SessionOutcome::Active as u8,
+                )),
+            });
+            let cancel = CancelHandle(shared.cancellation.clone(), shared.outcome.clone());
+            let cancelled = if order == 0 {
+                cancel.cancel();
+                shared.claim_completion()
+            } else if order == 1 {
+                let result = shared.claim_completion();
+                cancel.cancel();
+                result
+            } else {
+                let ready = Arc::new(std::sync::Barrier::new(2));
+                let other = ready.clone();
+                let racer = std::thread::spawn(move || {
+                    other.wait();
+                    cancel.cancel();
+                });
+                ready.wait();
+                let result = shared.claim_completion();
+                racer.join().unwrap();
+                result
+            };
+            assert_eq!(
+                cancelled.is_some(),
+                shared.explicit_cancellation().is_some()
+            );
+            assert_eq!(cancelled.is_some(), shared.cancellation.is_cancelled());
+            assert_eq!(shared.claim_completion().is_some(), cancelled.is_some());
+            if order == 0 {
+                assert!(cancelled.is_some());
+            }
+            if order == 1 {
+                assert!(cancelled.is_none());
+            }
         }
     }
 

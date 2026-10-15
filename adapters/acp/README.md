@@ -54,7 +54,11 @@ requires the expected agent identity and protocol v1. Advertised authentication 
 is currently required; an actual authentication-required response ends the run before a prompt. Negotiated capabilities and the session response are retained by
 hash. Effect metadata binds protocol, SDK and session identity; effect evidence also binds that identity to the run.
 
-Relative launch-file arguments resolve against the child's working directory and require approved artifact bytes.
+Relative launch-file arguments, including Python/Node scripts, resolve against the child's working directory and require
+approved artifact bytes. The adapter starts the approved executable directly, without a shell wrapper. Filename checks
+reject common shell and package-launcher names; they don't identify renamed interpreters. The trusted host must approve
+both the executable bytes and full argument vector. A renamed or modified executable is a new host approval choice,
+not an OS confinement guarantee.
 
 The SDK handles typed requests and callbacks. A strict wire guard additionally validates SDK-generated JSON schemas,
 rejects duplicate keys/IDs, unsupported or mismatched messages, foreign sessions and invalid tool-update order. Default
@@ -63,8 +67,9 @@ by the accepted run deadline. Numeric values stay within the exact canonical int
 method and frame hash; they don't retain raw prompts, file content, file paths or stderr. Don't enable raw SDK tracing
 around secret-bearing input.
 
-Cancellation is observed before the engine records completion authorization. Once authorized, completion is committed
-and can't be relabeled as interrupted. Failed metering or verification can't hide an earlier explicit cancellation;
+Cancellation and completion compete through one atomic session state before the engine records completion
+authorization. If cancellation wins, the run interrupts; if completion wins, later `cancel()` calls don't change the
+committed outcome. The adapter and executor expose this through the runtime's `claim_completion` hook. Failed metering or verification can't hide an earlier explicit cancellation;
 unavailable usage remains in `SessionEvidence.usage_failure` without claiming settled totals.
 
 A missing read payload ends the session while preserving the host's known execution observation. A queued effect loses
