@@ -1205,7 +1205,7 @@ fn changed_read_retains_an_uncertain_effect_and_terminal_receipt() {
     );
     assert_eq!(
         retained.digest,
-        hash(&serde_jcs::to_vec(&retained.report).unwrap())
+        hash(&serde_jcs::to_vec(&serde_json::json!({"effect_request_digest":retained.effect_request_digest,"report":retained.report})).unwrap())
     );
     assert!(
         read.evidence

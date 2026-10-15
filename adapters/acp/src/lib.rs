@@ -765,14 +765,17 @@ impl ExecutorPort for AcpExecutor {
                     let reported = &effect.observation;
                     let report = json!({"reported_status":reported.execution_status,"post_subject":reported.observed_post_effect_subject,"exit":reported.exit,"usage":reported.usage,
                         "executor":reported.executor,"sandbox_profile":reported.sandbox_profile,"reason":reported.reason,"evidence":reported.evidence});
-                    let reconciliation = digest(&report)?;
+                    let effect_request_digest = digest(request)?;
+                    let reconciliation = digest(
+                        &json!({"effect_request_digest":effect_request_digest,"report":report}),
+                    )?;
                     self.evidence
                         .0
                         .lock()
                         .expect("evidence lock")
                         .reconciliation
                         .push(ReconciliationRecord {
-                            effect_request_digest: digest(request)?,
+                            effect_request_digest,
                             report,
                             digest: reconciliation.clone(),
                         });
