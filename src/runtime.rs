@@ -931,9 +931,11 @@ where
             },
         )?;
         ledger.effect_results.push(result);
-        if decision.outcome != Outcome::Ask
-            && let Some(cancellation) = self.executor.cancellation()
-        {
+        let cancellation = match decision.outcome {
+            Outcome::Ask => None,
+            _ => self.executor.cancellation(),
+        };
+        if let Some(cancellation) = cancellation {
             ledger.interruption(sanitize_cancellation(cancellation));
             return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
         }
