@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 pub mod dsse;
 pub mod ed25519;
+pub mod json;
+pub mod snapshot;
 
 use std::fmt;
 
