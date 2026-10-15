@@ -312,7 +312,7 @@ fn fixture_with_usage(
             unknown_usage,
             omit_read: mode == "missing_read",
             stall_usage: mode == "stall_usage",
-            stall_effect: mode == "host_timeout",
+            stall_effect: matches!(mode, "host_timeout" | "progress_timeout"),
             zero_tool_count: mode == "zero_tool_count",
             late_meter_stall: mode == "cancel_meter",
             usage_calls: 0,
@@ -1140,4 +1140,37 @@ fn approved_relative_python_script_resolves_in_the_child_directory() {
     assert!(dir.path().join("agent-pid").exists());
     assert!(!dir.path().join("prompt-started").exists());
     adapter.close();
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_is_rejected_before_host_execution() {
+    let f = fixture("dangling_symlink", allow(), true);
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("uncreated.txt");
+    std::fs::remove_file(f.dir.path().join("subject.txt")).unwrap();
+    std::os::unix::fs::symlink(&target, f.dir.path().join("subject.txt")).unwrap();
+    let (_, result, count, _) = run(f, allow(), true);
+    assert_eq!(count, 0);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert!(!target.exists());
+}
+
+#[test]
+fn progress_during_unknown_host_effect_is_retained_and_bound() {
+    let (_, result, count, evidence) =
+        run(fixture("progress_timeout", allow(), true), allow(), true);
+    assert_eq!(count, 1);
+    assert_eq!(evidence.tool_progress.len(), 1);
+    let effect = &result.protected_effect_results[0].body;
+    assert_eq!(
+        effect.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert!(
+        effect
+            .evidence
+            .iter()
+            .any(|entry| entry.evidence_type == EffectEvidenceType::CapabilitySchema)
+    );
 }

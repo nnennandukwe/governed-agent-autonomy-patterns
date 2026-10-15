@@ -217,6 +217,7 @@ async fn run(
     let permission_evidence = evidence.clone();
     let setup_evidence = evidence.clone();
     let notification_events = events.clone();
+    let notification_evidence = evidence.clone();
     let run_budget = request.resource_budget.max_elapsed_ms;
     let prompt_cancel = cancel.clone();
     let session=Client.builder()
@@ -225,11 +226,13 @@ async fn run(
             let kind=update["sessionUpdate"].as_str().unwrap_or("");
             if matches!(kind,"tool_call"|"tool_call_update") {
                 let tool_id_digest=crate::digest(&update["toolCallId"]).map_err(|_|agent_client_protocol::Error::internal_error())?;
-                notification_events.send(Event::ToolProgress(crate::ToolProgress {
+                let progress = crate::ToolProgress {
                     tool_id_digest,
                     status:update["status"].as_str().map(str::to_owned),
                     is_update:kind=="tool_call_update",
-                })).map_err(|_|agent_client_protocol::Error::internal_error())?;
+                };
+                notification_evidence.0.lock().expect("evidence lock").tool_progress.push(progress.clone());
+                notification_events.send(Event::ToolProgress(progress)).map_err(|_|agent_client_protocol::Error::internal_error())?;
             }
             Ok(())
         },agent_client_protocol::on_receive_notification!())

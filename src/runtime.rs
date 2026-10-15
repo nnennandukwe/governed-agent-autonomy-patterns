@@ -277,6 +277,7 @@ pub trait VerifierPort {
 pub struct RuntimePortError {
     message: String,
     not_dispatched: bool,
+    evidence: Vec<EffectEvidenceReference>,
 }
 
 impl RuntimePortError {
@@ -284,6 +285,7 @@ impl RuntimePortError {
         Self {
             message: message.into(),
             not_dispatched: false,
+            evidence: Vec::new(),
         }
     }
 
@@ -292,7 +294,14 @@ impl RuntimePortError {
         Self {
             message: message.into(),
             not_dispatched: true,
+            evidence: Vec::new(),
         }
+    }
+
+    /// Host-owned evidence retained when an attempted effect loses its response.
+    pub fn with_evidence(mut self, evidence: Vec<EffectEvidenceReference>) -> Self {
+        self.evidence = evidence;
+        self
     }
 
     pub fn was_not_dispatched(&self) -> bool {
@@ -965,12 +974,16 @@ where
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: Some(format!("executor.failed: {}", error.message())),
-            evidence: vec![
-                runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
-                runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
-                runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
-                runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
-            ],
+            evidence: [
+                vec![
+                    runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
+                    runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
+                    runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
+                    runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
+                ],
+                error.evidence,
+            ]
+            .concat(),
         };
         seal_protected_effect_result(
             &ledger.request,

@@ -394,13 +394,8 @@ impl AcpAdapter {
                     if self.cancellation_handle().0.is_cancelled() {
                         return Err(error("acp.cancelled"));
                     }
-                    if let Event::ToolProgress(progress) = event {
-                        self.evidence
-                            .0
-                            .lock()
-                            .expect("evidence lock")
-                            .tool_progress
-                            .push(progress);
+                    if let Event::ToolProgress(_progress) = event {
+                        // Retained by the SDK callback even while a host effect waits.
                         continue;
                     }
                     return Ok(event);
@@ -453,7 +448,8 @@ impl AcpAdapter {
             .parent()
             .ok_or_else(|| error("acp.path_outside_workspace"))?;
         if parent.canonicalize().ok().as_ref() != Some(&parent.to_path_buf())
-            || (path.exists() && path.canonicalize().ok().as_ref() != Some(path))
+            || (std::fs::symlink_metadata(path).is_ok()
+                && path.canonicalize().ok().as_ref() != Some(path))
         {
             return Err(error("acp.noncanonical_effect_path"));
         }
@@ -737,11 +733,10 @@ impl ExecutorPort for AcpExecutor {
         match result {
             HostCompletion::Attempted(Ok(mut effect)) => {
                 let identity = self.evidence.snapshot();
-                effect.observation.evidence.push(EffectEvidenceReference {
-                    evidence_type:EffectEvidenceType::CapabilitySchema,
-                    digest:digest(&json!({"sdk":identity.sdk_version,"protocol":identity.protocol_version,"session":identity.session_digest,
-                        "run":identity.run_request_digest,"capability":identity.capability_digest,"tool_progress":identity.tool_progress,"dispatch_claims":identity.dispatch_claims}))?,locator:None,
-                });
+                effect
+                    .observation
+                    .evidence
+                    .push(session_effect_evidence(&identity)?);
                 let successful =
                     effect.observation.execution_status == EffectExecutionStatus::Executed;
                 if matches!(pending.operation, FileOperation::Read { .. })
@@ -762,7 +757,7 @@ impl ExecutorPort for AcpExecutor {
             }
             HostCompletion::Attempted(Err(e)) => {
                 let _ = pending.reply.send(Err("acp.host_effect_unknown".into()));
-                Err(e)
+                Err(e.with_evidence(vec![session_effect_evidence(&self.evidence.snapshot())?]))
             }
             HostCompletion::Declined(code) => {
                 let _ = pending.reply.send(Err(code.clone()));
@@ -770,6 +765,19 @@ impl ExecutorPort for AcpExecutor {
             }
         }
     }
+}
+
+fn session_effect_evidence(
+    identity: &SessionEvidence,
+) -> Result<EffectEvidenceReference, RuntimePortError> {
+    Ok(EffectEvidenceReference {
+        evidence_type: EffectEvidenceType::CapabilitySchema,
+        digest: digest(
+            &json!({"sdk":identity.sdk_version,"protocol":identity.protocol_version,"session":identity.session_digest,
+            "run":identity.run_request_digest,"capability":identity.capability_digest,"tool_progress":identity.tool_progress,"dispatch_claims":identity.dispatch_claims}),
+        )?,
+        locator: None,
+    })
 }
 
 fn non_dispatch(execution_status: EffectExecutionStatus, reason: String) -> ExecutorObservation {
