@@ -101,3 +101,7 @@ effect result provide the actual gate reason and authority outcome; the runner
 checks those fields for Ask and deny. A case label never becomes an authority
 decision. Pending proposals stay owned until dispatch admission succeeds, so
 binding failures and cancellation still get a no-dispatch response during cleanup.
+
+Cancellation can close the peer before a refusal is written. The host still
+retains the refusal with `written: false`. That delivery failure doesn't erase
+the zero-dispatch outcome or imply that Goose received the message.

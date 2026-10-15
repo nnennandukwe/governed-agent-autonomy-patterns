@@ -185,7 +185,7 @@ def run_case(case, goose, binary, output):
             raise AssertionError("The host didn't return its no-dispatch response to the ingress")
     if case == "cancel_before_dispatch":
         response = record["ingress_responses"][0]
-        if response["response"]["structuredContent"]["status"] != "not_dispatched" or not response["written"]:
+        if response["response"]["structuredContent"]["status"] != "not_dispatched" or not isinstance(response.get("written"), bool):
             raise AssertionError("The early refusal lost its pending proposal response")
     if case in ("ask", "block", "report_only", "cancel_before_dispatch"):
         if attempted or (workspace / "shipping.py").read_text() != BAD or (workspace / "terminal.txt").exists() or (workspace / "mcp.txt").exists():

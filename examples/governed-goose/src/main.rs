@@ -140,6 +140,12 @@ fn read_proposal(
     }
 }
 
+fn reply_no_dispatch(stream: &mut UnixStream, effect_id: &str) -> Value {
+    let response = json!({"content":[{"type":"text","text":"The host stopped this proposal before dispatch; no authority was granted."}],"isError":true,"structuredContent":{"status":"not_dispatched","dispatched":false}});
+    let written = writeln!(stream, "{response}").is_ok();
+    json!({"effect_id":effect_id,"response":response,"written":written})
+}
+
 struct Pending {
     stream: UnixStream,
     request: ProtectedEffectRequest,
@@ -189,9 +195,8 @@ impl AgentAdapter for AgentPort {
     fn close(&mut self) {
         let mut ports = self.shared.lock().expect("ports");
         if let Some(mut pending) = ports.pending.take() {
-            let response = json!({"content":[{"type":"text","text":"The host stopped this proposal before dispatch; no authority was granted."}],"isError":true,"structuredContent":{"status":"not_dispatched","dispatched":false}});
-            let written = writeln!(pending.stream, "{response}").is_ok();
-            ports.ingress_responses.push(json!({"effect_id":pending.request.effect_id,"response":response,"written":written}));
+            let response = reply_no_dispatch(&mut pending.stream, &pending.request.effect_id);
+            ports.ingress_responses.push(response);
         }
         ports.conversation.close();
     }
@@ -633,6 +638,21 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_closed_peer_cant_erase_the_hosts_refusal_record() {
+        let (mut host, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        let retained = reply_no_dispatch(&mut host, "effect-1");
+        assert_eq!(retained["written"], false);
+        assert_eq!(
+            retained["response"]["structuredContent"]["status"],
+            "not_dispatched"
+        );
+        assert_eq!(
+            retained["response"]["structuredContent"]["dispatched"],
+            false
+        );
+    }
     #[test]
     fn partial_proposal_cant_extend_the_total_read_deadline() {
         let (mut reader, mut writer) = UnixStream::pair().unwrap();
