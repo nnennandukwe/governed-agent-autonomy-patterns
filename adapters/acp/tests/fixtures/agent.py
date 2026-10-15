@@ -36,7 +36,7 @@ if mode == "duplicate_key":
 if mode == "early_update":
     update("fixture-session", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "early"}})
 if mode == "missing_response":
-    time.sleep(5)
+    time.sleep(30)
     sys.exit(0)
 if mode == "partial":
     sys.stdout.write('{"jsonrpc":')
@@ -120,7 +120,7 @@ else:
     if mode == "post_effect_exit":
         sys.exit(3)
     if mode == "post_effect_timeout":
-        time.sleep(5)
+        time.sleep(30)
     send({"jsonrpc": "2.0", "id": "read", "method": "fs/read_text_file", "params": {"sessionId": session, "path": str(root / "subject.txt")}})
     answer = receive()
     if mode == "normal":

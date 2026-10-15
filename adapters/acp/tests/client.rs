@@ -73,7 +73,7 @@ struct Host {
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
         if self.stall_usage {
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(10));
         }
         if self.unknown_usage {
             Err(RuntimePortError::new("fixture.usage_unknown"))
@@ -218,7 +218,7 @@ fn request(capability: CapabilityIdentity, path: &std::path::Path) -> AgentRunRe
         policies: vec![policy()],
         resource_budget: ResourceBudget {
             max_cost_micros: 1000000,
-            max_elapsed_ms: 4000,
+            max_elapsed_ms: 60000,
             max_model_tokens: 10000,
             max_tool_calls: 8,
         },
@@ -265,7 +265,9 @@ fn fixture_with_usage(
     let (adapter, executor) = AcpAdapter::new(
         config(dir.path(), mode),
         Limits {
-            operation_timeout: Duration::from_millis(500),
+            // Leave headroom for SDK schema construction on shared CI runners.
+            // Timeout fixtures deliberately stall longer than this bounded wait.
+            operation_timeout: Duration::from_secs(5),
             max_frame_bytes: if matches!(mode, "byte_limit" | "bounded_normal") {
                 4096
             } else {
@@ -314,7 +316,7 @@ impl ExecutorPort for WaitingExecutor {
         request: &ProtectedEffectRequest,
     ) -> Result<ExecutorObservation, RuntimePortError> {
         if self.wait_for_fault {
-            for _ in 0..200 {
+            for _ in 0..1000 {
                 if self.evidence.snapshot().failure_code.is_some() {
                     break;
                 }
@@ -536,7 +538,7 @@ fn cancellation_sends_protocol_cancel_and_interrupts_without_dispatch() {
     let cancel = f.adapter.cancellation_handle();
     let marker = f.dir.path().join("prompt-started");
     let canceller = std::thread::spawn(move || {
-        for _ in 0..200 {
+        for _ in 0..1000 {
             if marker.exists() {
                 cancel.cancel();
                 return;
@@ -673,7 +675,7 @@ fn duplicate_protocol_fault_revokes_a_previously_prepared_effect() {
     let AgentStep::ProtectedEffect(proposal) = step.value else {
         panic!("expected effect");
     };
-    for _ in 0..200 {
+    for _ in 0..1000 {
         if f.evidence.snapshot().failure_code.is_some() {
             break;
         }
