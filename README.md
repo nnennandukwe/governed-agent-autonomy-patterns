@@ -222,3 +222,7 @@ The initial profile pins MCP `2025-11-25` and rmcp `3.5.1`. The local stdio exec
 Live Goose interoperability, authenticated receipts, durable reconciliation, and ThreadLoop ingestion retain their own
 roadmap issues. The [reuse mapping](docs/adr/0006-mcp-client-adapter.md) records which conference-demo patterns carry
 forward and which capabilities remain separate work.
+
+The [governed Goose reference](examples/governed-goose/README.md) drives a real,
+pinned Goose conversation through both official adapters with local deterministic
+provider fixtures, per-effect gates and independent shipping-code verification.

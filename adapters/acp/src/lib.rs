@@ -1,6 +1,7 @@
 //! One stable-v1 ACP session proposes effects; GAAP retains execution authority.
 #![forbid(unsafe_code)]
 
+pub mod goose;
 mod wire;
 mod worker;
 
@@ -152,6 +153,8 @@ pub struct SessionEvidence {
     pub dispatch_claims: Vec<String>,
     pub effect_checkpoints: Vec<EffectCheckpoint>,
     pub reconciliation: Vec<ReconciliationRecord>,
+    /// Pinned Goose vendor inventory; absent in the delegated filesystem profile.
+    pub extension_inventory_digest: Option<String>,
 }
 
 /// Read-only access to retained session evidence after shutdown.
@@ -313,15 +316,7 @@ impl AcpAdapter {
         host: impl AcpHost,
     ) -> Result<(Self, AcpExecutor), RuntimePortError> {
         worker::validate_launch(&config)?;
-        if limits.operation_timeout.is_zero()
-            || limits.operation_timeout > Duration::from_secs(60)
-            || !(1024..=4 * 1024 * 1024).contains(&limits.max_frame_bytes)
-            || !(8..=4096).contains(&limits.max_messages)
-            || !(limits.max_frame_bytes..=64 * 1024 * 1024).contains(&limits.max_total_bytes)
-            || limits.max_stderr_bytes > 1024 * 1024
-        {
-            return Err(error("acp.invalid_limits"));
-        }
+        validate_limits(limits)?;
         let capability = config.capability()?;
         let shared = Arc::new(Mutex::new(Shared {
             pending: None,
@@ -596,6 +591,7 @@ impl AgentAdapter for AcpAdapter {
             request.clone(),
             self.evidence.clone(),
             self.cancellation_handle().0,
+            None,
         );
         self.events = Some(events);
         self.stopped = Some(stopped);
@@ -1044,6 +1040,19 @@ pub(crate) fn error(code: &str) -> RuntimePortError {
 pub(crate) fn digest(value: &impl Serialize) -> Result<String, RuntimePortError> {
     let bytes = serde_jcs::to_vec(value).map_err(|_| error("acp.invalid_identity"))?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_limits(limits: Limits) -> Result<(), RuntimePortError> {
+    if limits.operation_timeout.is_zero()
+        || limits.operation_timeout > Duration::from_secs(60)
+        || !(1024..=4 * 1024 * 1024).contains(&limits.max_frame_bytes)
+        || !(8..=4096).contains(&limits.max_messages)
+        || !(limits.max_frame_bytes..=64 * 1024 * 1024).contains(&limits.max_total_bytes)
+        || limits.max_stderr_bytes > 1024 * 1024
+    {
+        return Err(error("acp.invalid_limits"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

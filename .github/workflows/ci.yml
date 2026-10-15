@@ -199,6 +199,27 @@ jobs:
       - name: Audit adapter dependency lockfile
         run: cargo audit --file adapters/acp/Cargo.lock
 
+  goose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check reference formatting and warnings
+        run: |
+          python3 -m unittest discover -s examples/governed-goose -p 'test_*.py'
+          cargo test --manifest-path examples/governed-goose/Cargo.toml --locked
+          cargo fmt --manifest-path examples/governed-goose/Cargo.toml --check
+          cargo clippy --manifest-path examples/governed-goose/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Install pinned Goose locally
+        run: python3 examples/governed-goose/install_goose.py /tmp/gaap-goose-1.54.0
+
+      - name: Prove whole-conversation admission and independent verification
+        run: |
+          python3 examples/governed-goose/run.py --goose /tmp/gaap-goose-1.54.0/goose --output /tmp/gaap-goose-evidence
+
   final:
     if: always()
     needs:
@@ -209,6 +230,7 @@ jobs:
       - runtime
       - mcp
       - acp
+      - goose
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -224,12 +246,14 @@ jobs:
           RUNTIME_RESULT: ${{ needs.runtime.result }}
           MCP_RESULT: ${{ needs.mcp.result }}
           ACP_RESULT: ${{ needs.acp.result }}
+          GOOSE_RESULT: ${{ needs.goose.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
           [[ "$BASELINE_RESULT" == "success" ]]
           [[ "$MCP_RESULT" == "success" ]]
           [[ "$ACP_RESULT" == "success" ]]
+          [[ "$GOOSE_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else

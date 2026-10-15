@@ -34,6 +34,8 @@ struct ProtocolState {
     messages: usize,
     total_bytes: usize,
     output_seen: bool,
+    goose_inventory: bool,
+    inventory_seen: bool,
 }
 
 type State = Arc<Mutex<ProtocolState>>;
@@ -43,11 +45,15 @@ pub(crate) fn transport(
     stdout: ChildStdout,
     limits: Limits,
     evidence: EvidenceHandle,
+    goose_inventory: bool,
 ) -> (
     impl Sink<String, Error = io::Error> + Send,
     impl Stream<Item = io::Result<String>> + Send,
 ) {
-    let state = Arc::new(Mutex::new(ProtocolState::default()));
+    let state = Arc::new(Mutex::new(ProtocolState {
+        goose_inventory,
+        ..ProtocolState::default()
+    }));
     let out_state = state.clone();
     let out_evidence = evidence.clone();
     let outgoing = futures::sink::unfold(stdin, move |mut stdin, line: String| {
@@ -211,7 +217,19 @@ fn validate_message(
             return Err(fail("acp.invalid_params"));
         }
         if incoming {
-            if state.phase != Phase::Prompt
+            let passive = state.goose_inventory
+                && method == "session/update"
+                && matches!(
+                    value["params"]["update"]["sessionUpdate"].as_str(),
+                    Some(
+                        "session_info_update"
+                            | "usage_update"
+                            | "available_commands_update"
+                            | "config_option_update"
+                            | "current_mode_update"
+                    )
+                );
+            if (state.phase != Phase::Prompt && !(passive && state.phase == Phase::Ready))
                 || value["params"]["sessionId"].as_str() != state.session.as_deref()
             {
                 return Err(fail("acp.session_order"));
@@ -249,17 +267,33 @@ fn validate_message(
                 if method != "session/update" {
                     return Err(fail("acp.unsupported_notification"));
                 }
-                update(&value["params"]["update"], &mut state)?;
+                if !passive {
+                    update(&value["params"]["update"], &mut state)?;
+                }
             }
         } else if let Some(id) = id {
             let expected = match method {
                 "initialize" => Phase::New,
                 "session/new" => Phase::Initialized,
                 "session/prompt" => Phase::Ready,
+                crate::goose::INVENTORY_METHOD
+                    if state.goose_inventory && !state.inventory_seen =>
+                {
+                    Phase::Ready
+                }
                 _ => return Err(fail("acp.unsupported_request")),
             };
             if state.phase != expected || !state.outgoing.is_empty() {
                 return Err(fail("acp.request_order"));
+            }
+            if method == crate::goose::INVENTORY_METHOD {
+                if value["params"]["sessionId"].as_str() != state.session.as_deref() {
+                    return Err(fail("acp.session_order"));
+                }
+                state.inventory_seen = true;
+            }
+            if method == "session/prompt" && state.goose_inventory && !state.inventory_seen {
+                return Err(fail("acp.inventory_required"));
             }
             if method == "session/prompt" {
                 state.phase = Phase::Prompt;
@@ -311,6 +345,7 @@ fn validate_message(
                     evidence.0.lock().expect("evidence lock").session_digest =
                         Some(digest(&value["result"]).map_err(|_| fail("acp.invalid_session"))?);
                 }
+                crate::goose::INVENTORY_METHOD => (),
                 "session/prompt" => {
                     if !state.incoming.is_empty()
                         || state
@@ -510,6 +545,13 @@ fn validate_response(method: &str, result: &Value) -> io::Result<()> {
     static INITIALIZE: OnceLock<jsonschema::Validator> = OnceLock::new();
     static SESSION: OnceLock<jsonschema::Validator> = OnceLock::new();
     static PROMPT: OnceLock<jsonschema::Validator> = OnceLock::new();
+    if method == crate::goose::INVENTORY_METHOD {
+        return if result["extensions"].is_array() {
+            Ok(())
+        } else {
+            Err(fail("acp.malformed_inventory"))
+        };
+    }
     let validator = match method {
         "initialize" => INITIALIZE.get_or_init(schema::<InitializeResponse>),
         "session/new" => SESSION.get_or_init(schema::<NewSessionResponse>),

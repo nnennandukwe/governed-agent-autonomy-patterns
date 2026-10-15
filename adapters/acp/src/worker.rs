@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -28,6 +29,9 @@ pub(crate) fn directory_identity(path: &Path) -> Result<String, RuntimePortError
         Err(error("acp.platform_unsupported"))
     }
 }
+
+/// Includes pinned Goose binaries while retaining a finite streaming read bound.
+const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(crate) fn validate_launch(config: &AgentConfig) -> Result<(), RuntimePortError> {
     if config.expected_name.is_empty()
@@ -84,19 +88,32 @@ pub(crate) fn validate_launch(config: &AgentConfig) -> Result<(), RuntimePortErr
         }
         let metadata =
             std::fs::metadata(&artifact.path).map_err(|_| error("acp.artifact_missing"))?;
-        if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
+        if !metadata.is_file() || metadata.len() > MAX_ARTIFACT_BYTES {
             return Err(error("acp.artifact_limit"));
         }
-        let bytes = std::fs::read(&artifact.path).map_err(|_| error("acp.artifact_unreadable"))?;
-        if artifact.digest != format!("sha256:{:x}", Sha256::digest(&bytes)) {
+        let file =
+            std::fs::File::open(&artifact.path).map_err(|_| error("acp.artifact_unreadable"))?;
+        let mut bounded = file.take(MAX_ARTIFACT_BYTES + 1);
+        let mut hash = Sha256::new();
+        let copied =
+            std::io::copy(&mut bounded, &mut hash).map_err(|_| error("acp.artifact_unreadable"))?;
+        if copied > MAX_ARTIFACT_BYTES {
+            return Err(error("acp.artifact_limit"));
+        }
+        if artifact.digest != format!("sha256:{:x}", hash.finalize()) {
             return Err(error("acp.artifact_changed"));
         }
     }
     if !config.artifacts.iter().any(|a| a.path == config.executable) {
         return Err(error("acp.executable_unapproved"));
     }
-    let file = std::fs::read(&config.executable).map_err(|_| error("acp.executable_unreadable"))?;
-    if file.starts_with(b"#!") {
+    let mut executable =
+        std::fs::File::open(&config.executable).map_err(|_| error("acp.executable_unreadable"))?;
+    let mut prefix = [0u8; 2];
+    let count = executable
+        .read(&mut prefix)
+        .map_err(|_| error("acp.executable_unreadable"))?;
+    if count == 2 && prefix == *b"#!" {
         return Err(error("acp.shebang_unsupported"));
     }
     let name = config
@@ -144,6 +161,7 @@ pub(crate) fn start(
     request: AgentRunRequest,
     evidence: EvidenceHandle,
     cancel: CancellationToken,
+    goose: Option<crate::goose::GooseProfile>,
 ) -> (
     mpsc::Receiver<Event>,
     oneshot::Sender<()>,
@@ -166,6 +184,7 @@ pub(crate) fn start(
                 cancel,
                 events.clone(),
                 start_receiver,
+                goose,
             )),
             Err(_) => Err("acp.runtime_unavailable"),
         };
@@ -188,14 +207,20 @@ async fn run(
     cancel: CancellationToken,
     events: mpsc::Sender<Event>,
     start: oneshot::Receiver<()>,
+    goose: Option<crate::goose::GooseProfile>,
 ) -> Result<(), &'static str> {
     validate_launch(&config).map_err(|_| "acp.launch_changed")?;
-    if config
-        .capability()
-        .map_err(|_| "acp.launch_changed")?
-        .digest
-        != evidence.snapshot().capability_digest
-    {
+    if let Some(profile) = &goose {
+        profile
+            .validate()
+            .map_err(|_| "acp.goose_profile_changed")?;
+    }
+    let capability = match &goose {
+        Some(profile) => profile.capability(&config),
+        None => config.capability(),
+    }
+    .map_err(|_| "acp.launch_changed")?;
+    if capability.digest != evidence.snapshot().capability_digest {
         return Err("acp.launch_changed");
     }
     let mut child = tokio::process::Command::new(&config.executable)
@@ -229,7 +254,8 @@ async fn run(
             }
         }
     };
-    let (outgoing, incoming) = crate::wire::transport(stdin, stdout, limits, evidence.clone());
+    let (outgoing, incoming) =
+        crate::wire::transport(stdin, stdout, limits, evidence.clone(), goose.is_some());
     let read_events = events.clone();
     let write_events = events.clone();
     let permission_events = events.clone();
@@ -239,6 +265,9 @@ async fn run(
     let notification_evidence = evidence.clone();
     let run_budget = request.resource_budget.max_elapsed_ms;
     let prompt_cancel = cancel.clone();
+    let delegated_filesystem = goose.is_none();
+    let read_evidence = evidence.clone();
+    let write_evidence = evidence.clone();
     let session=Client.builder()
         .on_receive_notification(async move |notification:SessionNotification,_cx| {
             let update=serde_json::to_value(notification.update).map_err(|_|agent_client_protocol::Error::internal_error())?;
@@ -256,6 +285,10 @@ async fn run(
             Ok(())
         },agent_client_protocol::on_receive_notification!())
         .on_receive_request(async move |request:ReadTextFileRequest,responder,_cx| {
+            if !delegated_filesystem {
+                read_evidence.record_failure("acp.undeclared_filesystem");
+                return responder.respond_with_error(agent_client_protocol::Error::invalid_request());
+            }
             let (reply,result)=oneshot::channel();
             read_events.send(Event::Effect(FileOperation::Read { path:request.path,line:request.line,limit:request.limit },reply))
                 .map_err(|_|agent_client_protocol::Error::internal_error())?;
@@ -265,6 +298,10 @@ async fn run(
             }
         },agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |request:WriteTextFileRequest,responder,_cx| {
+            if !delegated_filesystem {
+                write_evidence.record_failure("acp.undeclared_filesystem");
+                return responder.respond_with_error(agent_client_protocol::Error::invalid_request());
+            }
             let (reply,result)=oneshot::channel();
             write_events.send(Event::Effect(FileOperation::Write { path:request.path,content:request.content },reply))
                 .map_err(|_|agent_client_protocol::Error::internal_error())?;
@@ -280,15 +317,28 @@ async fn run(
             result
         },agent_client_protocol::on_receive_request!())
         .connect_with(Lines::new(outgoing,incoming),async move |connection:ConnectionTo<Agent>| {
+            let capabilities = if delegated_filesystem { ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true)) } else { ClientCapabilities::new() };
             let init=connection.send_request(InitializeRequest::new(ProtocolVersion::V1)
-                .client_capabilities(ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true))))
+                .client_capabilities(capabilities))
                 .block_task().await?;
             let identity=init.agent_info.ok_or_else(agent_client_protocol::Error::invalid_request)?;
             if identity.name!=config.expected_name || identity.version!=config.expected_version {
                 setup_evidence.record_failure("acp.agent_identity_mismatch");
                 return Err(agent_client_protocol::Error::invalid_request());
             }
-            let session=connection.send_request(NewSessionRequest::new(config.working_directory)).block_task().await?;
+            let mut new_session = NewSessionRequest::new(config.working_directory);
+            if let Some(profile) = &goose {
+                new_session = new_session.meta(serde_json::Map::from_iter([( "enabledExtensions".into(), serde_json::json!([profile.extension()]))]));
+            }
+            let session=connection.send_request(new_session).block_task().await?;
+            if let Some(profile) = &goose {
+                let inventory = connection.send_request(agent_client_protocol::UntypedMessage::new(crate::goose::INVENTORY_METHOD, serde_json::json!({"sessionId":session.session_id}))?).block_task().await?;
+                if inventory != profile.expected_inventory() {
+                    setup_evidence.record_failure("acp.goose_inventory_mismatch");
+                    return Err(agent_client_protocol::Error::invalid_request());
+                }
+                setup_evidence.0.lock().expect("evidence lock").extension_inventory_digest = Some(crate::digest(&inventory).map_err(|_|agent_client_protocol::Error::internal_error())?);
+            }
             events.send(Event::Ready).map_err(|_|agent_client_protocol::Error::internal_error())?;
             start.await.map_err(|_|agent_client_protocol::Error::internal_error())?;
             let prompt=format!("{}\n\nConstraints:\n{}",request.task.instructions,request.task.constraints.join("\n"));
