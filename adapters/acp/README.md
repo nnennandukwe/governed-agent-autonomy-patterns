@@ -55,10 +55,13 @@ hash. Effect metadata binds protocol, SDK and session identity; effect evidence 
 
 The SDK handles typed requests and callbacks. A strict wire guard additionally validates SDK-generated JSON schemas,
 rejects duplicate keys/IDs, unsupported or mismatched messages, foreign sessions and invalid tool-update order. Default
-limits are 1 MiB per frame, 1,024 total incoming/outgoing messages, 64 KiB total stderr and ten seconds per wait, bounded
+limits are 1 MiB per frame, 1,024 total incoming/outgoing messages, 16 MiB total wire bytes, 256-byte request/tool IDs, 64 KiB total stderr and ten seconds per wait, bounded
 by the accepted run deadline. Numeric values stay within the exact canonical integer range. Traces retain only direction,
 method and frame hash; they don't retain raw prompts, file content, file paths or stderr. Don't enable raw SDK tracing
 around secret-bearing input.
+
+A missing read payload ends the session while preserving the host's known execution observation. A queued effect loses
+authority as soon as the wire guard records a protocol failure.
 
 A session can't complete solely from an agent's `end_turn` or tool-success report: this delegated-effect profile requires
 at least one host-executed effect, and the engine independently verifies the resulting subject. Approval of an earlier
@@ -68,7 +71,7 @@ subject isn't copied onto later filesystem states. A later mutation without matc
 | --- | --- |
 | Permission or engine gate refuses | No host dispatch; inspect the reason and start a newly authorized run. There isn't durable resumption. |
 | Cancellation | Interrupted when observed by the agent port; a dispatched host effect retains the executor's actual observation. No replay. |
-| Timeout, agent exit, partial frame or transport failure | Separate `acp.*` diagnostics; the run can't complete. Earlier confirmed effects and subject changes remain in receipts. |
+| Timeout, agent exit, partial frame/output or transport failure | Separate `acp.*` diagnostics; the run can't complete. Earlier confirmed effects and subject changes remain in receipts. |
 | Host execution times out | Unknown attempted effect, quarantined host port, late results ignored. Reconcile the physical state before retrying. |
 | Host usage is unavailable | Failed run with the last known usage lower bound; it isn't a settled total. |
 | Version/capability/session/input drift | Fail closed; use a new compatible, host-approved session. |

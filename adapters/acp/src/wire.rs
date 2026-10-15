@@ -13,15 +13,27 @@ use tokio::process::{ChildStdin, ChildStdout};
 
 use crate::{EvidenceHandle, Limits, TraceEntry, digest};
 
+#[derive(Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    New,
+    Initialized,
+    Ready,
+    Prompt,
+    Terminal,
+}
+
 #[derive(Default)]
 struct ProtocolState {
-    phase: u8,
+    phase: Phase,
     session: Option<String>,
     outgoing: BTreeMap<String, String>,
     incoming: BTreeSet<String>,
     answered: BTreeSet<String>,
     tools: BTreeMap<String, String>,
     messages: usize,
+    total_bytes: usize,
+    output_seen: bool,
 }
 
 type State = Arc<Mutex<ProtocolState>>;
@@ -64,6 +76,17 @@ pub(crate) fn transport(
                         validate(&line, true, &state, limits, &evidence)?;
                         Ok(line)
                     });
+                let result = result.map_err(|problem| {
+                    let protocol = state.lock().expect("wire lock");
+                    if problem.to_string() == "acp.agent_exit"
+                        && protocol.phase == Phase::Prompt
+                        && protocol.output_seen
+                    {
+                        fail("acp.partial_output")
+                    } else {
+                        problem
+                    }
+                });
                 if let Err(ref problem) = result {
                     let code = problem.to_string();
                     evidence.0.lock().expect("evidence lock").failure_code =
@@ -158,13 +181,21 @@ fn validate_message(
     }
     let mut state = state.lock().expect("wire lock");
     state.messages += 1;
+    state.total_bytes = state.total_bytes.saturating_add(line.len());
+    if state.total_bytes > limits.max_total_bytes {
+        return Err(fail("acp.total_bytes_limit"));
+    }
     if state.messages > limits.max_messages {
         return Err(fail("acp.message_limit"));
     }
     let id = object
         .get("id")
         .map(|id| {
-            if !(id.is_string() || id.as_u64().is_some()) {
+            if !(id
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+                || id.as_u64().is_some())
+            {
                 return Err(fail("acp.invalid_id"));
             }
             Ok(id.to_string())
@@ -179,7 +210,8 @@ fn validate_message(
             return Err(fail("acp.invalid_params"));
         }
         if incoming {
-            if state.phase != 3 || value["params"]["sessionId"].as_str() != state.session.as_deref()
+            if state.phase != Phase::Prompt
+                || value["params"]["sessionId"].as_str() != state.session.as_deref()
             {
                 return Err(fail("acp.session_order"));
             }
@@ -220,16 +252,16 @@ fn validate_message(
             }
         } else if let Some(id) = id {
             let expected = match method {
-                "initialize" => 0,
-                "session/new" => 1,
-                "session/prompt" => 2,
+                "initialize" => Phase::New,
+                "session/new" => Phase::Initialized,
+                "session/prompt" => Phase::Ready,
                 _ => return Err(fail("acp.unsupported_request")),
             };
             if state.phase != expected || !state.outgoing.is_empty() {
                 return Err(fail("acp.request_order"));
             }
             if method == "session/prompt" {
-                state.phase = 3;
+                state.phase = Phase::Prompt;
             }
             state.outgoing.insert(id, method.into());
         } else if method != "session/cancel" {
@@ -262,7 +294,7 @@ fn validate_message(
                     }
                     evidence.0.lock().expect("evidence lock").negotiation_digest =
                         Some(digest(&value["result"]).map_err(|_| fail("acp.invalid_identity"))?);
-                    state.phase = 1;
+                    state.phase = Phase::Initialized;
                 }
                 "session/new" => {
                     let session = value["result"]["sessionId"]
@@ -270,7 +302,7 @@ fn validate_message(
                         .filter(|v| !v.is_empty() && v.len() <= 256)
                         .ok_or_else(|| fail("acp.invalid_session"))?;
                     state.session = Some(session.into());
-                    state.phase = 2;
+                    state.phase = Phase::Ready;
                     evidence.0.lock().expect("evidence lock").session_digest =
                         Some(digest(&value["result"]).map_err(|_| fail("acp.invalid_session"))?);
                 }
@@ -286,7 +318,7 @@ fn validate_message(
                     if value["result"]["stopReason"].as_str().is_none() {
                         return Err(fail("acp.missing_stop_reason"));
                     }
-                    state.phase = 4;
+                    state.phase = Phase::Terminal;
                 }
                 _ => return Err(fail("acp.unexpected_response")),
             }
@@ -322,6 +354,7 @@ fn update(update: &Value, state: &mut ProtocolState) -> io::Result<()> {
         .ok_or_else(|| fail("acp.invalid_update"))?;
     match kind {
         "agent_message_chunk" | "agent_thought_chunk" => {
+            state.output_seen = true;
             if update["content"]["type"] != "text" || !update["content"]["text"].is_string() {
                 return Err(fail("acp.invalid_content"));
             }
@@ -329,7 +362,7 @@ fn update(update: &Value, state: &mut ProtocolState) -> io::Result<()> {
         "tool_call" => {
             let id = update["toolCallId"]
                 .as_str()
-                .filter(|id| !id.is_empty())
+                .filter(|id| !id.is_empty() && id.len() <= 256)
                 .ok_or_else(|| fail("acp.invalid_tool_id"))?;
             let status = update
                 .get("status")

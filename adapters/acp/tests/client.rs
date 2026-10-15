@@ -19,8 +19,8 @@ fn fixed(byte: u8) -> String {
 }
 fn subject(path: &std::path::Path) -> Subject {
     Subject {
-        kind: SubjectKind::Repository,
-        locator: "fixture://workspace".into(),
+        kind: SubjectKind::Artifact,
+        locator: "fixture://workspace/subject.txt".into(),
         digest: hash(&std::fs::read(path).unwrap()),
     }
 }
@@ -67,9 +67,14 @@ struct Host {
     calls: Arc<AtomicUsize>,
     confirm: bool,
     unknown_usage: bool,
+    omit_read: bool,
+    stall_usage: bool,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
+        if self.stall_usage {
+            std::thread::sleep(Duration::from_secs(1));
+        }
         if self.unknown_usage {
             Err(RuntimePortError::new("fixture.usage_unknown"))
         } else {
@@ -94,7 +99,7 @@ impl AcpHost for Host {
             }
         };
         Ok(HostEffect {
-            read_text: text,
+            read_text: if self.omit_read { None } else { text },
             observation: ExecutorObservation {
                 execution_status: if self.confirm {
                     EffectExecutionStatus::Executed
@@ -260,6 +265,16 @@ fn fixture_with_usage(
         config(dir.path(), mode),
         Limits {
             operation_timeout: Duration::from_millis(500),
+            max_frame_bytes: if matches!(mode, "byte_limit" | "bounded_normal") {
+                4096
+            } else {
+                1024 * 1024
+            },
+            max_total_bytes: if matches!(mode, "byte_limit" | "bounded_normal") {
+                8192
+            } else {
+                16 * 1024 * 1024
+            },
             ..Limits::default()
         },
         ContractSupport::new([policy()]),
@@ -270,6 +285,8 @@ fn fixture_with_usage(
             calls: calls.clone(),
             confirm,
             unknown_usage,
+            omit_read: mode == "missing_read",
+            stall_usage: mode == "stall_usage",
         },
     )
     .unwrap();
@@ -373,12 +390,15 @@ fn malformed_foreign_duplicate_and_unsupported_messages_cant_complete() {
         ("duplicate_key", "acp.invalid_json"),
         ("early_update", "acp.session_order"),
         ("partial", "acp.partial_frame"),
+        ("partial_output", "acp.partial_output"),
         ("exit", "acp.agent_exit"),
         ("oversized", "acp.frame_limit"),
         ("stderr", "acp.stderr_limit"),
         ("duplicate_response", "acp.unexpected_response"),
         ("wrong_session", "acp.session_order"),
         ("tool_order", "acp.tool_order"),
+        ("large_tool_id", "acp.invalid_tool_id"),
+        ("byte_limit", "acp.total_bytes_limit"),
         ("terminal", "acp.unsupported_effect"),
         ("escape", "acp.path_outside_workspace"),
         ("report_only", "acp.no_host_effect"),
@@ -582,4 +602,133 @@ fn symlink_escape_is_rejected_before_host_execution() {
         AgentRunStatus::Completed
     );
     assert!(std::fs::read(outside.path()).unwrap().is_empty());
+}
+
+#[test]
+fn missing_read_payload_preserves_the_known_host_observation() {
+    let (_, result, count, _) = run(fixture("missing_read", allow(), true), allow(), true);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert_eq!(count, 2);
+    assert_eq!(result.protected_effect_results.len(), 2);
+    let read = &result.protected_effect_results[1].body;
+    assert_eq!(read.execution_status, EffectExecutionStatus::Executed);
+    assert!(read.observed_post_effect_subject.is_some());
+    assert_eq!(read.usage.tool_calls, 1);
+    assert!(
+        result
+            .receipt
+            .body
+            .terminal_reason
+            .contains("acp.read_evidence_missing")
+    );
+}
+
+#[test]
+fn duplicate_protocol_fault_revokes_a_previously_prepared_effect() {
+    let mut f = fixture("duplicate_request", allow(), true);
+    f.adapter.plan(&f.request).unwrap();
+    let step = f
+        .adapter
+        .next_effect(AgentRunContext {
+            current_subject: &f.request.subject,
+            usage: &zero(),
+            effects_seen: 0,
+        })
+        .unwrap();
+    let AgentStep::ProtectedEffect(proposal) = step.value else {
+        panic!("expected effect");
+    };
+    for _ in 0..200 {
+        if f.evidence.snapshot().failure_code.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        f.evidence.snapshot().failure_code.as_deref(),
+        Some("acp.duplicate_request")
+    );
+    assert!(f.executor.execute(&proposal.request).is_err());
+    assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("subject.txt")).unwrap(),
+        "before\n"
+    );
+    f.adapter.close();
+}
+
+#[test]
+fn stricter_executor_policy_records_non_dispatch_instead_of_an_unknown_attempt() {
+    for decision in [PolicyDecision::Deny, PolicyDecision::Ask] {
+        let strict = PermissionPolicy {
+            policy_decision: Some(decision),
+            ..allow()
+        };
+        let (_, result, count, _) = run(fixture("normal", strict, true), allow(), true);
+        assert_eq!(count, 0);
+        assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+        let effect = &result.protected_effect_results[0].body;
+        assert_eq!(
+            effect.execution_status,
+            if decision == PolicyDecision::Ask {
+                EffectExecutionStatus::AwaitingAuthority
+            } else {
+                EffectExecutionStatus::Denied
+            }
+        );
+        assert_eq!(effect.usage.tool_calls, 0);
+        assert!(effect.executor.is_none());
+    }
+}
+
+#[test]
+fn bounded_total_transport_has_a_successful_control() {
+    let (_, result, count, _) = run(fixture("bounded_normal", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Completed
+    );
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn failed_plan_cant_start_a_prompt_through_the_adapter_port() {
+    let mut f = fixture_with_usage("normal", allow(), true, true);
+    assert!(f.adapter.plan(&f.request).is_err());
+    assert!(
+        f.adapter
+            .next_effect(AgentRunContext {
+                current_subject: &f.request.subject,
+                usage: &zero(),
+                effects_seen: 0
+            })
+            .is_err()
+    );
+    assert!(!f.dir.path().join("prompt-started").exists());
+    f.adapter.close();
+}
+
+#[test]
+fn a_stalled_usage_callback_expires_without_starting_the_agent_prompt() {
+    let (dir, result, count, _) = run(fixture("stall_usage", allow(), true), allow(), true);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert!(
+        result
+            .receipt
+            .body
+            .terminal_reason
+            .contains("acp.usage_unknown")
+    );
+    assert!(!dir.path().join("prompt-started").exists());
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn valid_tool_progress_preserves_the_governed_effect_path() {
+    let (_, result, count, _) = run(fixture("tool_progress", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Completed
+    );
+    assert_eq!(count, 2);
 }

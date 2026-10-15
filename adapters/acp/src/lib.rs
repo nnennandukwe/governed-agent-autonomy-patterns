@@ -54,11 +54,13 @@ impl AgentConfig {
     }
 }
 
+/// Hard bounds for one session, including both directions of wire traffic.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub operation_timeout: Duration,
     pub max_frame_bytes: usize,
     pub max_messages: usize,
+    pub max_total_bytes: usize,
     pub max_stderr_bytes: usize,
 }
 
@@ -68,6 +70,7 @@ impl Default for Limits {
             operation_timeout: Duration::from_secs(10),
             max_frame_bytes: 1024 * 1024,
             max_messages: 1024,
+            max_total_bytes: 16 * 1024 * 1024,
             max_stderr_bytes: 64 * 1024,
         }
     }
@@ -127,6 +130,7 @@ pub struct SessionEvidence {
     pub failure_code: Option<String>,
 }
 
+/// Read-only access to retained session evidence after shutdown.
 #[derive(Clone)]
 pub struct EvidenceHandle(Arc<Mutex<SessionEvidence>>);
 impl EvidenceHandle {
@@ -135,6 +139,7 @@ impl EvidenceHandle {
     }
 }
 
+/// Host-owned cancellation for this single session.
 #[derive(Clone)]
 pub struct CancelHandle(CancellationToken);
 impl CancelHandle {
@@ -164,6 +169,16 @@ struct Shared {
     cancellation: CancellationToken,
 }
 
+#[derive(PartialEq, Eq)]
+enum AdapterPhase {
+    New,
+    Starting,
+    Ready,
+    Active,
+    Closed,
+}
+
+/// Single-use agent port; its paired executor releases suspended requests.
 pub struct AcpAdapter {
     config: AgentConfig,
     limits: Limits,
@@ -178,10 +193,11 @@ pub struct AcpAdapter {
     binding: Option<AgentRunRequest>,
     deadline: Option<Instant>,
     evidence: EvidenceHandle,
-    finished: bool,
+    phase: AdapterPhase,
     effects: u64,
 }
 
+/// Exact-input host executor for requests proposed by its matching adapter.
 pub struct AcpExecutor {
     shared: Arc<Mutex<Shared>>,
     host: HostPort,
@@ -205,6 +221,7 @@ impl AcpAdapter {
             || limits.operation_timeout > Duration::from_secs(60)
             || !(1024..=4 * 1024 * 1024).contains(&limits.max_frame_bytes)
             || !(8..=4096).contains(&limits.max_messages)
+            || !(limits.max_frame_bytes..=64 * 1024 * 1024).contains(&limits.max_total_bytes)
             || limits.max_stderr_bytes > 1024 * 1024
         {
             return Err(error("acp.invalid_limits"));
@@ -214,17 +231,18 @@ impl AcpAdapter {
             pending: None,
             cancellation: CancellationToken::new(),
         }));
-        let host = HostPort::new(
-            host,
-            limits.operation_timeout,
-            shared.lock().expect("session lock").cancellation.clone(),
-        );
         let evidence = EvidenceHandle(Arc::new(Mutex::new(SessionEvidence {
             sdk_version: ACP_SDK_VERSION.into(),
             protocol_version: 1,
             capability_digest: capability.digest.clone(),
             ..SessionEvidence::default()
         })));
+        let host = HostPort::new(
+            host,
+            limits.operation_timeout,
+            shared.lock().expect("session lock").cancellation.clone(),
+            evidence.clone(),
+        );
         let executor = AcpExecutor {
             shared: shared.clone(),
             host: host.clone(),
@@ -247,7 +265,7 @@ impl AcpAdapter {
                 binding: None,
                 deadline: None,
                 evidence,
-                finished: false,
+                phase: AdapterPhase::New,
                 effects: 0,
             },
             executor,
@@ -308,6 +326,9 @@ impl AcpAdapter {
         reply: oneshot::Sender<Result<Option<String>, String>>,
         context: AgentRunContext<'_>,
     ) -> Result<AgentStep, RuntimePortError> {
+        if let Some(code) = self.evidence.snapshot().failure_code {
+            return Err(error(&code));
+        }
         let run = self
             .binding
             .as_ref()
@@ -415,6 +436,8 @@ impl AcpAdapter {
 
 impl AgentAdapter for AcpAdapter {
     fn close(&mut self) {
+        self.phase = AdapterPhase::Closed;
+        self.start.take();
         self.cancellation_handle().cancel();
         self.shared.lock().expect("session lock").pending.take();
         if let Some(stopped) = self.stopped.take()
@@ -429,9 +452,10 @@ impl AgentAdapter for AcpAdapter {
         &mut self,
         request: &AgentRunRequest,
     ) -> Result<PortObservation<PlanProposal>, RuntimePortError> {
-        if self.binding.is_some() {
+        if self.phase != AdapterPhase::New {
             return Err(error("acp.run_already_bound"));
         }
+        self.phase = AdapterPhase::Starting;
         let run_digest =
             validate_request(request, &self.support).map_err(|_| error("acp.invalid_run"))?;
         if request.requested_capability != self.capability {
@@ -465,13 +489,15 @@ impl AgentAdapter for AcpAdapter {
             Event::Fault(code) => return Err(error(&code)),
             _ => return Err(error("acp.setup_order")),
         }
+        let usage = self.host.usage()?;
+        self.phase = AdapterPhase::Ready;
         Ok(PortObservation {
             value: PlanProposal {
                 plan_digest: digest(
                     &json!({"run":run_digest,"capability":self.capability,"session":self.evidence.snapshot().session_digest,"negotiation":self.evidence.snapshot().negotiation_digest}),
                 )?,
             },
-            usage: self.host.usage()?,
+            usage,
         })
     }
 
@@ -479,16 +505,22 @@ impl AgentAdapter for AcpAdapter {
         &mut self,
         context: AgentRunContext<'_>,
     ) -> Result<PortObservation<AgentStep>, RuntimePortError> {
-        if self.finished {
+        if self.phase == AdapterPhase::Closed {
             return Err(error("acp.session_finished"));
         }
-        if let Some(start) = self.start.take() {
+        if !matches!(self.phase, AdapterPhase::Ready | AdapterPhase::Active) {
+            return Err(error("acp.plan_not_ready"));
+        }
+        if !self.cancellation_handle().0.is_cancelled()
+            && let Some(start) = self.start.take()
+        {
             let _ = start.send(());
+            self.phase = AdapterPhase::Active;
         }
         let event = match self.event() {
             Ok(event) => event,
             Err(e) if e.message().starts_with("acp.cancelled") => {
-                self.finished = true;
+                self.phase = AdapterPhase::Closed;
                 return Ok(PortObservation {
                     value: AgentStep::Cancel(Cancellation {
                         actor_id: None,
@@ -504,10 +536,13 @@ impl AgentAdapter for AcpAdapter {
             }
             Err(e) => return Err(e),
         };
+        if let Some(code) = self.evidence.snapshot().failure_code {
+            return Err(error(&code));
+        }
         let step = match event {
             Event::Effect(operation, reply) => self.prepare(operation, reply, context)?,
             Event::Finished(reason) => {
-                self.finished = true;
+                self.phase = AdapterPhase::Closed;
                 if reason != "end_turn" {
                     return Err(error(&format!("acp.stop_{reason}")));
                 }
@@ -517,7 +552,7 @@ impl AgentAdapter for AcpAdapter {
                 AgentStep::Finish
             }
             Event::Fault(code) => {
-                self.finished = true;
+                self.phase = AdapterPhase::Closed;
                 return Err(error(&code));
             }
             Event::Ready => return Err(error("acp.duplicate_setup")),
@@ -568,7 +603,29 @@ impl ExecutorPort for AcpExecutor {
         }));
         if permission.outcome != Outcome::Allow {
             let _ = pending.reply.send(Err("acp.permission_denied".into()));
-            return Err(error("acp.permission_denied"));
+            return Ok(ExecutorObservation {
+                execution_status: if permission.outcome == Outcome::Ask {
+                    EffectExecutionStatus::AwaitingAuthority
+                } else {
+                    EffectExecutionStatus::Denied
+                },
+                observed_post_effect_subject: None,
+                exit: None,
+                usage: EffectUsage {
+                    cost_micros: 0,
+                    elapsed_ms: 0,
+                    model_tokens: 0,
+                    tool_calls: 0,
+                },
+                executor: None,
+                sandbox_profile: None,
+                reason: Some(permission.code),
+                evidence: vec![],
+            });
+        }
+        if let Some(code) = self.evidence.snapshot().failure_code {
+            let _ = pending.reply.send(Err(code.clone()));
+            return Err(error(&code));
         }
         let result = self
             .host
@@ -587,8 +644,10 @@ impl ExecutorPort for AcpExecutor {
                     && successful
                     && effect.read_text.is_none()
                 {
+                    self.evidence.0.lock().expect("evidence lock").failure_code =
+                        Some("acp.read_evidence_missing".into());
                     let _ = pending.reply.send(Err("acp.read_evidence_missing".into()));
-                    return Err(error("acp.read_evidence_missing"));
+                    return Ok(effect.observation);
                 }
                 let reply = if successful {
                     Ok(effect.read_text)
@@ -628,7 +687,12 @@ enum HostCommand {
     ),
 }
 impl HostPort {
-    fn new(mut host: impl AcpHost, timeout: Duration, cancellation: CancellationToken) -> Self {
+    fn new(
+        mut host: impl AcpHost,
+        timeout: Duration,
+        cancellation: CancellationToken,
+        evidence: EvidenceHandle,
+    ) -> Self {
         let (sender, receiver) = mpsc::sync_channel(1);
         let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let quarantined = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -652,6 +716,7 @@ impl HostPort {
                     HostCommand::Execute(deadline, operation, request, reply) => {
                         let result = if Instant::now() >= deadline
                             || worker_cancel.is_cancelled()
+                            || evidence.snapshot().failure_code.is_some()
                             || worker_quarantined.load(std::sync::atomic::Ordering::SeqCst)
                         {
                             Err(error("acp.host_expired"))

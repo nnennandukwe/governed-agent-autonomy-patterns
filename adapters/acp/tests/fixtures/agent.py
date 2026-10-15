@@ -10,18 +10,22 @@ root = pathlib.Path.cwd()
 (root / "agent-pid").write_text(str(os.getpid()))
 
 def send(message):
+    """Flush one JSON-RPC message to the client."""
     print(json.dumps(message), flush=True)
 
 def response(request, result):
+    """Reply to the exact request identity."""
     send({"jsonrpc": "2.0", "id": request["id"], "result": result})
 
 def receive():
+    """Read one client message, exiting when the connection closes."""
     line = sys.stdin.readline()
     if not line:
         sys.exit(0)
     return json.loads(line)
 
 def update(session, payload):
+    """Send a session-scoped progress notification."""
     send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session, "update": payload}})
 
 request = receive()
@@ -66,7 +70,15 @@ if mode == "cancel":
             (root / "cancel-received").touch()
             response(prompt, {"stopReason": "cancelled"})
             sys.exit(0)
-if mode == "wrong_session":
+if mode == "partial_output":
+    update(session, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "SECRET_PARTIAL_TEXT"}})
+    sys.exit(0)
+if mode == "large_tool_id":
+    update(session, {"sessionUpdate": "tool_call", "toolCallId": "x" * 257, "title": "long id", "status": "pending"})
+elif mode == "byte_limit":
+    for _ in range(40):
+        update(session, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x" * 512}})
+elif mode == "wrong_session":
     update("other-session", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "wrong"}})
 elif mode == "tool_order":
     update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "unknown", "status": "completed"})
@@ -84,6 +96,9 @@ elif mode == "report_only":
     update(session, {"sessionUpdate": "tool_call", "toolCallId": "claimed", "title": "Claimed write", "status": "in_progress"})
     update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "claimed", "status": "completed"})
 else:
+    if mode == "tool_progress":
+        update(session, {"sessionUpdate": "tool_call", "toolCallId": "governed", "title": "Delegated files", "status": "pending"})
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "governed", "status": "in_progress"})
     path = root / "subject.txt"
     if mode == "symlink":
         path = root / "linked.txt"
@@ -91,6 +106,7 @@ else:
         path = root.parent / "outside.txt"
     send({"jsonrpc": "2.0", "id": "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "after\n"}})
     if mode == "duplicate_request":
+        time.sleep(0.1)
         send({"jsonrpc": "2.0", "id": "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "other\n"}})
     answer = receive()
     if "error" in answer:
@@ -104,6 +120,8 @@ else:
     answer = receive()
     if mode == "normal":
         assert answer["result"]["content"] == "after\n"
+    if mode == "tool_progress":
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "governed", "status": "completed"})
     update(session, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "SECRET_AGENT_TEXT"}})
 response(prompt, {"stopReason": "end_turn"})
 # Keep the process open until the client closes; all children must be reaped.
