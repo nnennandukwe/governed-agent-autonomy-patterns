@@ -575,13 +575,12 @@ impl ExecutorPort for AcpExecutor {
         &mut self,
         request: &ProtectedEffectRequest,
     ) -> Result<ExecutorObservation, RuntimePortError> {
-        let pending = self
-            .shared
-            .lock()
-            .expect("session lock")
-            .pending
-            .take()
-            .ok_or_else(|| error("acp.no_pending_effect"))?;
+        let Some(pending) = self.shared.lock().expect("session lock").pending.take() else {
+            return Ok(non_dispatch(
+                EffectExecutionStatus::Denied,
+                "acp.no_pending_effect".into(),
+            ));
+        };
         if pending.request != *request
             || request.capability != self.capability
             || self
@@ -592,7 +591,10 @@ impl ExecutorPort for AcpExecutor {
                 .is_cancelled()
         {
             let _ = pending.reply.send(Err("acp.binding_mismatch".into()));
-            return Err(error("acp.binding_mismatch"));
+            return Ok(non_dispatch(
+                EffectExecutionStatus::Denied,
+                "acp.binding_mismatch".into(),
+            ));
         }
         // The port repeats its host-owned permission decision; ACP UI never grants authority.
         let permission=RunCoordinator.evaluate(Gate::Permission,&json!({
@@ -603,35 +605,24 @@ impl ExecutorPort for AcpExecutor {
         }));
         if permission.outcome != Outcome::Allow {
             let _ = pending.reply.send(Err("acp.permission_denied".into()));
-            return Ok(ExecutorObservation {
-                execution_status: if permission.outcome == Outcome::Ask {
+            return Ok(non_dispatch(
+                if permission.outcome == Outcome::Ask {
                     EffectExecutionStatus::AwaitingAuthority
                 } else {
                     EffectExecutionStatus::Denied
                 },
-                observed_post_effect_subject: None,
-                exit: None,
-                usage: EffectUsage {
-                    cost_micros: 0,
-                    elapsed_ms: 0,
-                    model_tokens: 0,
-                    tool_calls: 0,
-                },
-                executor: None,
-                sandbox_profile: None,
-                reason: Some(permission.code),
-                evidence: vec![],
-            });
+                permission.code,
+            ));
         }
         if let Some(code) = self.evidence.snapshot().failure_code {
             let _ = pending.reply.send(Err(code.clone()));
-            return Err(error(&code));
+            return Ok(non_dispatch(EffectExecutionStatus::Denied, code));
         }
         let result = self
             .host
             .execute(pending.operation.clone(), request.clone());
         match result {
-            Ok(mut effect) => {
+            HostCompletion::Attempted(Ok(mut effect)) => {
                 let identity = self.evidence.snapshot();
                 effect.observation.evidence.push(EffectEvidenceReference {
                     evidence_type:EffectEvidenceType::CapabilitySchema,
@@ -657,12 +648,38 @@ impl ExecutorPort for AcpExecutor {
                 let _ = pending.reply.send(reply);
                 Ok(effect.observation)
             }
-            Err(e) => {
+            HostCompletion::Attempted(Err(e)) => {
                 let _ = pending.reply.send(Err("acp.host_effect_unknown".into()));
                 Err(e)
             }
+            HostCompletion::Declined(code) => {
+                let _ = pending.reply.send(Err(code.clone()));
+                Ok(non_dispatch(EffectExecutionStatus::Denied, code))
+            }
         }
     }
+}
+
+fn non_dispatch(execution_status: EffectExecutionStatus, reason: String) -> ExecutorObservation {
+    ExecutorObservation {
+        execution_status,
+        observed_post_effect_subject: None,
+        exit: None,
+        usage: EffectUsage {
+            cost_micros: 0,
+            elapsed_ms: 0,
+            model_tokens: 0,
+            tool_calls: 0,
+        },
+        executor: None,
+        sandbox_profile: None,
+        reason: Some(reason),
+        evidence: vec![],
+    }
+}
+enum HostCompletion {
+    Declined(String),
+    Attempted(Result<Box<HostEffect>, RuntimePortError>),
 }
 
 #[derive(Clone)]
@@ -683,7 +700,7 @@ enum HostCommand {
         Instant,
         FileOperation,
         Box<ProtectedEffectRequest>,
-        mpsc::Sender<Result<HostEffect, RuntimePortError>>,
+        mpsc::Sender<HostCompletion>,
     ),
 }
 impl HostPort {
@@ -719,10 +736,13 @@ impl HostPort {
                             || evidence.snapshot().failure_code.is_some()
                             || worker_quarantined.load(std::sync::atomic::Ordering::SeqCst)
                         {
-                            Err(error("acp.host_expired"))
+                            HostCompletion::Declined("acp.host_expired".into())
                         } else {
-                            host.execute(&operation, &request)
-                                .map_err(|_| error("acp.host_effect_unknown"))
+                            HostCompletion::Attempted(
+                                host.execute(&operation, &request)
+                                    .map(Box::new)
+                                    .map_err(|_| error("acp.host_effect_unknown")),
+                            )
                         };
                         worker_busy.store(false, std::sync::atomic::Ordering::SeqCst);
                         let _ = reply.send(result);
@@ -791,22 +811,33 @@ impl HostPort {
             .map_err(|_| error("acp.host_unavailable"))?;
         self.wait(receiver, deadline, "acp.usage_unknown")
     }
-    fn execute(
-        &self,
-        operation: FileOperation,
-        request: ProtectedEffectRequest,
-    ) -> Result<HostEffect, RuntimePortError> {
-        let deadline = self.begin(false)?;
+    fn execute(&self, operation: FileOperation, request: ProtectedEffectRequest) -> HostCompletion {
+        let deadline = match self.begin(false) {
+            Ok(deadline) => deadline,
+            Err(e) => return HostCompletion::Declined(e.message().into()),
+        };
         let (reply, receiver) = mpsc::channel();
-        self.sender
+        if self
+            .sender
             .try_send(HostCommand::Execute(
                 deadline,
                 operation,
                 Box::new(request),
                 reply,
             ))
-            .map_err(|_| error("acp.host_unavailable"))?;
-        self.wait(receiver, deadline, "acp.effect_unknown")
+            .is_err()
+        {
+            return HostCompletion::Declined("acp.host_unavailable".into());
+        }
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(result) => result,
+            Err(_) => {
+                self.quarantined
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.cancellation.cancel();
+                HostCompletion::Attempted(Err(error("acp.effect_unknown")))
+            }
+        }
     }
 }
 

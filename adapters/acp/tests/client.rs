@@ -247,6 +247,7 @@ struct Fixture {
     request: AgentRunRequest,
     calls: Arc<AtomicUsize>,
     evidence: EvidenceHandle,
+    wait_for_fault: bool,
 }
 fn fixture(mode: &str, permission: PermissionPolicy, confirm: bool) -> Fixture {
     fixture_with_usage(mode, permission, confirm, false)
@@ -299,8 +300,32 @@ fn fixture_with_usage(
         request,
         calls,
         evidence,
+        wait_for_fault: mode == "duplicate_request",
     }
 }
+struct WaitingExecutor {
+    inner: AcpExecutor,
+    evidence: EvidenceHandle,
+    wait_for_fault: bool,
+}
+impl ExecutorPort for WaitingExecutor {
+    fn execute(
+        &mut self,
+        request: &ProtectedEffectRequest,
+    ) -> Result<ExecutorObservation, RuntimePortError> {
+        if self.wait_for_fault {
+            for _ in 0..200 {
+                if self.evidence.snapshot().failure_code.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(self.evidence.snapshot().failure_code.is_some());
+        }
+        self.inner.execute(request)
+    }
+}
+
 fn run(
     fixture: Fixture,
     permission: PermissionPolicy,
@@ -334,7 +359,11 @@ fn run(
         runtime_support,
         runtime_config,
         fixture.adapter,
-        fixture.executor,
+        WaitingExecutor {
+            inner: fixture.executor,
+            evidence: fixture.evidence.clone(),
+            wait_for_fault: fixture.wait_for_fault,
+        },
         Verifier {
             path: fixture.dir.path().join("subject.txt"),
             pass,
@@ -576,14 +605,20 @@ fn paired_executor_refuses_changed_inputs_and_replay() {
         let mut changed = original.clone();
         if tamper {
             changed.input_digest = fixed(99);
-            assert!(f.executor.execute(&changed).is_err());
+            assert_eq!(
+                f.executor.execute(&changed).unwrap().execution_status,
+                EffectExecutionStatus::Denied
+            );
         } else {
             assert_eq!(
                 f.executor.execute(&original).unwrap().execution_status,
                 EffectExecutionStatus::Executed
             );
         }
-        assert!(f.executor.execute(&original).is_err());
+        assert_eq!(
+            f.executor.execute(&original).unwrap().execution_status,
+            EffectExecutionStatus::Denied
+        );
         assert_eq!(f.calls.load(Ordering::SeqCst), usize::from(!tamper));
         f.adapter.close();
     }
@@ -648,7 +683,10 @@ fn duplicate_protocol_fault_revokes_a_previously_prepared_effect() {
         f.evidence.snapshot().failure_code.as_deref(),
         Some("acp.duplicate_request")
     );
-    assert!(f.executor.execute(&proposal.request).is_err());
+    let observation = f.executor.execute(&proposal.request).unwrap();
+    assert_eq!(observation.execution_status, EffectExecutionStatus::Denied);
+    assert!(observation.executor.is_none());
+    assert_eq!(observation.usage.tool_calls, 0);
     assert_eq!(f.calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         std::fs::read_to_string(f.dir.path().join("subject.txt")).unwrap(),
@@ -731,4 +769,23 @@ fn valid_tool_progress_preserves_the_governed_effect_path() {
         AgentRunStatus::Completed
     );
     assert_eq!(count, 2);
+}
+
+#[test]
+fn protocol_refusal_receipt_records_no_dispatch_or_attempt_usage() {
+    let (_, result, count, _) = run(fixture("duplicate_request", allow(), true), allow(), true);
+    assert_eq!(count, 0);
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+    let effect = &result.protected_effect_results[0].body;
+    assert_eq!(effect.execution_status, EffectExecutionStatus::Denied);
+    assert!(effect.executor.is_none());
+    assert_eq!(effect.usage.tool_calls, 0);
+    assert!(
+        !result
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolExecution { .. }))
+    );
 }
