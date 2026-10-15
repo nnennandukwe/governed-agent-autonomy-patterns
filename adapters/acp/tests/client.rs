@@ -74,6 +74,7 @@ struct Host {
     late_meter_stall: bool,
     usage_calls: usize,
     drift_read: bool,
+    mark_dispatch: bool,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
@@ -107,8 +108,15 @@ impl AcpHost for Host {
                 Some(std::fs::read_to_string(path).unwrap())
             }
         };
+        if self.mark_dispatch {
+            std::fs::write(self.path.with_file_name("host-started"), "started").unwrap();
+        }
         if self.stall_effect {
-            std::thread::sleep(Duration::from_secs(10));
+            std::thread::sleep(Duration::from_secs(if self.mark_dispatch {
+                60
+            } else {
+                10
+            }));
         }
         Ok(HostEffect {
             read_text: if self.omit_read { None } else { text },
@@ -293,7 +301,7 @@ fn fixture_with_usage(
         Limits {
             // Leave headroom for SDK schema construction on shared CI runners.
             // Timeout fixtures deliberately stall longer than this bounded wait.
-            operation_timeout: Duration::from_secs(5),
+            operation_timeout: Duration::from_secs(if mode == "progress_timeout" { 20 } else { 5 }),
             max_frame_bytes: if matches!(mode, "byte_limit" | "bounded_normal") {
                 4096
             } else {
@@ -321,6 +329,7 @@ fn fixture_with_usage(
             late_meter_stall: mode == "cancel_meter",
             usage_calls: 0,
             drift_read: mode == "drift_read",
+            mark_dispatch: mode == "progress_timeout",
         },
     )
     .unwrap();
@@ -1166,7 +1175,12 @@ fn progress_during_unknown_host_effect_is_retained_and_bound() {
     let (_, result, count, evidence) =
         run(fixture("progress_timeout", allow(), true), allow(), true);
     assert_eq!(count, 1);
-    assert_eq!(evidence.tool_progress.len(), 1);
+    assert_eq!(evidence.tool_progress.len(), 2);
+    assert!(evidence.tool_progress[1].is_update);
+    assert_eq!(
+        evidence.tool_progress[1].status.as_deref(),
+        Some("in_progress")
+    );
     let effect = &result.protected_effect_results[0].body;
     assert_eq!(
         effect.execution_status,
@@ -1246,6 +1260,7 @@ fn explicit_loader_injection_is_rejected_before_spawn() {
                     late_meter_stall: false,
                     usage_calls: 0,
                     drift_read: false,
+                    mark_dispatch: false,
                 }
             )
             .is_err(),

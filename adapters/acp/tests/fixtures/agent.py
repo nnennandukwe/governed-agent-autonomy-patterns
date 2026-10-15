@@ -101,9 +101,10 @@ elif mode == "report_only":
     update(session, {"sessionUpdate": "tool_call", "toolCallId": "claimed", "title": "Claimed write", "status": "in_progress"})
     update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "claimed", "status": "completed"})
 else:
-    if mode == "tool_progress":
+    if mode in ("tool_progress", "progress_timeout"):
         update(session, {"sessionUpdate": "tool_call", "toolCallId": "governed", "title": "Delegated files", "status": "pending"})
-        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "governed", "status": "in_progress"})
+        if mode == "tool_progress":
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "governed", "status": "in_progress"})
     path = root / "subject.txt"
     if mode == "symlink":
         path = root / "linked.txt"
@@ -111,8 +112,12 @@ else:
         path = root.parent / "outside.txt"
     send({"jsonrpc": "2.0", "id": -7 if mode == "signed_ids" else "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "after\n"}})
     if mode == "progress_timeout":
-        time.sleep(0.05)
-        update(session, {"sessionUpdate": "tool_call", "toolCallId": "during-execution", "title": "Waiting", "status": "in_progress"})
+        deadline = time.monotonic() + 15
+        while not (root / "host-started").exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError("Host dispatch never started")
+            time.sleep(0.005)
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "governed", "status": "in_progress"})
     if mode == "duplicate_request":
         time.sleep(0.1)
         send({"jsonrpc": "2.0", "id": -7 if mode == "signed_ids" else "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "other\n"}})

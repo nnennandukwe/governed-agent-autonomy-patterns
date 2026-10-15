@@ -168,7 +168,7 @@ def run_case(case, goose, binary, output):
         raise RuntimeError("The host binary changed during this case; rerun from a stable build")
     record = json.loads(evidence.read_text())
     receipt = record["receipt"]["body"]
-    expected = {"allow": "completed", "ask": "blocked", "block": "blocked", "bad_patch": "blocked", "report_only": "failed", "unreported": "blocked", "unreported_directory": "blocked", "unreported_mode": "blocked"}[case]
+    expected = {"allow": "completed", "ask": "blocked", "block": "blocked", "bad_patch": "blocked", "report_only": "failed", "unreported": "blocked", "unreported_directory": "blocked", "unreported_mode": "blocked", "cancel_before_dispatch":"interrupted"}[case]
     if receipt["terminal_status"] != expected:
         raise AssertionError(case + ": unexpected receipt status " + receipt["terminal_status"])
     effects = record["protected_effect_results"]
@@ -177,10 +177,17 @@ def run_case(case, goose, binary, output):
     attempted = sum(effect["body"]["execution_status"] == "executed" for effect in effects)
     if case in ("ask", "block"):
         response = record["ingress_responses"][0]
-        expected_refusal = "authority_required" if case == "ask" else "denied"
-        if response["response"]["structuredContent"]["status"] != expected_refusal or not response["written"]:
-            raise AssertionError("The host didn't return its refusal to the ingress")
-    if case in ("ask", "block", "report_only"):
+        expected_reason = "permission.policy_requires_approval" if case == "ask" else "permission.denied"
+        expected_effect = "awaiting_authority" if case == "ask" else "denied"
+        if receipt["terminal_reason"] != expected_reason or effects[0]["body"]["execution_status"] != expected_effect:
+            raise AssertionError("The intended permission gate didn't stop this proposal")
+        if response["response"]["structuredContent"]["status"] != "not_dispatched" or not response["written"]:
+            raise AssertionError("The host didn't return its no-dispatch response to the ingress")
+    if case == "cancel_before_dispatch":
+        response = record["ingress_responses"][0]
+        if response["response"]["structuredContent"]["status"] != "not_dispatched" or not response["written"]:
+            raise AssertionError("The early refusal lost its pending proposal response")
+    if case in ("ask", "block", "report_only", "cancel_before_dispatch"):
         if attempted or (workspace / "shipping.py").read_text() != BAD or (workspace / "terminal.txt").exists() or (workspace / "mcp.txt").exists():
             raise AssertionError("Refused or fabricated work caused a protected effect")
     elif attempted != 3:
@@ -205,7 +212,7 @@ def main():
     """Verify the binary pin, build the host and reproduce all reference outcomes."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--goose", required=True, type=pathlib.Path, help="Checksum-pinned Goose 1.54.0 executable")
-    parser.add_argument("--output", required=True, type=pathlib.Path, help="New directory for the eight-case evidence")
+    parser.add_argument("--output", required=True, type=pathlib.Path, help="New directory for the nine-case evidence")
     args = parser.parse_args()
     goose = args.goose.resolve(strict=True)
     expected = PINS.get((platform.system(), platform.machine()))
@@ -215,7 +222,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(HERE / "Cargo.toml")], check=True)
     binary = HERE / "target" / "debug" / "gaap-governed-goose"
-    results = [run_case(case, goose, binary, output) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode")]
+    results = [run_case(case, goose, binary, output) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
     (output / "summary.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
 

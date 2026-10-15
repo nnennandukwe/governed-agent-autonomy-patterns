@@ -29,7 +29,7 @@ The runner checks the executable pin again, builds with the committed lockfile
 and creates disposable Git repositories containing public fixture code. It
 retains those repositories for inspection; paths appear in the output evidence.
 
-Eight cases produce JSON transcripts, sealed receipts, full protected effect requests and results, raw proposal inputs,
+Nine cases produce JSON transcripts, sealed receipts, full protected effect requests and results, raw proposal inputs,
 ACP trace hashes, MCP call evidence and independent verification output:
 
 | Case | Expected outcome |
@@ -39,6 +39,7 @@ ACP trace hashes, MCP call evidence and independent verification output:
 | block | Permission denied; no effects |
 | bad_patch | Three effects remain recorded; independent verification fails |
 | report_only | Agent's completion claim fails without host effects |
+| cancel_before_dispatch | Interrupted, zero effects, with the pending refusal retained |
 | unreported, unreported_directory, unreported_mode | File creation, an empty directory or a permission change outside the admitted requests blocks completion |
 
 The host supplies a fixture subject approval. That approval isn't a human
@@ -94,3 +95,9 @@ An ACP dispatch claim records admission at the host boundary. It isn't execution
 proof: the MCP executor can still refuse on its own repeated checks. Its
 `dispatched` evidence, executor observation and sealed result report attempts;
 claims don't create execution events or usage.
+
+Ingress refusal messages report only proven non-dispatch. The sealed receipt and
+effect result provide the actual gate reason and authority outcome; the runner
+checks those fields for Ask and deny. A case label never becomes an authority
+decision. Pending proposals stay owned until dispatch admission succeeds, so
+binding failures and cancellation still get a no-dispatch response during cleanup.

@@ -220,6 +220,12 @@ jobs:
         run: |
           python3 examples/governed-goose/run.py --goose /tmp/gaap-goose-1.54.0/goose --output /tmp/gaap-goose-evidence
 
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit reference dependency lockfile
+        run: cargo audit --file examples/governed-goose/Cargo.lock
+
   final:
     if: always()
     needs:

@@ -160,7 +160,7 @@ struct AgentPort {
     support: ContractSupport,
     deadline: Instant,
     effects: u64,
-    refusal_status: String,
+    cancel_before_dispatch: bool,
 }
 impl AgentPort {
     fn meter(&self) -> ResourceUsage {
@@ -189,7 +189,7 @@ impl AgentAdapter for AgentPort {
     fn close(&mut self) {
         let mut ports = self.shared.lock().expect("ports");
         if let Some(mut pending) = ports.pending.take() {
-            let response = json!({"content":[{"type":"text","text":"The host stopped this proposal before dispatch; no authority was granted."}],"isError":true,"structuredContent":{"status":self.refusal_status,"dispatched":false}});
+            let response = json!({"content":[{"type":"text","text":"The host stopped this proposal before dispatch; no authority was granted."}],"isError":true,"structuredContent":{"status":"not_dispatched","dispatched":false}});
             let written = writeln!(pending.stream, "{response}").is_ok();
             ports.ingress_responses.push(json!({"effect_id":pending.request.effect_id,"response":response,"written":written}));
         }
@@ -280,6 +280,14 @@ impl AgentAdapter for AgentPort {
                         stream,
                         request: effect.clone(),
                     });
+                    if self.cancel_before_dispatch {
+                        self.shared
+                            .lock()
+                            .expect("ports")
+                            .conversation
+                            .cancellation_handle()
+                            .cancel();
+                    }
                     self.effects += 1;
                     return Ok(PortObservation {
                         value: AgentStep::ProtectedEffect(Box::new(ProtectedEffectProposal {
@@ -303,7 +311,7 @@ impl ExecutorPort for Executor {
         request: &ProtectedEffectRequest,
     ) -> std::result::Result<ExecutorObservation, RuntimePortError> {
         let mut ports = self.shared.lock().expect("ports");
-        let Some(mut pending) = ports.pending.take() else {
+        let Some(pending) = ports.pending.as_ref() else {
             return Err(RuntimePortError::before_dispatch(
                 "reference.no_pending_proposal",
             ));
@@ -314,6 +322,7 @@ impl ExecutorPort for Executor {
             ));
         }
         ports.conversation.claim_dispatch(request)?;
+        let mut pending = ports.pending.take().expect("admitted proposal");
         let result = ports.mcp.execute(request);
         let session_evidence = ports.conversation.effect_evidence()?;
         let result = match result {
@@ -601,12 +610,7 @@ fn main() -> Result<()> {
             support,
             deadline: Instant::now(),
             effects: 0,
-            refusal_status: match config.case.as_str() {
-                "ask" => "authority_required",
-                "block" => "denied",
-                _ => "not_dispatched",
-            }
-            .into(),
+            cancel_before_dispatch: config.case == "cancel_before_dispatch",
         },
         Executor {
             shared: shared.clone(),
