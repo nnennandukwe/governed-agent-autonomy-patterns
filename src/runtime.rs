@@ -397,10 +397,6 @@ where
         let plan_observation = match self.agent.plan(&request) {
             Ok(observation) => observation,
             Err(error) => {
-                if let Some(cancellation) = self.agent.cancellation() {
-                    ledger.interruption(sanitize_cancellation(cancellation));
-                    return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
-                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -426,7 +422,7 @@ where
             &plan_input(&ledger.current_subject, plan_approval),
         );
         if plan_decision.outcome != Outcome::Allow {
-            return self.finish(ledger, AgentRunStatus::Blocked, plan_decision.code);
+            return self.blocked_from_decision(ledger, plan_decision);
         }
 
         ledger.transition(AgentRunStatus::Executing, None);
@@ -731,12 +727,6 @@ where
                 );
                 let usage_reason = ledger.record_effect_usage(&result.body.usage);
                 ledger.effect_results.push(result);
-                if let Some(cancellation) = self.executor.cancellation() {
-                    ledger.interruption(sanitize_cancellation(cancellation));
-                    return self
-                        .finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted")
-                        .map(|execution| EffectHandling::Terminal(Box::new(execution)));
-                }
                 if let Some(reason) = usage_reason {
                     return self
                         .finish(ledger, AgentRunStatus::Blocked, reason)
@@ -931,14 +921,6 @@ where
             },
         )?;
         ledger.effect_results.push(result);
-        let cancellation = match decision.outcome {
-            Outcome::Ask => None,
-            _ => self.executor.cancellation(),
-        };
-        if let Some(cancellation) = cancellation {
-            ledger.interruption(sanitize_cancellation(cancellation));
-            return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
-        }
         self.blocked_from_decision(ledger, decision)
     }
 
@@ -1038,6 +1020,17 @@ where
         }
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);
+        }
+        // Completion authorization is the final commit point. Observe explicit
+        // cancellation before recording it; an authorized completion can't later
+        // be relabeled as interrupted under the frozen receipt contract.
+        if let Some(cancellation) = self
+            .agent
+            .cancellation()
+            .or_else(|| self.executor.cancellation())
+        {
+            ledger.interruption(sanitize_cancellation(cancellation));
+            return self.finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted");
         }
         let completion_decision = self.coordinator.evaluate(
             Gate::Workflow,
@@ -1254,10 +1247,29 @@ where
     fn finish(
         &self,
         mut ledger: Ledger,
-        terminal_status: AgentRunStatus,
+        mut terminal_status: AgentRunStatus,
         reason: impl Into<String>,
     ) -> Result<AgentRunExecution, RuntimeError> {
-        let reason = reason.into();
+        let mut reason = reason.into();
+        // Every other terminal path observes explicit cancellation, including
+        // failed meters and verifiers. Completion checks before its authorization;
+        // authority-required keeps its one-shot result without later events.
+        let cancellation = if !matches!(
+            terminal_status,
+            AgentRunStatus::Interrupted | AgentRunStatus::Completed
+        ) && ledger.status != AgentRunStatus::AwaitingAuthority
+        {
+            self.agent
+                .cancellation()
+                .or_else(|| self.executor.cancellation())
+        } else {
+            None
+        };
+        if let Some(cancellation) = cancellation {
+            ledger.interruption(sanitize_cancellation(cancellation));
+            terminal_status = AgentRunStatus::Interrupted;
+            reason = "runtime.interrupted".into();
+        }
         ledger.usage_event();
         ledger.transition(terminal_status, Some(reason.clone()));
         let request = ledger.request.clone();

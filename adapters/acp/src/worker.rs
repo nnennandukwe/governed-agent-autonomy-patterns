@@ -101,8 +101,13 @@ pub(crate) fn validate_launch(config: &AgentConfig) -> Result<(), RuntimePortErr
         }
     }
     for arg in &config.arguments {
-        let path = Path::new(arg);
-        if path.is_file() && !config.artifacts.iter().any(|a| a.path == path) {
+        let path = config.working_directory.join(arg);
+        if path.is_file()
+            && !config
+                .artifacts
+                .iter()
+                .any(|a| path.canonicalize().ok().as_ref() == Some(&a.path))
+        {
             return Err(error("acp.argument_unapproved"));
         }
     }
@@ -207,6 +212,7 @@ async fn run(
     let read_events = events.clone();
     let write_events = events.clone();
     let permission_events = events.clone();
+    let permission_evidence = evidence.clone();
     let setup_evidence = evidence.clone();
     let notification_events = events.clone();
     let run_budget = request.resource_budget.max_elapsed_ms;
@@ -244,6 +250,7 @@ async fn run(
             }
         },agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |_request:RequestPermissionRequest,responder,_cx| {
+            permission_evidence.0.lock().expect("evidence lock").failure_code.get_or_insert_with(|| "acp.authority_required".into());
             let result=responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
             let _=permission_events.send(Event::Fault("acp.authority_required".into()));
             result

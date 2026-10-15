@@ -71,10 +71,13 @@ struct Host {
     stall_usage: bool,
     stall_effect: bool,
     zero_tool_count: bool,
+    late_meter_stall: bool,
+    usage_calls: usize,
 }
 impl AcpHost for Host {
     fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
-        if self.stall_usage {
+        self.usage_calls += 1;
+        if self.stall_usage || (self.late_meter_stall && self.usage_calls > 1) {
             std::thread::sleep(Duration::from_secs(10));
         }
         if self.unknown_usage {
@@ -150,12 +153,16 @@ impl AcpHost for Host {
 struct Verifier {
     path: PathBuf,
     pass: bool,
+    cancel: Option<CancelHandle>,
 }
 impl VerifierPort for Verifier {
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
     ) -> Result<PortObservation<VerificationReport>, RuntimePortError> {
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+        }
         let actual = subject(&self.path);
         Ok(PortObservation {
             usage: zero(),
@@ -255,6 +262,7 @@ struct Fixture {
     wait_for_fault: bool,
     cancel_before_dispatch: Option<CancelHandle>,
     cancel_after_dispatch: Option<CancelHandle>,
+    cancel_on_verify: Option<CancelHandle>,
 }
 fn fixture(mode: &str, permission: PermissionPolicy, confirm: bool) -> Fixture {
     fixture_with_usage(mode, permission, confirm, false)
@@ -270,7 +278,14 @@ fn fixture_with_usage(
     std::fs::write(&path, "before\n").unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let (adapter, executor) = AcpAdapter::new(
-        config(dir.path(), mode),
+        config(
+            dir.path(),
+            if mode == "cancel_meter" {
+                "cancel"
+            } else {
+                mode
+            },
+        ),
         Limits {
             // Leave headroom for SDK schema construction on shared CI runners.
             // Timeout fixtures deliberately stall longer than this bounded wait.
@@ -299,11 +314,14 @@ fn fixture_with_usage(
             stall_usage: mode == "stall_usage",
             stall_effect: mode == "host_timeout",
             zero_tool_count: mode == "zero_tool_count",
+            late_meter_stall: mode == "cancel_meter",
+            usage_calls: 0,
         },
     )
     .unwrap();
     let request = request(adapter.capability().clone(), &path);
     let evidence = adapter.evidence();
+    let cancel_on_verify = (mode == "cancel_verify").then(|| adapter.cancellation_handle());
     let cancel_after_dispatch = (mode == "cancel_after_ask").then(|| adapter.cancellation_handle());
     let cancel_before_dispatch =
         (mode == "cancel_at_dispatch").then(|| adapter.cancellation_handle());
@@ -317,6 +335,7 @@ fn fixture_with_usage(
         wait_for_fault: mode == "duplicate_request",
         cancel_before_dispatch,
         cancel_after_dispatch,
+        cancel_on_verify,
     }
 }
 struct WaitingExecutor {
@@ -397,6 +416,7 @@ fn run(
         Verifier {
             path: fixture.dir.path().join("subject.txt"),
             pass,
+            cancel: fixture.cancel_on_verify,
         },
     );
     let result = engine.run(fixture.request.clone()).unwrap();
@@ -500,7 +520,11 @@ fn engine_permission_denial_prevents_host_dispatch() {
 
 #[test]
 fn permission_ui_with_incomplete_input_never_approves_agent_execution() {
-    let (dir, result, count, _) = run(fixture("permission", allow(), true), allow(), true);
+    let (dir, result, count, evidence) = run(fixture("permission", allow(), true), allow(), true);
+    assert_eq!(
+        evidence.failure_code.as_deref(),
+        Some("acp.authority_required")
+    );
     assert_ne!(
         result.receipt.body.terminal_status,
         AgentRunStatus::Completed
@@ -991,4 +1015,88 @@ fn authority_required_stays_blocked_when_cancellation_arrives_after_ask() {
             .iter()
             .any(|event| matches!(event, RunEvent::Interruption { .. }))
     );
+}
+
+#[test]
+fn cancellation_during_verification_cant_complete_the_run() {
+    let (_, result, count, _) = run(fixture("cancel_verify", allow(), true), allow(), true);
+    assert_eq!(count, 2);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert!(
+        result
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Interruption { .. }))
+    );
+}
+
+#[test]
+fn a_stalled_meter_cant_hide_explicit_prompt_cancellation() {
+    let f = fixture("cancel_meter", allow(), true);
+    let marker = f.dir.path().join("prompt-started");
+    let cancel = f.adapter.cancellation_handle();
+    let canceller = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            if marker.exists() {
+                cancel.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("prompt didn't start");
+    });
+    let (_, result, count, evidence) = run(f, allow(), true);
+    canceller.join().unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert_eq!(evidence.usage_failure.as_deref(), Some("acp.usage_unknown"));
+}
+
+#[test]
+fn relative_launch_files_need_approved_bytes_in_the_child_directory() {
+    struct NeverHost;
+    impl AcpHost for NeverHost {
+        fn usage(&mut self) -> Result<ResourceUsage, RuntimePortError> {
+            panic!("mustn't start")
+        }
+        fn execute(
+            &mut self,
+            _: &FileOperation,
+            _: &ProtectedEffectRequest,
+        ) -> Result<HostEffect, RuntimePortError> {
+            panic!("mustn't dispatch")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let relative = format!("{}.json", dir.path().file_name().unwrap().to_string_lossy());
+    assert!(!std::path::Path::new(&relative).exists());
+    let path = dir.path().join(&relative);
+    std::fs::write(&path, "host configuration").unwrap();
+    for approved in [false, true] {
+        let mut launch = config(dir.path(), "normal");
+        launch.arguments.push(relative.clone());
+        if approved {
+            launch.artifacts.push(LaunchArtifact {
+                path: path.canonicalize().unwrap(),
+                digest: hash(b"host configuration"),
+            });
+        }
+        let result = AcpAdapter::new(
+            launch,
+            Limits::default(),
+            ContractSupport::new([policy()]),
+            profile(),
+            allow(),
+            NeverHost,
+        );
+        assert_eq!(result.is_ok(), approved);
+    }
 }

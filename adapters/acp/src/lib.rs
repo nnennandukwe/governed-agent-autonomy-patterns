@@ -129,6 +129,7 @@ pub struct SessionEvidence {
     pub trace: Vec<TraceEntry>,
     pub failure_code: Option<String>,
     pub cleanup_failure: Option<String>,
+    pub usage_failure: Option<String>,
     pub tool_progress: Vec<ToolProgress>,
     /// Ordered effect digests admitted under the same lock as protocol faults.
     pub dispatch_claims: Vec<String>,
@@ -324,6 +325,13 @@ impl AcpAdapter {
             shared.cancellation.clone(),
             shared.cancellation_requested.clone(),
         )
+    }
+
+    fn meter(&self) -> Result<ResourceUsage, RuntimePortError> {
+        self.host.usage().inspect_err(|_| {
+            self.evidence.0.lock().expect("evidence lock").usage_failure =
+                Some("acp.usage_unknown".into());
+        })
     }
 
     fn event(&self) -> Result<Event, RuntimePortError> {
@@ -542,7 +550,7 @@ impl AgentAdapter for AcpAdapter {
             Event::Fault(code) => return Err(error(&code)),
             _ => return Err(error("acp.setup_order")),
         }
-        let usage = self.host.usage()?;
+        let usage = self.meter()?;
         self.phase = AdapterPhase::Ready;
         Ok(PortObservation {
             value: PlanProposal {
@@ -584,7 +592,7 @@ impl AgentAdapter for AcpAdapter {
                             locator: None,
                         },
                     }),
-                    usage: self.host.usage()?,
+                    usage: self.meter()?,
                 });
             }
             Err(e) => return Err(e),
@@ -613,7 +621,7 @@ impl AgentAdapter for AcpAdapter {
         };
         Ok(PortObservation {
             value: step,
-            usage: self.host.usage()?,
+            usage: self.meter()?,
         })
     }
 }
