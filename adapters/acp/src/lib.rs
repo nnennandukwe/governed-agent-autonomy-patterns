@@ -118,6 +118,15 @@ pub struct TraceEntry {
     pub frame_digest: String,
 }
 
+/// Host-reported metadata retained when it can't be claimed as a known result.
+/// This includes subject locators and host evidence, never returned file text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationRecord {
+    pub effect_request_digest: String,
+    pub report: serde_json::Value,
+    pub digest: String,
+}
+
 /// Prefix coordinates make every effect digest reproducible from final evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectCheckpoint {
@@ -142,6 +151,7 @@ pub struct SessionEvidence {
     /// Ordered effect digests admitted under the same lock as protocol faults.
     pub dispatch_claims: Vec<String>,
     pub effect_checkpoints: Vec<EffectCheckpoint>,
+    pub reconciliation: Vec<ReconciliationRecord>,
 }
 
 /// Read-only access to retained session evidence after shutdown.
@@ -753,9 +763,19 @@ impl ExecutorPort for AcpExecutor {
                         .is_some_and(|subject| subject != &request.subject)
                 {
                     let reported = &effect.observation;
-                    let reconciliation = digest(
-                        &json!({"reported_status":reported.execution_status,"post_subject":reported.observed_post_effect_subject,"exit":reported.exit,"usage":reported.usage}),
-                    )?;
+                    let report = json!({"reported_status":reported.execution_status,"post_subject":reported.observed_post_effect_subject,"exit":reported.exit,"usage":reported.usage,
+                        "executor":reported.executor,"sandbox_profile":reported.sandbox_profile,"reason":reported.reason,"evidence":reported.evidence});
+                    let reconciliation = digest(&report)?;
+                    self.evidence
+                        .0
+                        .lock()
+                        .expect("evidence lock")
+                        .reconciliation
+                        .push(ReconciliationRecord {
+                            effect_request_digest: digest(request)?,
+                            report,
+                            digest: reconciliation.clone(),
+                        });
                     effect.observation.evidence.push(EffectEvidenceReference {
                         evidence_type: EffectEvidenceType::UnknownOutcome,
                         digest: reconciliation,

@@ -1182,7 +1182,7 @@ fn progress_during_unknown_host_effect_is_retained_and_bound() {
 
 #[test]
 fn changed_read_retains_an_uncertain_effect_and_terminal_receipt() {
-    let (_, result, count, _) = run(fixture("drift_read", allow(), true), allow(), true);
+    let (_, result, count, session) = run(fixture("drift_read", allow(), true), allow(), true);
     assert_eq!(count, 2);
     assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
     let read = &result.protected_effect_results[1].body;
@@ -1193,6 +1193,24 @@ fn changed_read_retains_an_uncertain_effect_and_terminal_receipt() {
         read.evidence
             .iter()
             .any(|entry| entry.evidence_type == EffectEvidenceType::UnknownOutcome)
+    );
+    assert_eq!(session.reconciliation.len(), 1);
+    let retained = &session.reconciliation[0];
+    assert_eq!(retained.effect_request_digest, read.effect_request_digest);
+    assert_eq!(retained.report["reported_status"], "executed");
+    assert_eq!(retained.report["usage"]["tool_calls"], 1);
+    assert_ne!(
+        retained.report["post_subject"]["digest"],
+        read.observed_pre_effect_subject.digest
+    );
+    assert_eq!(
+        retained.digest,
+        hash(&serde_jcs::to_vec(&retained.report).unwrap())
+    );
+    assert!(
+        read.evidence
+            .iter()
+            .any(|entry| entry.digest == retained.digest)
     );
 }
 

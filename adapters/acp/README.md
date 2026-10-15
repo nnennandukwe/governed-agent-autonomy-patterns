@@ -109,3 +109,9 @@ Each effect's session digest has a retained checkpoint with progress and dispatc
 prefix counts. Reconstruct its input from those prefixes of the final session
 evidence and the immutable session/run/capability fields. Later progress doesn't
 invalidate earlier evidence; checkpoints retain only counts and hashes.
+
+Changed-read reconciliation retains the host's original metadata and its digest,
+keyed to the exact effect request. This metadata includes subject locators,
+reported status, exit, usage, identities, reason and evidence references. It
+doesn't retain returned file text. The sealed effect stays uncertain instead of
+claiming that an observation preserved a subject the host saw change.
