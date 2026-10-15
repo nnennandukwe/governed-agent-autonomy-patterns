@@ -867,3 +867,50 @@ fn timed_out_host_dispatch_preserves_unknown_outcome_and_counts_attempt() {
         "after\n"
     );
 }
+
+#[test]
+fn explicit_cancellation_during_uncertain_dispatch_preserves_both_outcomes() {
+    let f = fixture("host_timeout", allow(), true);
+    let calls = f.calls.clone();
+    let cancel = f.adapter.cancellation_handle();
+    let canceller = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            if calls.load(Ordering::SeqCst) > 0 {
+                cancel.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("host dispatch didn't start");
+    });
+    let (_, result, count, _) = run(f, allow(), true);
+    canceller.join().unwrap();
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert_eq!(count, 1);
+    assert_eq!(
+        result.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(result.receipt.body.usage.tool_calls, 1);
+    assert!(
+        result
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Interruption { .. }))
+    );
+}
+
+#[test]
+fn signed_json_rpc_ids_preserve_the_governed_effect_path() {
+    let (_, result, count, _) = run(fixture("signed_ids", allow(), true), allow(), true);
+    assert_eq!(
+        result.receipt.body.terminal_status,
+        AgentRunStatus::Completed
+    );
+    assert_eq!(count, 2);
+}

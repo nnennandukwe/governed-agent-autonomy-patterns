@@ -72,7 +72,7 @@ subject isn't copied onto later filesystem states. A later mutation without matc
 | Event | Outcome and recovery |
 | --- | --- |
 | Permission or engine gate refuses | No host dispatch; inspect the reason and start a newly authorized run. There isn't durable resumption. |
-| Cancellation | Explicit cancellation before dispatch seals a denied, zero-use effect and an interrupted run. A dispatched host effect retains the executor's actual observation. No replay. |
+| Cancellation | Explicit cancellation before dispatch seals a denied, zero-use effect and an interrupted run. An interrupted run retains the dispatched effect's actual observation, including an unknown outcome after a lost host response. No replay. |
 | Timeout, agent exit, partial frame/output or transport failure | Separate `acp.*` diagnostics; the run can't complete. Earlier confirmed effects and subject changes remain in receipts. |
 | Host execution times out | Unknown attempted effect with one known tool attempt; cost/tokens remain lower bounds. The host port is quarantined and late results are ignored. Reconcile the physical state before retrying. |
 | Host usage is unavailable | Failed run with the last known usage lower bound; it isn't a settled total. |

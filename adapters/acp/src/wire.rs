@@ -196,7 +196,7 @@ fn validate_message(
             if !(id
                 .as_str()
                 .is_some_and(|id| !id.is_empty() && id.len() <= 256)
-                || id.as_u64().is_some())
+                || id.as_i64().is_some())
             {
                 return Err(fail("acp.invalid_id"));
             }

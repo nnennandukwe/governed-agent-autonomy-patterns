@@ -693,13 +693,19 @@ where
                     &proposal.request.capability.digest,
                     &result,
                 );
-                if let Some(reason) = ledger.record_effect_usage(&result.body.usage) {
-                    ledger.effect_results.push(result);
+                let usage_reason = ledger.record_effect_usage(&result.body.usage);
+                ledger.effect_results.push(result);
+                if let Some(cancellation) = self.executor.cancellation() {
+                    ledger.interruption(sanitize_cancellation(cancellation));
+                    return self
+                        .finish(ledger, AgentRunStatus::Interrupted, "runtime.interrupted")
+                        .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+                }
+                if let Some(reason) = usage_reason {
                     return self
                         .finish(ledger, AgentRunStatus::Blocked, reason)
                         .map(|execution| EffectHandling::Terminal(Box::new(execution)));
                 }
-                ledger.effect_results.push(result);
                 return self
                     .finish(
                         ledger,

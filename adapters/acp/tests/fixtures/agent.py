@@ -109,10 +109,10 @@ else:
         path = root / "linked.txt"
     if mode == "escape":
         path = root.parent / "outside.txt"
-    send({"jsonrpc": "2.0", "id": "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "after\n"}})
+    send({"jsonrpc": "2.0", "id": -7 if mode == "signed_ids" else "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "after\n"}})
     if mode == "duplicate_request":
         time.sleep(0.1)
-        send({"jsonrpc": "2.0", "id": "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "other\n"}})
+        send({"jsonrpc": "2.0", "id": -7 if mode == "signed_ids" else "write", "method": "fs/write_text_file", "params": {"sessionId": session, "path": str(path), "content": "other\n"}})
     answer = receive()
     if "error" in answer:
         response(prompt, {"stopReason": "refusal"})
@@ -121,7 +121,7 @@ else:
         sys.exit(3)
     if mode == "post_effect_timeout":
         time.sleep(30)
-    send({"jsonrpc": "2.0", "id": "read", "method": "fs/read_text_file", "params": {"sessionId": session, "path": str(root / "subject.txt")}})
+    send({"jsonrpc": "2.0", "id": -8 if mode == "signed_ids" else "read", "method": "fs/read_text_file", "params": {"sessionId": session, "path": str(root / "subject.txt")}})
     answer = receive()
     if mode == "normal":
         assert answer["result"]["content"] == "after\n"
