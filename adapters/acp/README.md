@@ -104,3 +104,8 @@ From the repository root, run the ACP matrix in [CONTRIBUTING](../../CONTRIBUTIN
 runtime; no provider credentials, model calls or internet access are used by the tests. The SDK and local fixture tests
 don't establish real Goose compatibility (#14), signed receipts (#15), isolation (#16/#17), durable recovery (#32), or
 ThreadLoop lifecycle admission (#111).
+
+Each effect's session digest has a retained checkpoint with progress and dispatch
+prefix counts. Reconstruct its input from those prefixes of the final session
+evidence and the immutable session/run/capability fields. Later progress doesn't
+invalidate earlier evidence; checkpoints retain only counts and hashes.

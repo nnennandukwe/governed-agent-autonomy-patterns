@@ -1236,3 +1236,24 @@ fn explicit_loader_injection_is_rejected_before_spawn() {
         assert!(!root.path().join("agent-pid").exists());
     }
 }
+
+#[test]
+fn every_effect_session_digest_is_reconstructible_after_later_progress() {
+    let (_, result, _, evidence) = run(fixture("tool_progress", allow(), true), allow(), true);
+    let final_session = serde_json::to_value(evidence).unwrap();
+    let checkpoints = final_session["effect_checkpoints"]
+        .as_array()
+        .expect("retained checkpoints");
+    assert_eq!(checkpoints.len(), 2);
+    for (checkpoint, effect) in checkpoints.iter().zip(&result.protected_effect_results) {
+        let progress_count = checkpoint["progress_count"].as_u64().unwrap() as usize;
+        let dispatch_count = checkpoint["dispatch_count"].as_u64().unwrap() as usize;
+        let reconstructed = serde_json::json!({"sdk":final_session["sdk_version"],"protocol":final_session["protocol_version"],"session":final_session["session_digest"],
+            "run":final_session["run_request_digest"],"capability":final_session["capability_digest"],"tool_progress":&final_session["tool_progress"].as_array().unwrap()[..progress_count],"dispatch_claims":&final_session["dispatch_claims"].as_array().unwrap()[..dispatch_count]});
+        let digest = hash(&serde_jcs::to_vec(&reconstructed).unwrap());
+        assert_eq!(checkpoint["digest"], digest);
+        assert!(effect.body.evidence.iter().any(|entry| entry.evidence_type
+            == EffectEvidenceType::CapabilitySchema
+            && entry.digest == digest));
+    }
+}

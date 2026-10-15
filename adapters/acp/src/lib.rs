@@ -118,6 +118,14 @@ pub struct TraceEntry {
     pub frame_digest: String,
 }
 
+/// Prefix coordinates make every effect digest reproducible from final evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectCheckpoint {
+    pub progress_count: usize,
+    pub dispatch_count: usize,
+    pub digest: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionEvidence {
     pub sdk_version: String,
@@ -133,6 +141,7 @@ pub struct SessionEvidence {
     pub tool_progress: Vec<ToolProgress>,
     /// Ordered effect digests admitted under the same lock as protocol faults.
     pub dispatch_claims: Vec<String>,
+    pub effect_checkpoints: Vec<EffectCheckpoint>,
 }
 
 /// Read-only access to retained session evidence after shutdown.
@@ -732,11 +741,10 @@ impl ExecutorPort for AcpExecutor {
             .execute(pending.operation.clone(), request.clone());
         match result {
             HostCompletion::Attempted(Ok(mut effect)) => {
-                let identity = self.evidence.snapshot();
                 effect
                     .observation
                     .evidence
-                    .push(session_effect_evidence(&identity)?);
+                    .push(session_effect_evidence(&self.evidence)?);
                 if matches!(pending.operation, FileOperation::Read { .. })
                     && effect
                         .observation
@@ -779,7 +787,7 @@ impl ExecutorPort for AcpExecutor {
             }
             HostCompletion::Attempted(Err(e)) => {
                 let _ = pending.reply.send(Err("acp.host_effect_unknown".into()));
-                Err(e.with_evidence(vec![session_effect_evidence(&self.evidence.snapshot())?]))
+                Err(e.with_evidence(vec![session_effect_evidence(&self.evidence)?]))
             }
             HostCompletion::Declined(code) => {
                 let _ = pending.reply.send(Err(code.clone()));
@@ -790,14 +798,22 @@ impl ExecutorPort for AcpExecutor {
 }
 
 fn session_effect_evidence(
-    identity: &SessionEvidence,
+    handle: &EvidenceHandle,
 ) -> Result<EffectEvidenceReference, RuntimePortError> {
+    let mut identity = handle.0.lock().expect("evidence lock");
+    let digest = digest(
+        &json!({"sdk":identity.sdk_version,"protocol":identity.protocol_version,"session":identity.session_digest,
+        "run":identity.run_request_digest,"capability":identity.capability_digest,"tool_progress":identity.tool_progress,"dispatch_claims":identity.dispatch_claims}),
+    )?;
+    let checkpoint = EffectCheckpoint {
+        progress_count: identity.tool_progress.len(),
+        dispatch_count: identity.dispatch_claims.len(),
+        digest: digest.clone(),
+    };
+    identity.effect_checkpoints.push(checkpoint);
     Ok(EffectEvidenceReference {
         evidence_type: EffectEvidenceType::CapabilitySchema,
-        digest: digest(
-            &json!({"sdk":identity.sdk_version,"protocol":identity.protocol_version,"session":identity.session_digest,
-            "run":identity.run_request_digest,"capability":identity.capability_digest,"tool_progress":identity.tool_progress,"dispatch_claims":identity.dispatch_claims}),
-        )?,
+        digest,
         locator: None,
     })
 }
