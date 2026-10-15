@@ -710,8 +710,16 @@ where
                 )
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
         }
-        if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
-            let effect_result = self.untrusted_sandbox_result(
+        let untrusted_reason =
+            if observation.sandbox_profile.as_ref() != Some(&proposal.request.sandbox_profile) {
+                Some("protected_effect.untrusted_sandbox")
+            } else if observation.executor.as_ref() != Some(&self.config.executor_identity) {
+                Some("protected_effect.untrusted_executor")
+            } else {
+                None
+            };
+        if let Some(untrusted_reason) = untrusted_reason {
+            let effect_result = self.untrusted_execution_result(
                 &ledger,
                 &proposal.request,
                 &effect_digest,
@@ -723,6 +731,7 @@ where
                     decision: permission_decision,
                 },
                 observation,
+                untrusted_reason,
             )?;
             ledger.accept_effect_identity(&proposal.request, &effect_digest);
             ledger.tool_execution(
@@ -748,11 +757,7 @@ where
             let _usage_reason = ledger.record_effect_usage(&effect_result.body.usage);
             ledger.effect_results.push(effect_result);
             return self
-                .finish(
-                    ledger,
-                    AgentRunStatus::Failed,
-                    "protected_effect.untrusted_sandbox",
-                )
+                .finish(ledger, AgentRunStatus::Failed, untrusted_reason)
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
         }
         let effect_result = self.attempt_result(
@@ -1005,18 +1010,43 @@ where
         .map_err(RuntimeError::ProtectedEffectResult)
     }
 
-    fn untrusted_sandbox_result(
+    fn untrusted_execution_result(
         &self,
         ledger: &Ledger,
         request: &ProtectedEffectRequest,
         effect_digest: &str,
         decision: ProtectedEffectDecision,
         observation: ExecutorObservation,
+        untrusted_reason: &str,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
+        let unverified_identity_digest = runtime_effect_evidence(
+            EffectEvidenceType::Executor,
+            &format!("unverified-executor:{:?}", observation.executor),
+        )
+        .digest;
+        let observed_executor = observation.executor.filter(|executor| {
+            !executor.name.trim().is_empty()
+                && !executor.version.trim().is_empty()
+                && is_digest_string(&executor.digest)
+        });
+        let executor_unverified = observed_executor.is_none();
+        let observed_executor = observed_executor.unwrap_or_else(|| ExecutorIdentity {
+            name: "unverified-executor".into(),
+            version: "0.1.0".into(),
+            digest: unverified_identity_digest,
+        });
         let post_subject =
             valid_observed_post_effect_subject(request, observation.observed_post_effect_subject);
         let usage = safe_effect_usage(observation.usage);
         let mut evidence = sanitize_untrusted_sandbox_evidence(observation.evidence);
+        if executor_unverified {
+            evidence.retain(|reference| reference.evidence_type != EffectEvidenceType::Executor);
+            evidence.push(EffectEvidenceReference {
+                evidence_type: EffectEvidenceType::Executor,
+                digest: observed_executor.digest.clone(),
+                locator: None,
+            });
+        }
         ensure_effect_evidence(&mut evidence, EffectEvidenceType::Executor, "executor");
         ensure_effect_evidence(
             &mut evidence,
@@ -1053,8 +1083,8 @@ where
             .reason
             .filter(|reason| !reason.trim().is_empty())
             .map_or_else(
-                || "protected_effect.untrusted_sandbox".to_string(),
-                |reason| format!("protected_effect.untrusted_sandbox: {reason}"),
+                || untrusted_reason.to_string(),
+                |reason| format!("{untrusted_reason}: {reason}"),
             );
         let body = ProtectedEffectResultBody {
             schema_version: PROTECTED_EFFECT_RESULT_SCHEMA.to_owned(),
@@ -1071,7 +1101,7 @@ where
             observed_post_effect_subject: post_subject,
             exit: None,
             usage,
-            executor: Some(self.config.executor_identity.clone()),
+            executor: Some(observed_executor),
             sandbox_profile: Some(request.sandbox_profile.clone()),
             reason: Some(reason),
             evidence,

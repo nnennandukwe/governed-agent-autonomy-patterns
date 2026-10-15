@@ -1,0 +1,24 @@
+[package]
+name = "gaap-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+# Keep MCP and async transport dependencies outside GAAP's domain crate.
+[workspace]
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+rmcp = { version = "=3.5.1", default-features = false, features = ["client"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+serde_jcs = "=0.2.0"
+sha2 = "=0.10.9"
+jsonschema = { version = "=0.52.1", default-features = false }
+
+[dev-dependencies]
+tempfile = "=3.27.0"

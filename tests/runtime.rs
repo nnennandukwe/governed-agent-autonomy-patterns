@@ -1403,8 +1403,7 @@ fn attempted_result_uses_trusted_executor_identity() {
     let effect = effect_request(&run_request, &support, 1);
     let post_subject = subject(digest(b'e'));
     let calls = Rc::new(RefCell::new(Vec::new()));
-    let mut observation = executed_observation(post_subject.clone());
-    observation.executor = None;
+    let observation = executed_observation(post_subject.clone());
 
     let execution = run_with(
         run_request.clone(),
@@ -1843,4 +1842,100 @@ fn same_inputs_produce_same_receipt_and_effect_digests() {
         first.protected_effect_results[0].result_digest,
         second.protected_effect_results[0].result_digest
     );
+}
+
+#[test]
+fn mismatched_observed_executor_preserves_attempt_but_cant_complete() {
+    let run_request = request();
+    let support = support();
+    let effect = effect_request(&run_request, &support, 1);
+    let post_subject = subject(digest(b'e'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut observation = executed_observation(post_subject.clone());
+    let mut actual_executor = executor_identity();
+    actual_executor.digest = digest(b'f');
+    observation.executor = Some(actual_executor.clone());
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![run_request.requested_capability.clone()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [
+                Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                    effect.clone(),
+                )))),
+                Ok(AgentStep::Finish),
+            ],
+        ),
+        RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+        ScriptedVerifier::new(passing_verification(&post_subject.digest)),
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "protected_effect.untrusted_executor"
+    );
+    let result = &execution.protected_effect_results[0];
+    assert_eq!(
+        result.body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(result.body.executor, Some(actual_executor));
+    assert_eq!(result.body.observed_post_effect_subject, Some(post_subject));
+    assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
+    verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+    verify_protected_effect_result(&run_request, &support, &effect, result).unwrap();
+}
+
+#[test]
+fn missing_or_malformed_executor_identity_is_explicitly_unverified() {
+    for observed in [
+        None,
+        Some(ExecutorIdentity {
+            name: "bad-executor".into(),
+            version: "0.1.0".into(),
+            digest: "invalid".into(),
+        }),
+    ] {
+        let run_request = request();
+        let support = support();
+        let effect = effect_request(&run_request, &support, 1);
+        let post_subject = subject(digest(b'e'));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut observation = executed_observation(post_subject.clone());
+        observation.executor = observed;
+        let execution = run_with(
+            run_request.clone(),
+            runtime_support(vec![run_request.requested_capability.clone()]),
+            ScriptedAgent::new(
+                plan_for(&run_request),
+                [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                    effect.clone(),
+                ))))],
+            ),
+            RecordingExecutor::new(calls.clone(), [Ok(observation)]),
+            ScriptedVerifier::new(passing_verification(&post_subject.digest)),
+        );
+        let result = &execution.protected_effect_results[0];
+        assert_eq!(
+            execution.receipt.body.terminal_reason,
+            "protected_effect.untrusted_executor"
+        );
+        assert_eq!(
+            result.body.execution_status,
+            EffectExecutionStatus::UnknownOutcome
+        );
+        assert_eq!(
+            result.body.executor.as_ref().unwrap().name,
+            "unverified-executor"
+        );
+        assert_ne!(result.body.executor, Some(executor_identity()));
+        assert_eq!(result.body.observed_post_effect_subject, Some(post_subject));
+        assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
+        verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
+        verify_protected_effect_result(&run_request, &support, &effect, result).unwrap();
+    }
 }

@@ -6,8 +6,8 @@ agent run.
 
 The current executable slice provides the integrity coordinator, frozen
 contracts, and a deterministic Rust runtime that calls explicit adapter ports
-before protected effects. It does not yet include provider adapters,
-persistence, signing, sandbox enforcement, or ThreadLoop integration.
+before protected effects. A separate MCP stdio client executes external tools through that runtime.
+Agent-provider adapters, persistence, signing, sandbox enforcement and ThreadLoop integration remain pending.
 
 ## Current Interfaces And Evidence
 
@@ -60,6 +60,7 @@ Implemented and tested now:
 - deterministic protected-effect execution through test executor ports,
   one-shot ask blocking, duplicate-effect rejection, unknown-outcome
   separation, interruption evidence, and stale-verification rejection;
+- a separate MCP stdio client with exact capability approval, bounded transport and retained invocation evidence;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
@@ -67,7 +68,7 @@ Implemented and tested now:
 
 Not implemented yet:
 
-- OpenAI, Anthropic, MCP, or other provider adapters;
+- ACP agent-session adapters and OpenAI, Anthropic or other agent-provider integrations;
 - production Protected Effect executor adapters, retry orchestration,
   reconciliation, or persistence;
 - repository mutation interception;
@@ -154,6 +155,7 @@ Architecture decisions:
 - [`0003: Freeze the Agent Run contract as canonical evidence`](./docs/adr/0003-freeze-agent-run-contract.md)
 - [`0004: Separate Protected Effect contracts from execution`](./docs/adr/0004-protected-effect-contract-boundary.md)
 - [`0005: Add a bounded Agent Run engine`](./docs/adr/0005-bounded-agent-run-engine.md)
+- [`0006: Add the MCP client and map conference reuse`](./docs/adr/0006-mcp-client-adapter.md)
 
 The normative contract guide is
 [`Agent Run Contract 0.1.0`](./docs/contracts/agent-run-v0.1.md). Contract
@@ -195,3 +197,15 @@ repository roadmap.
 ## License
 
 GAAP is licensed under the [Apache License 2.0](./LICENSE).
+
+## MCP stdio client adapter
+
+The [MCP adapter](adapters/mcp/README.md) discovers external tool descriptors and invokes an exactly approved tool
+through the existing GAAP executor port. It uses the official Rust SDK in a separate crate, explicit child environments,
+immutable effect bindings, host subject observation, and bounded stdio. Its deterministic subprocess tests also run
+through AgentRunEngine and validate the resulting receipts independently.
+
+The initial profile pins MCP `2025-11-25` and rmcp `3.5.1`. The local stdio execution profile doesn't provide OS isolation.
+Live Goose interoperability, authenticated receipts, durable reconciliation, and ThreadLoop ingestion retain their own
+roadmap issues. The [reuse mapping](docs/adr/0006-mcp-client-adapter.md) records which conference-demo patterns carry
+forward and which capabilities remain separate work.
