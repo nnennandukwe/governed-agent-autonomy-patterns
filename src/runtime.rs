@@ -221,6 +221,10 @@ pub struct VerificationContext<'a> {
 
 /// Narrow adapter that can propose a plan and the next bounded effect.
 pub trait AgentAdapter {
+    /// Release run-owned resources after every engine return, including errors.
+    /// Existing deterministic adapters don't need a cleanup action.
+    fn close(&mut self) {}
+
     fn plan(
         &mut self,
         request: &AgentRunRequest,
@@ -353,6 +357,12 @@ where
     }
 
     pub fn run(&mut self, request: AgentRunRequest) -> Result<AgentRunExecution, RuntimeError> {
+        let result = self.run_inner(request);
+        self.agent.close();
+        result
+    }
+
+    fn run_inner(&mut self, request: AgentRunRequest) -> Result<AgentRunExecution, RuntimeError> {
         validate_config(&self.config, &request)?;
         validate_support(&self.support)?;
         let request_digest = validate_request(&request, self.support.contract_support())
