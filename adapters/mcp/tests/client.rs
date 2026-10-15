@@ -1464,3 +1464,48 @@ fn cancellation_during_reconciliation_keeps_timely_host_evidence() {
     assert!(dir.path().join("dispatch").exists());
     assert!(executor.execute(&effect).is_err());
 }
+
+#[test]
+fn changed_subject_doesnt_inherit_initial_subject_approval() {
+    let dir = TempDir::new().unwrap();
+    let mut executor = McpExecutor::discover(server("normal", &dir), limits()).unwrap();
+    let (mut run, support) = request(executor.tools()[0].capability.clone());
+    // Keep the fixture's real subject approval, then propose against a newer subject.
+    run.approval_context[0].subject_digest = run.subject.digest.clone();
+    let current = gaap::contracts::Subject {
+        digest: hash(b"changed subject"),
+        ..run.subject.clone()
+    };
+    let observed = current.clone();
+    executor
+        .bind_run(
+            run,
+            support,
+            PermissionPolicy {
+                policy_decision: Some(PolicyDecision::Allow),
+                risk_tags: vec![],
+                wrapper_chain: vec![],
+                approvals: vec![],
+            },
+            move |_: &ProtectedEffectRequest| {
+                Ok(SubjectObservation {
+                    subject: observed.clone(),
+                    effect_confirmed: false,
+                    cost_micros: Some(0),
+                    model_tokens: Some(0),
+                })
+            },
+        )
+        .unwrap();
+    let effect = executor
+        .prepare_effect(
+            "echo",
+            json!({"message":"hello"}),
+            "second-subject".into(),
+            1,
+            current,
+            EffectClass::Observation,
+        )
+        .unwrap();
+    assert!(effect.approval_context.is_empty());
+}

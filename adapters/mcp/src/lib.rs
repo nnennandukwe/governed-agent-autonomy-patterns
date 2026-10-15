@@ -458,10 +458,16 @@ impl McpExecutor {
             requested_scopes: vec![RequestedScope::ExternalService {
                 service: self.server_digest.clone(),
                 operation: tool_name.into(),
-                resource: subject.locator,
+                resource: subject.locator.clone(),
             }],
             policies: binding.request.policies.clone(),
-            approval_context: binding.request.approval_context.clone(),
+            approval_context: binding
+                .request
+                .approval_context
+                .iter()
+                .filter(|approval| approval.subject_digest == subject.digest)
+                .cloned()
+                .collect(),
             resource_budget_digest: canonical_resource_budget_digest(
                 &binding.request.resource_budget,
             )
