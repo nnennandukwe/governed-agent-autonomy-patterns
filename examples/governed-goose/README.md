@@ -111,3 +111,28 @@ the zero-dispatch outcome or imply that Goose received the message.
 Each run now retains portable snapshot manifests, original file bytes, effect inputs, tool schemas, MCP outputs and verifier output alongside its unsigned bundle. The runner builds the [attestation adapter](../../adapters/attestation/README.md), emits a separate `CASE-signed` directory and verifies it in a new process. The directory contains `envelope.json`, content-addressed `blobs`, explicitly named fixture trust/policy files and the offline verification result. Its signing key is public test data; don't configure it as production trust.
 
 The first signed subject is the final observed workspace. The receipt still reports the last admitted subject; unreported changes keep those digests different and remain blocked. Failed and interrupted runs also keep their status after signing. Offline verification doesn't rerun the shipping oracle or authorize ThreadLoop lifecycle progression.
+
+## Binding a controller's request
+
+A controller needs the freshly observed workspace and MCP capability before it can bind its own request and run IDs.
+The reference host exposes those fixed parameters as a canonical Agent Run Request:
+
+```bash
+gaap-governed-goose --describe CONFIG.json > template.json
+```
+
+Discovery launches the configured MCP backend for inventory, reads the portable workspace snapshot and exits. It doesn't
+start Goose, open the proposal socket or produce a Terminal Run Receipt. The reference runner checks that discovery
+leaves the workspace and provider transcript unchanged.
+
+The trusted host configuration can then include an optional `agent_run_request` object. Only `request_id` and `run_id`
+may differ from the freshly discovered template. The host validates the full request against its selected contract
+support and compares every other canonical field before starting the conversation. A changed subject, capability,
+policy, task, constraint, approval, budget or verification requirement is rejected. Existing configurations keep their
+case-derived identities.
+
+The runner reproduces the original nine outcome cases plus an additional completed run with caller-selected identities.
+Each run first checks discovery, and the extra run signs and verifies its own output like the original cases. This
+supports [ThreadLoop #111](https://github.com/nnennandukwe/threadloop/issues/111); ThreadLoop still owns claim fencing,
+signature trust, durable evidence admission and its lifecycle guards. The reference remains a fixed three-operation task;
+[GAAP #31](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/31) owns reusable submitted proposals.

@@ -48,6 +48,8 @@ struct Config {
     token: String,
     output: PathBuf,
     case: String,
+    #[serde(default)]
+    agent_run_request: Option<AgentRunRequest>,
 }
 
 type EvidenceArchive = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
@@ -487,15 +489,33 @@ impl VerifierPort for Verifier {
     }
 }
 
+/// Caller identities may change; the bounded task, observations and authority stay host-selected.
+fn select_request(
+    mut template: AgentRunRequest,
+    supplied: Option<AgentRunRequest>,
+) -> Result<AgentRunRequest> {
+    let Some(request) = supplied else {
+        return Ok(template);
+    };
+    let support = ContractSupport::new(template.policies.clone());
+    validate_request(&request, &support)?;
+    template.request_id = request.request_id.clone();
+    template.run_id = request.run_id.clone();
+    if canonical_request_bytes(&request)? != canonical_request_bytes(&template)? {
+        return Err("Controller request differs from the freshly observed bounded template".into());
+    }
+    Ok(request)
+}
+
 fn main() -> Result<()> {
-    let path = std::env::args()
-        .nth(1)
-        .ok_or("usage: gaap-governed-goose CONFIG.json")?;
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let (describe, path) = match arguments.as_slice() {
+        [path] => (false, path),
+        [flag, path] if flag == "--describe" => (true, path),
+        _ => return Err("usage: gaap-governed-goose [--describe] CONFIG.json".into()),
+    };
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     let root = config.agent.working_directory.clone();
-    let listener = UnixListener::bind(&config.socket)?;
-    fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))?;
-    listener.set_nonblocking(true)?;
     let mut server = ServerConfig::new(config.python.clone(), "gaap-effect", "1");
     server.arguments = vec![config.server.display().to_string(), "effect".into()];
     server.working_directory = root.clone();
@@ -540,6 +560,16 @@ fn main() -> Result<()> {
     request.task.constraints = vec!["No ambient tools, external services or credentials.".into()];
     request.resource_budget.max_elapsed_ms = 40000;
     request.resource_budget.max_tool_calls = 3;
+    let request = select_request(request, config.agent_run_request)?;
+    if describe {
+        let mut output = std::io::stdout().lock();
+        output.write_all(&canonical_request_bytes(&request)?)?;
+        output.write_all(b"\n")?;
+        return Ok(());
+    }
+    let listener = UnixListener::bind(&config.socket)?;
+    fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
     let support = ContractSupport::new(request.policies.clone());
     let permission = PermissionPolicy {
         policy_decision: Some(match config.case.as_str() {
@@ -710,6 +740,58 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn template_request() -> AgentRunRequest {
+        serde_json::from_str(include_str!(
+            "../../contracts/v0.1.0/agent-run-request.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn controller_can_bind_only_its_request_and_run_identities() {
+        let template = template_request();
+        let mut supplied = template.clone();
+        supplied.request_id = "threadloop_request_exact_digest".into();
+        supplied.run_id = "threadloop_attempt_exact_claim_digest".into();
+        let selected = select_request(template, Some(supplied.clone())).unwrap();
+        assert_eq!(
+            canonical_request_bytes(&selected).unwrap(),
+            canonical_request_bytes(&supplied).unwrap()
+        );
+    }
+
+    #[test]
+    fn controller_cant_change_any_bounded_template_parameter() {
+        for (path, replacement) in [
+            ("/subject/locator", json!("/another/workspace")),
+            (
+                "/subject/digest",
+                json!(format!("sha256:{}", "e".repeat(64))),
+            ),
+            ("/requested_capability/name", json!("another_capability")),
+            ("/task/instructions", json!("Another task")),
+            ("/task/constraints", json!([])),
+            (
+                "/policies/0/digest",
+                json!(format!("sha256:{}", "e".repeat(64))),
+            ),
+            ("/resource_budget/max_tool_calls", json!(4)),
+            ("/resource_budget/max_elapsed_ms", json!(80000)),
+            ("/approval_context", json!([])),
+            ("/required_verification/evidence_types", json!(["artifact"])),
+        ] {
+            let template = template_request();
+            let mut value = serde_json::to_value(&template).unwrap();
+            // Each replacement differs from the selected contract fixture.
+            if value.pointer(path) == Some(&replacement) {
+                continue;
+            }
+            *value.pointer_mut(path).unwrap() = replacement;
+            let supplied = serde_json::from_value(value).unwrap();
+            assert!(select_request(template, Some(supplied)).is_err(), "{path}");
+        }
+    }
+
     #[test]
     fn a_closed_peer_cant_erase_the_hosts_refusal_record() {
         let (mut host, peer) = UnixStream::pair().unwrap();
