@@ -362,6 +362,7 @@ fn sandbox_execution_evidence(
     archive: &EvidenceArchive,
     transport: impl FnOnce() -> Result<Vec<Vec<u8>>>,
     observe: impl FnOnce() -> Result<gaap::sandbox::SandboxObservation>,
+    runtime_check: impl FnOnce(&gaap::sandbox::SandboxObservation) -> Option<String>,
 ) -> std::result::Result<Vec<EffectEvidenceReference>, RuntimePortError> {
     let not_dispatched = match result {
         Ok(effect) => matches!(
@@ -411,15 +412,18 @@ fn sandbox_execution_evidence(
         Ok(observation) => {
             let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
             retain(bytes.clone(), EffectEvidenceType::Sandbox)?;
-            if !sandbox::succeeded(&observation) {
+            let runtime_rejection = runtime_check(&observation);
+            if !sandbox::succeeded(&observation) || runtime_rejection.is_some() {
                 retain(bytes, EffectEvidenceType::UnknownOutcome)?;
                 if let Ok(effect) = result {
                     mark_sandbox_uncertain(
                         effect,
-                        format!(
-                            "reference.sandbox_{:?}_cleanup_{:?}",
-                            observation.status, observation.cleanup
-                        ),
+                        runtime_rejection.unwrap_or_else(|| {
+                            format!(
+                                "reference.sandbox_{:?}_cleanup_{:?}",
+                                observation.status, observation.cleanup
+                            )
+                        }),
                     );
                 }
             }
@@ -482,6 +486,7 @@ impl ExecutorPort for Executor {
                 &self.archive,
                 || host.transport(prepared),
                 || host.observe(prepared),
+                |observation| host.runtime_records(observation).1,
             )?
         } else {
             vec![]
@@ -540,9 +545,26 @@ impl VerifierPort for Verifier {
         let (success, output, errors, sandbox_evidence, rejection) = if let Some(host) =
             &self.sandbox
         {
-            let (observation, rejection) = host
+            let (observation, mut rejection) = host
                 .verify(context.current_subject.clone(), hash(context.request))
                 .map_err(port_error)?;
+            let mut runtime_evidence = Vec::new();
+            let (records, runtime_rejection) = host.runtime_records(&observation);
+            if rejection.is_none() {
+                rejection = runtime_rejection;
+            }
+            for bytes in records {
+                let digest = raw_hash(&bytes);
+                self.archive
+                    .lock()
+                    .map_err(port_error)?
+                    .insert(digest.clone(), bytes);
+                runtime_evidence.push(EvidenceReference {
+                    evidence_type: EvidenceType::Artifact,
+                    digest,
+                    locator: None,
+                });
+            }
             let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
             let digest = raw_hash(&bytes);
             self.archive
@@ -553,11 +575,14 @@ impl VerifierPort for Verifier {
                 sandbox::succeeded(&observation) && rejection.is_none(),
                 observation.stdout,
                 observation.stderr,
-                Some(EvidenceReference {
-                    evidence_type: EvidenceType::Artifact,
-                    digest,
-                    locator: None,
-                }),
+                {
+                    runtime_evidence.push(EvidenceReference {
+                        evidence_type: EvidenceType::Artifact,
+                        digest,
+                        locator: None,
+                    });
+                    runtime_evidence
+                },
                 rejection,
             )
         } else {
@@ -606,7 +631,7 @@ impl VerifierPort for Verifier {
                 .join()
                 .map_err(|_| port_error("reference.verifier_reader"))?
                 .map_err(port_error)?;
-            (status.success(), output, errors, None, None)
+            (status.success(), output, errors, vec![], None)
         };
         let (observed, output_valid) = verifier_output(success, &output, &errors);
         let expected = [
@@ -1098,6 +1123,7 @@ mod tests {
             &archive,
             || panic!("A refused call has no transport"),
             || panic!("A refused call has no OCI observation"),
+            |_| None,
         )
         .unwrap();
         assert_eq!(result, before);
@@ -1110,6 +1136,7 @@ mod tests {
             &archive,
             || panic!("No transport was dispatched"),
             || panic!("No OCI invocation exists"),
+            |_| None,
         )
         .unwrap();
         assert!(result.unwrap_err().was_not_dispatched());
@@ -1134,6 +1161,7 @@ mod tests {
             &archive,
             || Ok(vec![raw.clone()]),
             || Err("invalid observation".into()),
+            |_| None,
         )
         .unwrap();
         let effect = result.unwrap();
@@ -1189,6 +1217,7 @@ mod tests {
             &archive,
             || Err("missing transport record".into()),
             || Ok(observation),
+            |_| None,
         )
         .unwrap();
         let effect = result.unwrap();
@@ -1208,6 +1237,37 @@ mod tests {
                 .iter()
                 .any(|reference| reference.evidence_type == EffectEvidenceType::UnknownOutcome)
         );
+    }
+
+    #[test]
+    fn supplemental_runtime_rejection_keeps_the_successful_original_as_unknown_evidence() {
+        let archive = EvidenceArchive::default();
+        let empty = raw_hash(b"");
+        let observation = serde_json::from_value(json!({
+            "schema_version":"gaap.sandbox-observation/0.1", "request_digest":empty,
+            "runtime":null,"image_digest":null,"resolved_image_id":null,"owned_resource":"owned","intent_path":null,
+            "status":"exited","exit_code":0,"stdout":[],"stderr":[],"stdout_digest":empty,"stderr_digest":empty,
+            "artifacts":[],"elapsed_ms":1,"cleanup":"removed","reason":null,"cleanup_reason":null,"publication_error":null,
+        })).unwrap();
+        let original = serde_jcs::to_vec(&observation).unwrap();
+        let intent = b"original valid intent".to_vec();
+        let mut result = Ok(evidence_test_observation(EffectExecutionStatus::Executed));
+        sandbox_execution_evidence(
+            &mut result,
+            "effect",
+            &archive,
+            || Ok(vec![intent.clone()]),
+            || Ok(observation),
+            |_| Some("Malformed runtime evidence".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            result.unwrap().execution_status,
+            EffectExecutionStatus::UnknownOutcome
+        );
+        let retained = archive.lock().unwrap();
+        assert_eq!(retained[&raw_hash(&original)], original);
+        assert_eq!(retained[&raw_hash(&intent)], intent);
     }
 
     #[test]
@@ -1265,6 +1325,7 @@ mod tests {
                 docker_environment: BTreeMap::new(),
                 engine_version: "unadopted".into(),
                 runtime_version: "unadopted".into(),
+                gvisor: None,
                 image: gaap::sandbox::SandboxImage {
                     reference: format!("python@sha256:{}", "0".repeat(64)),
                     digest: format!("sha256:{}", "0".repeat(64)),

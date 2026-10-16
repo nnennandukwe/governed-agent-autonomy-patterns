@@ -11,7 +11,7 @@ use gaap::sandbox::{
     SandboxMount, SandboxNetwork, SandboxObservation, SandboxOutputs, SandboxRequest,
     SandboxStatus,
 };
-use gaap_sandbox::{LocalOciAdapter, OciConfig};
+use gaap_sandbox::{GVISOR_FLAGS, GVISOR_PROFILE, GvisorConfig, LocalOciAdapter, OciConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -25,6 +25,8 @@ pub struct ReferenceSandbox {
     pub docker_environment: BTreeMap<String, String>,
     pub engine_version: String,
     pub runtime_version: String,
+    #[serde(default)]
+    pub gvisor: Option<GvisorConfig>,
     pub image: SandboxImage,
     pub user: String,
     pub state_directory: PathBuf,
@@ -88,6 +90,9 @@ impl SandboxHost {
             },
             manifest: Value::Null,
         };
+        if host.config.gvisor.is_some() {
+            host.profile.name = "governed-goose-gvisor".into();
+        }
         let mut profiles = BTreeMap::new();
         for operation in ["file_write", "terminal_echo", "mcp_echo", "verify"] {
             profiles.insert(
@@ -104,7 +109,15 @@ impl SandboxHost {
         host.manifest = json!({"domain":"gaap.governed-goose-oci/0.1","profiles":profiles,"adapter_binary":super::raw_hash(&fs::read(&host.config.executable)?),"docker_binary":super::raw_hash(&fs::read(&host.config.docker_executable)?),"operation_program":super::raw_hash(include_bytes!("../oci_operation.py")),"verifier_program":super::raw_hash(include_bytes!("../verify.py")),"transport":"trusted-host-MCP-stdio","isolation_claim":"local OCI reproducibility boundary"});
         host.manifest["engine"] = json!("docker-compatible");
         host.manifest["engine_version"] = json!(host.config.engine_version);
-        host.manifest["runtime"] = json!({"name":"runc","version":host.config.runtime_version});
+        host.manifest["runtime"] =
+            json!({"name":host.runtime_name(),"version":host.config.runtime_version});
+        if let Some(config) = &host.config.gvisor {
+            host.manifest["domain"] = json!("gaap.governed-goose-gvisor/0.1");
+            host.manifest["gvisor"] = json!(config);
+            host.manifest["flags"] = json!(GVISOR_FLAGS);
+            host.manifest["isolation_claim"] =
+                json!("Linux gVisor workload isolation; trusted host and runtime");
+        }
         host.profile.digest = hash(&host.manifest);
         let profile_path = host.config.state_directory.join("profile.json");
         let bytes = serde_jcs::to_vec(&host.manifest)?;
@@ -116,6 +129,14 @@ impl SandboxHost {
             write_new(&profile_path, &host.manifest)?;
         }
         Ok(host)
+    }
+
+    fn runtime_name(&self) -> &str {
+        if self.config.gvisor.is_some() {
+            "runsc"
+        } else {
+            "runc"
+        }
     }
 
     pub fn ensure_fresh_run(&self) -> Result<()> {
@@ -185,7 +206,12 @@ impl SandboxHost {
         }
         Ok(SandboxRequest {
             schema_version: "gaap.sandbox/0.1".into(),
-            profile_id: "local-oci/0.1".into(),
+            profile_id: if self.config.gvisor.is_some() {
+                GVISOR_PROFILE
+            } else {
+                "local-oci/0.1"
+            }
+            .into(),
             invocation_kind: if operation == "verify" {
                 SandboxInvocationKind::Verification
             } else {
@@ -206,7 +232,11 @@ impl SandboxHost {
             limits: SandboxLimits {
                 cpu_millis_per_second: 1000,
                 memory_bytes: 64 * 1024 * 1024,
-                processes: 16,
+                processes: if self.config.gvisor.is_some() {
+                    256
+                } else {
+                    16
+                },
                 stdout_bytes: 32768,
                 stderr_bytes: 8192,
                 wall_clock_ms: 10000,
@@ -226,12 +256,13 @@ impl SandboxHost {
 
     fn adopted(&self, request: &SandboxRequest) -> Result<OciConfig> {
         Ok(OciConfig {
+            gvisor: self.config.gvisor.clone(),
             executable: self.config.docker_executable.clone(),
             environment: self.config.docker_environment.clone(),
             state_directory: self.config.state_directory.clone(),
             approved_profile_digest: request.profile_digest()?,
             engine_version: self.config.engine_version.clone(),
-            runtime: "runc".into(),
+            runtime: self.runtime_name().into(),
             runtime_version: self.config.runtime_version.clone(),
         })
     }
@@ -306,7 +337,15 @@ impl SandboxHost {
             "stdout_digest":super::raw_hash(&transport.stdout),"stderr_digest":super::raw_hash(&transport.stderr),
             "stdout_truncated":transport.stdout_truncated,"stderr_truncated":transport.stderr_truncated,
         }))?;
-        Ok(vec![transport.stdout, transport.stderr, metadata])
+        let mut evidence = vec![transport.stdout, transport.stderr, metadata];
+        if self.config.gvisor.is_some()
+            && let Some(observation) = fs::read(&prepared.observation)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<SandboxObservation>(&bytes).ok())
+        {
+            evidence.extend(self.runtime_records(&observation).0);
+        }
+        Ok(evidence)
     }
 
     pub fn observe(&self, prepared: &PreparedSandbox) -> Result<SandboxObservation> {
@@ -333,11 +372,16 @@ impl SandboxHost {
         }
         if let Some(runtime) = &observation.runtime {
             if self.manifest["engine"].as_str() != Some(runtime.engine.as_str())
-                || runtime.runtime != "runc"
+                || runtime.runtime != self.runtime_name()
                 || runtime.engine_version != self.config.engine_version
                 || runtime.runtime_version != self.config.runtime_version
-                || self.manifest["docker_binary"].as_str()
-                    != Some(runtime.executable_digest.as_str())
+                || Some(runtime.executable_digest.as_str())
+                    != self
+                        .config
+                        .gvisor
+                        .as_ref()
+                        .map(|config| config.executable_digest.as_str())
+                        .or_else(|| self.manifest["docker_binary"].as_str())
                 || observation.image_digest.as_ref() != Some(&self.config.image.digest)
             {
                 return Err("Actual OCI runtime or image differs from host adoption".into());
@@ -349,6 +393,68 @@ impl SandboxHost {
             return Err("Execution has no observed OCI identity".into());
         }
         Ok(())
+    }
+
+    pub fn runtime_records(
+        &self,
+        observation: &SandboxObservation,
+    ) -> (Vec<Vec<u8>>, Option<String>) {
+        if self.config.gvisor.is_none() || observation.owned_resource.is_none() {
+            return (vec![], None);
+        }
+        let resource = observation.owned_resource.as_deref().unwrap();
+        let mut records = Vec::new();
+        let mut errors = Vec::new();
+        if resource.len() != 37
+            || !resource.starts_with("gaap-")
+            || !resource[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            errors.push("Invalid owned sandbox resource identity".to_owned());
+        } else {
+            for suffix in ["intent", "container", "runtime"] {
+                let path = self
+                    .config
+                    .state_directory
+                    .join(format!("{resource}.{suffix}.json"));
+                let result = (|| -> Result<()> {
+                    if !path.exists() && !succeeded(observation) {
+                        return Ok(());
+                    }
+                    let mut bytes = Vec::new();
+                    fs::File::open(path)?
+                        .take(1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() > 1024 * 1024 {
+                        return Err("Oversized sandbox runtime evidence".into());
+                    }
+                    // Original bounded bytes survive even when parsing or binding fails.
+                    records.push(bytes.clone());
+                    let value: Value = serde_json::from_slice(&bytes)?;
+                    if value["request_digest"].as_str() != Some(&observation.request_digest) {
+                        return Err("Sandbox runtime evidence doesn't bind this request".into());
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    errors.push(format!("{suffix}: {error}"));
+                }
+            }
+        }
+        let rejection = if errors.is_empty() {
+            None
+        } else {
+            Some(errors.join("; "))
+        };
+        if let Some(reason) = &rejection {
+            records.push(
+                serde_jcs::to_vec(&json!({
+                    "schema_version":"gaap.runsc-evidence-missing/0.1",
+                    "request_digest":observation.request_digest,"reason":reason,
+                }))
+                .expect("JSON evidence serializes"),
+            );
+        }
+        (records, rejection)
     }
 
     pub fn verify(
@@ -399,6 +505,7 @@ mod tests {
                 docker_environment: BTreeMap::new(),
                 engine_version: "expected".into(),
                 runtime_version: "expected".into(),
+                gvisor: None,
                 image: request.image.clone(),
                 user: "1000:1000".into(),
                 state_directory: "/state".into(),
@@ -421,5 +528,73 @@ mod tests {
         host.check(&request, &observation).unwrap();
         observation.runtime.as_mut().unwrap().engine = "another-engine".into();
         assert!(host.check(&request, &observation).is_err());
+    }
+    #[test]
+    fn malformed_runtime_records_retain_prior_bytes_and_the_original_observation() {
+        let state = std::env::temp_dir().join(format!(
+            "gaap-runsc-evidence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&state).unwrap();
+        let digest = super::super::raw_hash(b"");
+        let resource = format!("gaap-{}", "a".repeat(32));
+        let observation: SandboxObservation = serde_json::from_value(json!({
+            "schema_version":"gaap.sandbox-observation/0.1", "request_digest":digest,
+            "runtime":null,"image_digest":null,"resolved_image_id":null,"owned_resource":resource,"intent_path":null,
+            "status":"exited","exit_code":0,"stdout":[],"stderr":[],"stdout_digest":digest,"stderr_digest":digest,
+            "artifacts":[],"elapsed_ms":1,"cleanup":"removed","reason":null,"cleanup_reason":null,"publication_error":null,
+        })).unwrap();
+        let host = SandboxHost {
+            config: ReferenceSandbox {
+                executable: "/adapter".into(),
+                docker_executable: "/docker".into(),
+                docker_environment: BTreeMap::new(),
+                engine_version: "test".into(),
+                runtime_version: "test".into(),
+                gvisor: Some(GvisorConfig {
+                    executable: "/runsc".into(),
+                    executable_digest: digest.clone(),
+                }),
+                image: SandboxImage {
+                    reference: format!("python@{digest}"),
+                    digest: digest.clone(),
+                },
+                user: "1000:1000".into(),
+                state_directory: state.clone(),
+            },
+            root: "/subject".into(),
+            profile: SandboxProfileIdentity {
+                name: "test".into(),
+                version: "0.1".into(),
+                digest: digest.clone(),
+            },
+            manifest: Value::Null,
+        };
+        let original = serde_jcs::to_vec(&observation).unwrap();
+        let valid =
+            serde_jcs::to_vec(&json!({"request_digest":digest,"original":"intent"})).unwrap();
+        for broken in ["container", "runtime"] {
+            for suffix in ["intent", "container", "runtime"] {
+                fs::write(
+                    state.join(format!("{resource}.{suffix}.json")),
+                    if suffix == broken {
+                        b"malformed original bytes".as_slice()
+                    } else {
+                        valid.as_slice()
+                    },
+                )
+                .unwrap();
+            }
+            let (records, rejection) = host.runtime_records(&observation);
+            assert!(rejection.unwrap().contains(broken));
+            assert!(records.contains(&valid));
+            assert!(records.contains(&b"malformed original bytes".to_vec()));
+            assert_eq!(original, serde_jcs::to_vec(&observation).unwrap());
+        }
+        fs::remove_dir_all(state).unwrap();
     }
 }

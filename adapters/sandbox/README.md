@@ -4,7 +4,7 @@
 container. It records the actual image, engine, runc version, outputs and cleanup
 outcome. This is a local reproducibility boundary; it isn't sufficient isolation
 for hostile code. The host's ACP/MCP processes and policy/evidence files stay
-outside the container. Linux gVisor isolation is separate work in #17.
+outside the container. The optional [Linux gVisor profile](#linux-gvisor-profile) adds a separate workload isolation boundary.
 
 ## Select the profile
 
@@ -106,7 +106,7 @@ cargo clippy --manifest-path adapters/sandbox/Cargo.toml --locked --all-targets 
 cargo test --manifest-path adapters/sandbox/Cargo.toml --locked
 GAAP_DOCKER_EXECUTABLE="$(command -v docker)" \
 GAAP_DOCKER_HOST=unix:///var/run/docker.sock \
-  cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native -- --ignored --test-threads=1
+  cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native native_ -- --ignored --test-threads=1
 cargo +1.88.0 test --manifest-path adapters/sandbox/Cargo.toml --locked
 cargo audit --file adapters/sandbox/Cargo.lock
 ```
@@ -117,3 +117,102 @@ They create disposable owned workspaces and test declared writes, one-file
 mounts, denied environment/path/network access, read-only mounts, OOM, timeout,
 cancellation, output overflow, runtime mismatch and cleanup failure. CI requires
 the real Docker lane and the OCI Goose matrix.
+
+
+## Linux gVisor profile
+
+Select `gvisor/0.1` through the same `SandboxAdapter`, request and observation.
+`OciConfig.runtime` must be `runsc`. Its optional `gvisor` object contains an
+absolute canonical `executable` path and an exact `executable_digest`. Adopt the
+complete trimmed `runsc --version` stdout as `runtime_version`; don't use the
+Docker server's runc component version for runsc. Keep configuration and state
+outside agent-writable paths. Request profile digests and the Goose profile
+manifest bind the host's selected image, commands, environment, mounts and limits.
+The manifest also binds the runsc adoption and fixed flags. gVisor requires a
+host-task allowance of at least 256 in this profile because its userspace kernel,
+filesystem process and platform helpers consume host tasks. The 32-task OCI
+fixture fails gVisor startup; Linux probes reproduced the failure and passed
+with only that limit raised to 256. This limit bounds host tasks; it isn't a
+claim that each virtual guest process maps to one host task. The Goose gVisor
+profile uses that explicit allowance with the same 64 MiB memory bound.
+
+This version supports Linux x86_64 and aarch64 hosts with a local Docker daemon
+and gVisor's systrap platform. CI exercises x86_64 on Ubuntu 24.04. Native macOS
+and remote Docker daemons aren't supported. Other Linux kernels and arm64 need
+host-specific validation before an isolation claim. The release installer
+rejects unsupported platforms and checksum mismatches without installing a
+runtime. It pins official release `release-20261005.0` and records the archive
+checksum, binary hash and version. Configure a trusted Linux host explicitly:
+
+```sh
+python3 adapters/sandbox/install_runsc.py /tmp/gaap-runsc
+sudo install -m 0755 /tmp/gaap-runsc/runsc /usr/local/bin/runsc
+sudo /usr/local/bin/runsc install --runtime runsc -- --platform=systrap --network=none --directfs=false
+sudo systemctl restart docker
+```
+
+Restarting Docker affects its running containers. Use an isolated development
+or CI host for this setup. The fixed registration must name that exact binary
+and contain exactly those three flags, in order. The adapter checks the binary
+hash, bounded version output and Docker runtime registration before creation,
+again before start, and afterward. The stopped container must report runsc and
+the entire adopted security configuration. Missing runsc, an alternate path,
+weakened flags, changed bytes or a substituted runtime fails closed. There's no
+retry with runc. Workload output such as `dmesg` can't establish runtime identity.
+A trusted host must prevent concurrent daemon/configuration or binary changes
+between these checks and launch.
+
+Run both the native suite and the unchanged signed Agent Run matrix:
+
+```sh
+GAAP_DOCKER_EXECUTABLE=/usr/bin/docker \
+GAAP_DOCKER_HOST=unix:///var/run/docker.sock \
+GAAP_RUNSC_EXECUTABLE=/usr/local/bin/runsc \
+GAAP_SANDBOX_EVIDENCE=/tmp/gaap-runsc-native \
+  cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native -- --ignored --test-threads=1
+GAAP_RUNSC_EXECUTABLE=/usr/local/bin/runsc \
+  python3 examples/governed-goose/run.py --goose /tmp/gaap-goose-1.54.0/goose --output /tmp/gaap-goose-gvisor-evidence --gvisor
+```
+
+The host selects `--oci` or `--gvisor`; agent arguments can't change profiles.
+Both exercise the same Agent Run engine, ACP/MCP adapters, effect schemas and
+signed receipt verification. The required `gvisor` CI lane runs actual Linux
+runsc and uploads original runtime/native records and signed Goose archives,
+including failed runs. A missing runtime fails the lane. Default local tests
+leave native execution explicitly unexecuted.
+
+Private launch intents retain original runtime version bytes, binary identity
+and daemon registration. Separate request-bound records retain the stopped
+container and post-execution runtime checks. Goose includes these original
+records in its content-addressed signed archive for effects and verification.
+Cancellation, timeout, setup failure, crash and unknown outcomes keep their
+existing statuses. A sandbox-denied write keeps its nonzero workload exit and
+original stderr. Cleanup failure stays independent of execution status. A
+post-execution identity probe has its own cleanup-sized bound, followed by the
+separate resource-removal allowance; neither can suppress cleanup. An
+unconfirmed post-execution runtime changes an otherwise successful exit to an
+unknown outcome. Lost evidence never permits automatic replay.
+
+### Threat model and residual trust
+
+Treat agent-generated workload code as untrusted. gVisor intercepts its Linux
+system calls in a userspace kernel, reducing direct exposure to the host kernel.
+The profile denies network at Docker and runsc, disables directfs, mounts only
+declared inputs/outputs, runs a numeric non-root UID/GID, drops capabilities and
+bounds CPU, memory/swap, process count, file size, output and execution time.
+The image's own filesystem and standard virtual system files remain visible;
+arbitrary host paths, host credentials and the Docker socket aren't mounted.
+A workload can still corrupt any writable file the host explicitly exposes.
+
+The host kernel, hardware, Docker/containerd, runsc, image supply chain, adapter,
+policy, verifier and evidence store remain trusted. Same-user or privileged host
+processes can bypass this boundary or replace configuration. Hardware side
+channels, all denial-of-service modes and bugs in those trusted components
+aren't eliminated. Sandbox configuration remains security-critical. This isn't
+perfect isolation, a security certification, Kubernetes integration or hosted
+multitenant execution. Durable reconciliation remains issue 32.
+
+Primary references: [gVisor Docker registration and identity warning](https://gvisor.dev/docs/user_guide/quick_start/docker/),
+[systrap platform support](https://gvisor.dev/docs/user_guide/platforms/),
+[gVisor security model](https://gvisor.dev/docs/architecture_guide/security/),
+[filesystem configuration](https://gvisor.dev/docs/user_guide/filesystem/).

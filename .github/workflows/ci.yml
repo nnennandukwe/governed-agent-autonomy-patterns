@@ -289,7 +289,7 @@ jobs:
         env:
           GAAP_DOCKER_EXECUTABLE: /usr/bin/docker
           GAAP_DOCKER_HOST: unix:///var/run/docker.sock
-        run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native -- --ignored --test-threads=1
+        run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native native_ -- --ignored --test-threads=1
 
       - name: Install pinned Goose locally
         run: python3 examples/governed-goose/install_goose.py /tmp/gaap-goose-oci-1.54.0
@@ -304,6 +304,53 @@ jobs:
       - name: Audit sandbox dependency lockfile
         run: cargo audit --file adapters/sandbox/Cargo.lock
 
+  gvisor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install checksum-pinned official runsc
+        run: |
+          python3 adapters/sandbox/install_runsc.py /tmp/gaap-runsc
+          sudo install -m 0755 /tmp/gaap-runsc/runsc /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install --runtime runsc -- --platform=systrap --network=none --directfs=false
+          sudo systemctl restart docker
+          /usr/local/bin/runsc --version
+          docker info --format '{{json .Runtimes}}'
+
+      - name: Install immutable test image
+        run: docker pull python@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+
+      - name: Exercise actual runsc isolation and lifecycle failure paths
+        env:
+          GAAP_DOCKER_EXECUTABLE: /usr/bin/docker
+          GAAP_DOCKER_HOST: unix:///var/run/docker.sock
+          GAAP_RUNSC_EXECUTABLE: /usr/local/bin/runsc
+          GAAP_SANDBOX_EVIDENCE: /tmp/gaap-runsc-native
+        run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native -- --ignored --test-threads=1
+
+      - name: Install pinned Goose locally
+        run: python3 examples/governed-goose/install_goose.py /tmp/gaap-goose-gvisor-1.54.0
+
+      - name: Prove signed Agent Runs select gVisor with unchanged contracts
+        env:
+          GAAP_RUNSC_EXECUTABLE: /usr/local/bin/runsc
+        run: python3 examples/governed-goose/run.py --goose /tmp/gaap-goose-gvisor-1.54.0/goose --output /tmp/gaap-goose-gvisor-evidence --gvisor
+
+      - name: Retain original Linux runtime and signed run evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gvisor-evidence-${{ github.sha }}
+          path: |
+            /tmp/gaap-runsc/installation.json
+            /tmp/gaap-runsc-native
+            /tmp/gaap-goose-gvisor-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   final:
     if: always()
     needs:
@@ -317,6 +364,7 @@ jobs:
       - goose
       - attestation
       - sandbox
+      - gvisor
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -335,6 +383,7 @@ jobs:
           ATTESTATION_RESULT: ${{ needs.attestation.result }}
           GOOSE_RESULT: ${{ needs.goose.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
+          GVISOR_RESULT: ${{ needs.gvisor.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
@@ -344,6 +393,7 @@ jobs:
           [[ "$GOOSE_RESULT" == "success" ]]
           [[ "$ATTESTATION_RESULT" == "success" ]]
           [[ "$SANDBOX_RESULT" == "success" ]]
+          [[ "$GVISOR_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else
