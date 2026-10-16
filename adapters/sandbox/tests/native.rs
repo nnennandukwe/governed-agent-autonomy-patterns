@@ -631,3 +631,59 @@ fn native_weakened_container_profiles_never_start() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
+fn native_oom_event_recovers_a_missing_state_marker() {
+    let mut fixture = fixture();
+    fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
+    fixture.request.command[5] =
+        "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
+    let real = fixture
+        .config
+        .executable
+        .to_str()
+        .unwrap()
+        .replace('\'', "'\\''");
+    let marker = fixture
+        .root
+        .join("mask-oom-state")
+        .to_str()
+        .unwrap()
+        .replace('\'', "'\\''");
+    proxy(
+        &mut fixture,
+        &format!(
+            "if [ \"$1\" = container ] && [ \"$2\" = start ]; then '{real}' \"$@\"; result=$?; : > '{marker}'; exit \"$result\"; fi\nif [ \"$1\" = container ] && [ \"$2\" = inspect ] && [ -f '{marker}' ]; then '{real}' \"$@\" | /usr/bin/python3 -I -S -B -c 'import json,sys;v=json.load(sys.stdin);v[0][\"State\"][\"OOMKilled\"]=False;json.dump(v,sys.stdout)'; exit $?; fi"
+        ),
+    );
+    fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+    let observation = run(&fixture);
+    assert_eq!(
+        observation.status,
+        SandboxStatus::ResourceLimit,
+        "{observation:?}"
+    );
+    assert_eq!(observation.exit_code, Some(137));
+    assert!(observation.reason.as_ref().unwrap().contains("OOM event"));
+    assert_eq!(observation.cleanup, SandboxCleanup::Removed);
+}
+
+#[test]
+#[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
+fn native_exit_137_alone_doesnt_prove_oom() {
+    let mut fixture = fixture();
+    fixture.request.command[5] = "raise SystemExit(137)".into();
+    fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+    let observation = run(&fixture);
+    assert_eq!(observation.status, SandboxStatus::Exited);
+    assert_eq!(observation.exit_code, Some(137));
+    assert!(
+        observation
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("hasn't confirmed")
+    );
+    assert_eq!(observation.cleanup, SandboxCleanup::Removed);
+}

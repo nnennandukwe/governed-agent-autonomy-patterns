@@ -81,7 +81,7 @@ retaining the observed exit and collected artifacts. SIGINT, SIGTERM and SIGHUP 
 process adapter's cancellation flag.
 
 `status` separates setup failure, ordinary exit, cancellation, timeout, overflow,
-resource limit, runtime crash and unknown outcome. Resource evidence identifies the Docker OOM marker or an exit consistent with Linux SIGXFSZ under the configured file-size bound; an exit code alone can't prove its kernel cause. `cleanup` independently
+resource limit, runtime crash and unknown outcome. Resource evidence identifies the Docker OOM marker, an owned-container OOM event, or an exit consistent with Linux SIGXFSZ under the configured file-size bound; an exit code alone can't prove its kernel cause. If exit 137 lacks the OOM marker, the adapter reads the daemon's OOM events for up to 250 ms within the original execution deadline. It requires the exact container ID and owner nonce. An unconfirmed cause remains an ordinary nonzero exit with an explicit reason. See [Docker's event interface](https://docs.docker.com/reference/cli/docker/system/events/). `cleanup` independently
 reports `not_created`, `removed` or `unconfirmed`. The adapter publishes a private
 observation after cleanup. A publication failure returns its error and retains
 the original intent. A hard kill can leave only the intent and an owned container.

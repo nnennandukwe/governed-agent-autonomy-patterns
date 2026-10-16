@@ -418,6 +418,55 @@ impl LocalOciAdapter {
 }
 
 impl LocalOciAdapter {
+    fn oom_event(
+        &self,
+        name: &str,
+        owner: &str,
+        container_id: &str,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Checked<Option<Value>> {
+        // The daemon can emit OOM independently of its terminal State marker.
+        // Read its cached/live event stream within this execution's deadline;
+        // the bounded process reader retains complete events before stopping it.
+        let probe_deadline = deadline.min(Instant::now() + Duration::from_millis(250));
+        let output = self.process(
+            &[
+                "events".into(),
+                "--since".into(),
+                "1".into(),
+                "--filter".into(),
+                format!("container={name}"),
+                "--filter".into(),
+                "event=oom".into(),
+                "--format".into(),
+                "{{json .}}".into(),
+            ],
+            probe_deadline,
+            32768,
+            8192,
+            cancelled,
+        )?;
+        check_budget(deadline, cancelled)?;
+        for line in output.stdout.split(|byte| *byte == b'\n') {
+            let Ok(event) = serde_json::from_slice::<Value>(line) else {
+                continue;
+            };
+            if event["Type"] == "container"
+                && event["Action"] == "oom"
+                && event["Actor"]["ID"] == container_id
+                && event["Actor"]["Attributes"]["org.gaap.owner"] == owner
+            {
+                return Ok(Some(serde_json::json!({
+                    "type":"container", "action":"oom", "container_id":container_id, "owner":owner,
+                    "time":event["time"],
+                    "time_nano":event["timeNano"].as_u64().map(|value| value.to_string()),
+                })));
+            }
+        }
+        Ok(None)
+    }
+
     fn preflight(
         &mut self,
         request: &SandboxRequest,
@@ -982,7 +1031,22 @@ impl SandboxAdapter for LocalOciAdapter {
                 }
                 observation.exit_code = state["ExitCode"].as_i64();
                 let file_limit_signal = observation.exit_code == Some(128 + 25);
-                observation.status = if state["OOMKilled"] == true {
+                let oom_event = if state["OOMKilled"] != true && observation.exit_code == Some(137)
+                {
+                    match inspected["Id"].as_str() {
+                        Some(id) => self.oom_event(&name, &owner, id, deadline, cancelled)?,
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                observation.status = if state["OOMKilled"] == true || oom_event.is_some() {
+                    observation.reason = Some(match oom_event {
+                        Some(event) => {
+                            format!("sandbox.resource_limit: Docker reported an OOM event {event}")
+                        }
+                        None => "sandbox.resource_limit: Docker reports OOMKilled".into(),
+                    });
                     SandboxStatus::ResourceLimit
                 } else if file_limit_signal {
                     // OCI reports an exit code, so this is signal-compatible evidence,
@@ -995,6 +1059,9 @@ impl SandboxAdapter for LocalOciAdapter {
                 {
                     SandboxStatus::RuntimeCrash
                 } else {
+                    if observation.exit_code == Some(137) {
+                        observation.reason = Some("sandbox.resource_observation: exit 137; Docker hasn't confirmed an OOM cause".into());
+                    }
                     SandboxStatus::Exited
                 };
                 if output.code
