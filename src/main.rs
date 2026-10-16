@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod runtime_subject;
+
 const REQUEST_SCHEMA: &str = "run-invariant.subject-request/0.1.0";
 const RESPONSE_SCHEMA: &str = "run-invariant.subject-response/0.1.0";
 const PROTOCOL_VERSION: &str = "0.1.0";
@@ -66,7 +68,7 @@ struct CaseResult {
 }
 
 fn help() -> &'static str {
-    "GAAP agent-run integrity coordinator\n\nUsage:\n  gaap run-invariant\n  gaap --help\n\nrun-invariant reads one subject request from stdin and writes one response to stdout.\n"
+    "GAAP agent-run integrity coordinator\n\nUsage:\n  gaap run-invariant\n  gaap runtime-subject\n  gaap --help\n\nrun-invariant reads one subject request from stdin and writes one response to stdout.\n"
 }
 
 fn request_digest(bytes: &[u8]) -> String {
@@ -141,6 +143,13 @@ fn main() -> ExitCode {
             print!("{}", help());
             ExitCode::SUCCESS
         }
+        "runtime-subject" if !has_extra_arguments => match runtime_subject::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("gaap runtime subject error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         "run-invariant" if !has_extra_arguments => match run_invariant() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -24,6 +25,14 @@ pub struct AgentRunExecution {
     pub protected_effect_results: Vec<ProtectedEffectResult>,
 }
 
+/// A host approval binds one tool schema to one exact capability identity.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedToolSchema {
+    pub capability: CapabilityIdentity,
+    pub tool_schema_digest: String,
+}
+
 /// Runtime-only support metadata that does not alter the frozen v0.1 contracts.
 #[derive(Debug, Clone)]
 pub struct RuntimeSupport {
@@ -33,6 +42,7 @@ pub struct RuntimeSupport {
     protected_effect_usage_estimate: EffectUsage,
     runtime_approvals: Vec<GateApproval>,
     trusted_verifier_ids: Vec<String>,
+    trusted_tool_schemas: Option<Vec<TrustedToolSchema>>,
 }
 
 impl RuntimeSupport {
@@ -52,7 +62,14 @@ impl RuntimeSupport {
             protected_effect_usage_estimate,
             runtime_approvals,
             trusted_verifier_ids,
+            trusted_tool_schemas: None,
         }
+    }
+
+    /// Pin tool schemas independently of capability names and digests.
+    pub fn with_trusted_tool_schemas(mut self, schemas: Vec<TrustedToolSchema>) -> Self {
+        self.trusted_tool_schemas = Some(schemas);
+        self
     }
 
     /// Return the contract support used for request and receipt validation.
@@ -266,6 +283,18 @@ pub trait ExecutorPort {
 
 /// Narrow verifier port used before the terminal completion decision.
 pub trait VerifierPort {
+    /// Recheck host-owned completion conditions after successful verification.
+    /// Existing deterministic verifiers have no asynchronous subject to observe.
+    fn completion_check(
+        &mut self,
+        _context: VerificationContext<'_>,
+    ) -> Result<PortObservation<()>, RuntimePortError> {
+        Ok(PortObservation {
+            value: (),
+            usage: zero_resource_usage(),
+        })
+    }
+
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
@@ -278,6 +307,7 @@ pub struct RuntimePortError {
     message: String,
     not_dispatched: bool,
     evidence: Vec<EffectEvidenceReference>,
+    observed_usage: Option<ResourceUsage>,
 }
 
 impl RuntimePortError {
@@ -286,6 +316,7 @@ impl RuntimePortError {
             message: message.into(),
             not_dispatched: false,
             evidence: Vec::new(),
+            observed_usage: None,
         }
     }
 
@@ -295,12 +326,22 @@ impl RuntimePortError {
             message: message.into(),
             not_dispatched: true,
             evidence: Vec::new(),
+            observed_usage: None,
         }
     }
 
     /// Host-owned evidence retained when an attempted effect loses its response.
+    /// References must fit UnknownOutcome; contradictory failure/interruption
+    /// evidence is rejected by the frozen result validator. Known outcomes use
+    /// the corresponding ExecutorObservation instead.
     pub fn with_evidence(mut self, evidence: Vec<EffectEvidenceReference>) -> Self {
         self.evidence = evidence;
+        self
+    }
+
+    /// Retain host-observed adapter usage even when the operation failed.
+    pub fn with_usage(mut self, usage: ResourceUsage) -> Self {
+        self.observed_usage = Some(usage);
         self
     }
 
@@ -416,6 +457,9 @@ where
         let plan_observation = match self.agent.plan(&request) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -453,6 +497,9 @@ where
             }) {
                 Ok(observation) => observation,
                 Err(error) => {
+                    if let Some(usage) = &error.observed_usage {
+                        let _ = ledger.record_usage(usage);
+                    }
                     return self.finish(
                         ledger,
                         AgentRunStatus::Failed,
@@ -594,7 +641,11 @@ where
 
         let tool_trust_decision = self.coordinator.evaluate(
             Gate::ToolTrust,
-            &tool_trust_input(&self.support, &proposal.request.capability),
+            &tool_trust_input(
+                &self.support,
+                &proposal.request.capability,
+                proposal.request.tool_schema_digest.as_deref(),
+            ),
         );
         let tool_trust_decision_id =
             ledger.decision_id("tool-trust", proposal.request.effect_sequence);
@@ -712,6 +763,9 @@ where
         let mut observation = match self.executor.execute(&proposal.request) {
             Ok(observation) => observation,
             Err(error) if error.was_not_dispatched() => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 let mut decision = Decision::block("executor.not_dispatched", &["stop_execution"]);
                 decision.effects.push(error.message().to_owned());
                 return self
@@ -951,6 +1005,21 @@ where
         decision: ProtectedEffectDecision,
         error: RuntimePortError,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
+        let reason = format!("executor.failed: {}", error.message());
+        let observed_usage = error
+            .observed_usage
+            .clone()
+            .unwrap_or_else(zero_resource_usage);
+        let mut evidence = error.evidence;
+        // Trusted host observations take precedence; synthesize only missing categories.
+        for (kind, label) in [
+            (EffectEvidenceType::Executor, "executor"),
+            (EffectEvidenceType::Sandbox, "sandbox"),
+            (EffectEvidenceType::Usage, "usage"),
+            (EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
+        ] {
+            ensure_effect_evidence(&mut evidence, kind, label);
+        }
         let body = ProtectedEffectResultBody {
             schema_version: PROTECTED_EFFECT_RESULT_SCHEMA.to_owned(),
             effect_id: request.effect_id.clone(),
@@ -968,22 +1037,15 @@ where
             // The port was invoked and its response was lost. Count that attempt
             // even though its external outcome and additional usage are unknown.
             usage: EffectUsage {
-                tool_calls: 1,
-                ..zero_effect_usage()
+                cost_micros: observed_usage.cost_micros,
+                elapsed_ms: observed_usage.elapsed_ms,
+                model_tokens: observed_usage.model_tokens,
+                tool_calls: observed_usage.tool_calls.max(1),
             },
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
-            reason: Some(format!("executor.failed: {}", error.message())),
-            evidence: [
-                vec![
-                    runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
-                    runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
-                    runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
-                    runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
-                ],
-                error.evidence,
-            ]
-            .concat(),
+            reason: Some(reason),
+            evidence,
         };
         seal_protected_effect_result(
             &ledger.request,
@@ -1003,6 +1065,9 @@ where
         }) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -1044,6 +1109,28 @@ where
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);
         }
+        let completion_check = self.verifier.completion_check(VerificationContext {
+            request: &ledger.request,
+            current_subject: &ledger.current_subject,
+            usage: &ledger.usage,
+        });
+        match completion_check {
+            Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
+                return self.finish(
+                    ledger,
+                    AgentRunStatus::Failed,
+                    format!("verifier.completion_check_failed: {}", error.message()),
+                );
+            }
+            Ok(observation) => {
+                if let Some(reason) = ledger.record_usage(&observation.usage) {
+                    return self.finish(ledger, AgentRunStatus::Blocked, reason);
+                }
+            }
+        }
         let completion_decision = self.coordinator.evaluate(
             Gate::Workflow,
             &workflow_completion_input(
@@ -1069,6 +1156,9 @@ where
                 }
                 Ok(None) => (),
                 Err(error) => {
+                    if let Some(usage) = &error.observed_usage {
+                        let _ = ledger.record_usage(usage);
+                    }
                     return self.finish(
                         ledger,
                         AgentRunStatus::Failed,
@@ -1638,6 +1728,22 @@ fn validate_config(config: &RuntimeConfig, request: &AgentRunRequest) -> Result<
 }
 
 fn validate_support(support: &RuntimeSupport) -> Result<(), RuntimeError> {
+    if support
+        .trusted_tool_schemas
+        .as_ref()
+        .is_some_and(|digests| {
+            digests.iter().any(|pin| {
+                !is_digest_string(&pin.tool_schema_digest)
+                    || !is_digest_string(&pin.capability.digest)
+                    || pin.capability.name.trim().is_empty()
+                    || pin.capability.version.trim().is_empty()
+            })
+        })
+    {
+        return Err(RuntimeError::InvalidConfig(
+            "trusted tool schema digests must be valid content digests".into(),
+        ));
+    }
     for (index, approval) in support.runtime_approvals.iter().enumerate() {
         if !is_digest_string(&approval.subject_digest)
             || approval
@@ -1700,8 +1806,19 @@ fn permission_input(action_digest: &str, permission: &PermissionPolicy) -> Value
     })
 }
 
-fn tool_trust_input(support: &RuntimeSupport, capability: &CapabilityIdentity) -> Value {
-    let approval = if support.trusts_capability(capability) {
+fn tool_trust_input(
+    support: &RuntimeSupport,
+    capability: &CapabilityIdentity,
+    tool_schema_digest: Option<&str>,
+) -> Value {
+    let approval = if support.trusts_capability(capability)
+        && support.trusted_tool_schemas.as_ref().is_none_or(|trusted| {
+            tool_schema_digest.is_some_and(|digest| {
+                trusted
+                    .iter()
+                    .any(|pin| pin.capability == *capability && pin.tool_schema_digest == digest)
+            })
+        }) {
         json!({
             "status": "approved",
             "subject_digest": capability.digest,

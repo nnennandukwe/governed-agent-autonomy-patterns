@@ -16,7 +16,7 @@ use gaap::runtime::{
     AgentAdapter, AgentRunContext, AgentRunEngine, AgentStep, BudgetThresholds, Cancellation,
     ExecutorObservation, ExecutorPort, GateApproval, PermissionPolicy, PlanProposal,
     PolicyDecision, PortObservation, ProtectedEffectProposal, RuntimeConfig, RuntimePortError,
-    RuntimeSupport, VerificationContext, VerificationReport, VerifierPort,
+    RuntimeSupport, TrustedToolSchema, VerificationContext, VerificationReport, VerifierPort,
 };
 
 fn digest(byte: u8) -> String {
@@ -454,6 +454,7 @@ fn passing_verification(subject_digest: &str) -> VerificationReport {
 }
 
 struct ScriptedAgent {
+    claim_error: Option<RuntimePortError>,
     plan: Option<Result<PortObservation<PlanProposal>, RuntimePortError>>,
     steps: VecDeque<Result<PortObservation<AgentStep>, RuntimePortError>>,
 }
@@ -477,6 +478,7 @@ impl ScriptedAgent {
         steps: impl IntoIterator<Item = Result<PortObservation<AgentStep>, RuntimePortError>>,
     ) -> Self {
         Self {
+            claim_error: None,
             plan: Some(Ok(plan)),
             steps: steps.into_iter().collect(),
         }
@@ -484,6 +486,9 @@ impl ScriptedAgent {
 }
 
 impl AgentAdapter for ScriptedAgent {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        self.claim_error.take().map_or(Ok(None), Err)
+    }
     fn plan(
         &mut self,
         _request: &AgentRunRequest,
@@ -504,6 +509,7 @@ impl AgentAdapter for ScriptedAgent {
 }
 
 struct RecordingExecutor {
+    claim_error: Option<RuntimePortError>,
     calls: Rc<RefCell<Vec<String>>>,
     observations: VecDeque<Result<ExecutorObservation, RuntimePortError>>,
 }
@@ -514,6 +520,7 @@ impl RecordingExecutor {
         observations: impl IntoIterator<Item = Result<ExecutorObservation, RuntimePortError>>,
     ) -> Self {
         Self {
+            claim_error: None,
             calls,
             observations: observations.into_iter().collect(),
         }
@@ -521,6 +528,9 @@ impl RecordingExecutor {
 }
 
 impl ExecutorPort for RecordingExecutor {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        self.claim_error.take().map_or(Ok(None), Err)
+    }
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -1942,5 +1952,206 @@ fn missing_or_malformed_executor_identity_is_explicitly_unverified() {
         assert_eq!(calls.borrow().as_slice(), ["effect-1"]);
         verify_terminal_receipt(&run_request, &support, &execution.receipt).unwrap();
         verify_protected_effect_result(&run_request, &support, &effect, result).unwrap();
+    }
+}
+
+#[test]
+fn pinned_tool_schema_change_blocks_before_executor() {
+    let run_request = request();
+    let mut proposed = effect_request(&run_request, &support(), 1);
+    proposed.tool_schema_digest = Some(digest(b'f'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability()]).with_trusted_tool_schemas(vec![TrustedToolSchema {
+            capability: capability(),
+            tool_schema_digest: digest(b'6'),
+        }]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(proposed))))],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine
+        .run(run_request)
+        .expect("schema drift seals a blocked receipt");
+    assert!(calls.borrow().is_empty());
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+    assert_eq!(
+        result.receipt.body.terminal_reason,
+        "tool_trust.approval_required"
+    );
+    assert_eq!(
+        result.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::Denied
+    );
+}
+
+#[test]
+fn schema_approval_cant_be_borrowed_from_another_capability() {
+    let run_request = request();
+    let proposed = effect_request(&run_request, &support(), 1);
+    let mut other = capability();
+    other.name = "filesystem.read".into();
+    other.digest = digest(b'f');
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability(), other.clone()]).with_trusted_tool_schemas(vec![
+            TrustedToolSchema {
+                capability: other,
+                tool_schema_digest: digest(b'6'),
+            },
+        ]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(proposed))))],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine.run(run_request).unwrap();
+    assert!(calls.borrow().is_empty());
+    assert_eq!(
+        result.receipt.body.terminal_reason,
+        "tool_trust.approval_required"
+    );
+}
+
+#[test]
+fn failed_adapter_usage_is_retained_in_terminal_receipt() {
+    let run_request = request();
+    let failed_usage = ResourceUsage {
+        cost_micros: 7,
+        elapsed_ms: 23,
+        model_tokens: 0,
+        tool_calls: 0,
+    };
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability()]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Err(
+                RuntimePortError::new("adapter failed").with_usage(failed_usage.clone())
+            )],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine.run(run_request).unwrap();
+    assert!(calls.borrow().is_empty());
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert_eq!(result.receipt.body.usage, failed_usage);
+}
+
+#[test]
+fn lost_executor_reply_preserves_host_evidence_without_synthetic_duplicates() {
+    let run_request = request();
+    let effect = effect_request(&run_request, &support(), 1);
+    let host_evidence = vec![
+        effect_evidence(EffectEvidenceType::Executor, b'a'),
+        effect_evidence(EffectEvidenceType::Sandbox, b'b'),
+        effect_evidence(EffectEvidenceType::Usage, b'c'),
+        effect_evidence(EffectEvidenceType::UnknownOutcome, b'd'),
+    ];
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![capability()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(effect))))],
+        ),
+        RecordingExecutor::new(
+            calls,
+            [Err(
+                RuntimePortError::new("response lost").with_evidence(host_evidence.clone())
+            )],
+        ),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.evidence,
+        host_evidence
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+}
+
+#[test]
+fn executor_failures_retain_sampled_usage_and_known_dispatch_minimum() {
+    for dispatched in [false, true] {
+        let run_request = request();
+        let effect = effect_request(&run_request, &support(), 1);
+        let sampled = ResourceUsage {
+            cost_micros: 7,
+            elapsed_ms: 13,
+            model_tokens: 3,
+            tool_calls: 0,
+        };
+        let error = if dispatched {
+            RuntimePortError::new("response lost")
+        } else {
+            RuntimePortError::before_dispatch("dispatch refused")
+        }
+        .with_usage(sampled.clone());
+        let execution = run_with(
+            run_request.clone(),
+            runtime_support(vec![capability()]),
+            ScriptedAgent::new(
+                plan_for(&run_request),
+                [Ok(AgentStep::ProtectedEffect(Box::new(proposal(effect))))],
+            ),
+            RecordingExecutor::new(Rc::new(RefCell::new(Vec::new())), [Err(error)]),
+            ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+        );
+        let expected = ResourceUsage {
+            tool_calls: u64::from(dispatched),
+            ..sampled
+        };
+        assert_eq!(execution.receipt.body.usage, expected);
+        assert_eq!(
+            execution.protected_effect_results[0].body.usage.tool_calls,
+            u64::from(dispatched)
+        );
+    }
+}
+
+#[test]
+fn completion_claim_failures_retain_sampled_usage_without_completion_authority() {
+    for agent_fails in [true, false] {
+        let run_request = request();
+        let sampled = resource_usage(7);
+        let mut agent = ScriptedAgent::new(plan_for(&run_request), [Ok(AgentStep::Finish)]);
+        let mut executor = RecordingExecutor::new(Rc::new(RefCell::new(Vec::new())), []);
+        let error = RuntimePortError::new("claim failed").with_usage(sampled.clone());
+        if agent_fails {
+            agent.claim_error = Some(error);
+        } else {
+            executor.claim_error = Some(error);
+        }
+        let execution = run_with(
+            run_request,
+            runtime_support(vec![capability()]),
+            agent,
+            executor,
+            ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+        );
+        assert_eq!(execution.receipt.body.usage, sampled);
+        assert_eq!(
+            execution.receipt.body.terminal_status,
+            AgentRunStatus::Failed
+        );
+        assert!(!execution.receipt.body.events.iter().any(|event| matches!(event, RunEvent::ProtectedEffectDecision { decision_id, .. } if decision_id == "decision-completion")));
     }
 }
