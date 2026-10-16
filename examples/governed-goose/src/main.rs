@@ -330,6 +330,75 @@ impl AgentAdapter for AgentPort {
         }
     }
 }
+fn sandbox_execution_evidence(
+    result: &mut std::result::Result<ExecutorObservation, RuntimePortError>,
+    effect_digest: &str,
+    archive: &EvidenceArchive,
+    transport: impl FnOnce() -> Result<Vec<Vec<u8>>>,
+    observe: impl FnOnce() -> Result<gaap::sandbox::SandboxObservation>,
+) -> std::result::Result<Vec<EffectEvidenceReference>, RuntimePortError> {
+    let not_dispatched = match result {
+        Ok(effect) => matches!(
+            effect.execution_status,
+            EffectExecutionStatus::Denied | EffectExecutionStatus::AwaitingAuthority
+        ),
+        Err(error) => error.was_not_dispatched(),
+    };
+    if not_dispatched {
+        return Ok(vec![]);
+    }
+    let mut evidence = Vec::new();
+    let mut retain = |bytes: Vec<u8>, evidence_type| -> std::result::Result<(), RuntimePortError> {
+        let digest = raw_hash(&bytes);
+        archive
+            .lock()
+            .map_err(port_error)?
+            .insert(digest.clone(), bytes);
+        let reference = EffectEvidenceReference {
+            evidence_type,
+            digest,
+            locator: None,
+        };
+        if !evidence.contains(&reference) {
+            evidence.push(reference);
+        }
+        Ok(())
+    };
+    if let Ok(blobs) = transport() {
+        for bytes in blobs {
+            retain(bytes, EffectEvidenceType::Artifact)?;
+        }
+    }
+    match observe() {
+        Ok(observation) => {
+            let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
+            retain(bytes.clone(), EffectEvidenceType::Sandbox)?;
+            if !sandbox::succeeded(&observation) {
+                retain(bytes, EffectEvidenceType::UnknownOutcome)?;
+                if let Ok(effect) = result {
+                    effect.execution_status = EffectExecutionStatus::UnknownOutcome;
+                    effect.reason = Some(format!(
+                        "reference.sandbox_{:?}_cleanup_{:?}",
+                        observation.status, observation.cleanup
+                    ));
+                }
+            }
+        }
+        Err(error) => {
+            let reason = format!("reference.sandbox_evidence: {error}");
+            retain(serde_jcs::to_vec(&json!({"schema_version":"gaap.sandbox-evidence-missing/0.1","effect_request_digest":effect_digest,"reason":reason})).map_err(port_error)?, EffectEvidenceType::UnknownOutcome)?;
+            if let Ok(effect) = result {
+                effect.execution_status = EffectExecutionStatus::UnknownOutcome;
+                effect.reason = Some(reason);
+            }
+        }
+    }
+    if let Ok(effect) = result {
+        effect.evidence.extend(evidence.clone());
+    }
+    Ok(evidence)
+}
+
 struct Executor {
     shared: Arc<Mutex<Ports>>,
     sandbox: Option<Arc<SandboxHost>>,
@@ -367,73 +436,25 @@ impl ExecutorPort for Executor {
         ports.conversation.claim_dispatch(request)?;
         let mut pending = ports.pending.take().expect("admitted proposal");
         let mut result = ports.mcp.execute(request);
-        if let (Some(host), Some(prepared)) = (&self.sandbox, &prepared) {
-            match host.observe(prepared) {
-                Ok(observation) => {
-                    let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
-                    let digest = raw_hash(&bytes);
-                    self.archive
-                        .lock()
-                        .map_err(port_error)?
-                        .insert(digest.clone(), bytes);
-                    if let Ok(effect) = &mut result {
-                        effect.evidence.push(EffectEvidenceReference {
-                            evidence_type: EffectEvidenceType::Sandbox,
-                            digest: digest.clone(),
-                            locator: None,
-                        });
-                        if !sandbox::succeeded(&observation) {
-                            effect.execution_status = EffectExecutionStatus::UnknownOutcome;
-                            effect.evidence.push(EffectEvidenceReference {
-                                evidence_type: EffectEvidenceType::UnknownOutcome,
-                                digest: digest.clone(),
-                                locator: None,
-                            });
-                            effect.reason = Some(format!(
-                                "reference.sandbox_{:?}_cleanup_{:?}",
-                                observation.status, observation.cleanup
-                            ));
-                        }
-                    }
-                    if let Err(error) = result {
-                        result = Err(error.with_evidence(vec![EffectEvidenceReference {
-                            evidence_type: EffectEvidenceType::Sandbox,
-                            digest,
-                            locator: None,
-                        }]));
-                    }
-                }
-                Err(error) => {
-                    if let Ok(effect) = &mut result {
-                        effect.execution_status = EffectExecutionStatus::UnknownOutcome;
-                        effect.reason = Some(format!("reference.sandbox_evidence: {error}"));
-                        let bytes = serde_jcs::to_vec(&json!({
-                            "schema_version":"gaap.sandbox-evidence-missing/0.1",
-                            "effect_request_digest":hash(request),
-                            "reason":effect.reason,
-                        }))
-                        .map_err(port_error)?;
-                        let digest = raw_hash(&bytes);
-                        self.archive
-                            .lock()
-                            .map_err(port_error)?
-                            .insert(digest.clone(), bytes);
-                        effect.evidence.push(EffectEvidenceReference {
-                            evidence_type: EffectEvidenceType::UnknownOutcome,
-                            digest,
-                            locator: None,
-                        });
-                    }
-                }
-            }
-        }
+        let mut retained = if let (Some(host), Some(prepared)) = (&self.sandbox, &prepared) {
+            sandbox_execution_evidence(
+                &mut result,
+                &hash(request),
+                &self.archive,
+                || host.transport(prepared),
+                || host.observe(prepared),
+            )?
+        } else {
+            vec![]
+        };
         let session_evidence = ports.conversation.effect_evidence()?;
+        retained.push(session_evidence.clone());
         let result = match result {
             Ok(mut observation) => {
                 observation.evidence.push(session_evidence);
                 Ok(observation)
             }
-            Err(error) => Err(error.with_evidence(vec![session_evidence])),
+            Err(error) => Err(error.with_evidence(retained)),
         };
         let succeeded = result.as_ref().is_ok_and(|observation| {
             observation.execution_status == EffectExecutionStatus::Executed
@@ -446,6 +467,19 @@ impl ExecutorPort for Executor {
             .push(json!({"effect_id":request.effect_id,"response":response,"written":written}));
         ports.last_meter = Instant::now();
         result
+    }
+}
+
+fn verifier_output(success: bool, output: &[u8], errors: &[u8]) -> (Value, bool) {
+    if !success || !errors.is_empty() || output.len() > 32768 {
+        return (json!({"failure":"reference.verifier_failed"}), false);
+    }
+    match serde_json::from_slice(output) {
+        Ok(value) => (value, true),
+        Err(error) => (
+            json!({"failure":"reference.verifier_output","reason":error.to_string()}),
+            false,
+        ),
     }
 }
 
@@ -464,8 +498,10 @@ impl VerifierPort for Verifier {
     ) -> std::result::Result<PortObservation<VerificationReport>, RuntimePortError> {
         let started = Instant::now();
         let before = snapshot(&self.root, &self.archive)?;
-        let (success, output, errors, sandbox_evidence) = if let Some(host) = &self.sandbox {
-            let observation = host
+        let (success, output, errors, sandbox_evidence, rejection) = if let Some(host) =
+            &self.sandbox
+        {
+            let (observation, rejection) = host
                 .verify(context.current_subject.clone(), hash(context.request))
                 .map_err(port_error)?;
             let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
@@ -475,7 +511,7 @@ impl VerifierPort for Verifier {
                 .map_err(port_error)?
                 .insert(digest.clone(), bytes);
             (
-                sandbox::succeeded(&observation),
+                sandbox::succeeded(&observation) && rejection.is_none(),
                 observation.stdout,
                 observation.stderr,
                 Some(EvidenceReference {
@@ -483,6 +519,7 @@ impl VerifierPort for Verifier {
                     digest,
                     locator: None,
                 }),
+                rejection,
             )
         } else {
             let source = fs::read_to_string(self.root.join("shipping.py")).map_err(port_error)?;
@@ -530,12 +567,9 @@ impl VerifierPort for Verifier {
                 .join()
                 .map_err(|_| port_error("reference.verifier_reader"))?
                 .map_err(port_error)?;
-            (status.success(), output, errors, None)
+            (status.success(), output, errors, None, None)
         };
-        if !success || !errors.is_empty() || output.len() > 32768 {
-            return Err(port_error("reference.verifier_failed"));
-        }
-        let observed: Value = serde_json::from_slice(&output).map_err(port_error)?;
+        let (observed, output_valid) = verifier_output(success, &output, &errors);
         let expected = [
             Some(27.0),
             Some(87.0),
@@ -555,8 +589,13 @@ impl VerifierPort for Verifier {
                     .is_some_and(|actual| (actual - value).abs() < 0.00001),
                 None => observed["observations"][index]["error"] == "ValueError",
             });
-        let after = snapshot(&self.root, &self.archive)?;
-        let passed = cases
+        let (after, subject_error) = match snapshot(&self.root, &self.archive) {
+            Ok(after) => (after, None),
+            Err(error) => (context.current_subject.clone(), Some(error.to_string())),
+        };
+        let passed = output_valid
+            && subject_error.is_none()
+            && cases
             && before == after
             && before == *context.current_subject
             && fs::read_to_string(self.root.join("terminal.txt"))
@@ -567,7 +606,7 @@ impl VerifierPort for Verifier {
                 .ok()
                 .as_deref()
                 == Some("mcp witnessed");
-        let report = json!({"passed":passed,"observed":observed,"fresh":before==after,"subject_digest":after.digest});
+        let report = json!({"passed":passed,"observed":observed,"fresh":subject_error.is_none() && before==after,"subject_digest":after.digest,"subject_error":subject_error,"sandbox_rejection":rejection,"stdout_digest":raw_hash(&output),"stderr_digest":raw_hash(&errors)});
         *self.report.lock().expect("report") = report.clone();
         self.shared.lock().expect("ports").last_meter = Instant::now();
         Ok(PortObservation {
@@ -986,5 +1025,250 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(300));
         drop(reader);
         sender.join().unwrap();
+    }
+    fn evidence_test_observation(status: EffectExecutionStatus) -> ExecutorObservation {
+        ExecutorObservation {
+            execution_status: status,
+            observed_post_effect_subject: None,
+            exit: None,
+            usage: EffectUsage {
+                cost_micros: 0,
+                elapsed_ms: 0,
+                model_tokens: 0,
+                tool_calls: if status == EffectExecutionStatus::Denied {
+                    0
+                } else {
+                    1
+                },
+            },
+            executor: None,
+            sandbox_profile: None,
+            reason: None,
+            evidence: vec![],
+        }
+    }
+
+    #[test]
+    fn a_pre_dispatch_refusal_never_requires_an_oci_observation() {
+        let archive = EvidenceArchive::default();
+        let mut result = Ok(evidence_test_observation(EffectExecutionStatus::Denied));
+        let before = result.clone();
+        let references = sandbox_execution_evidence(
+            &mut result,
+            "effect",
+            &archive,
+            || panic!("A refused call has no transport"),
+            || panic!("A refused call has no OCI observation"),
+        )
+        .unwrap();
+        assert_eq!(result, before);
+        assert!(references.is_empty());
+        assert!(archive.lock().unwrap().is_empty());
+        let mut result = Err(RuntimePortError::before_dispatch("known refusal"));
+        sandbox_execution_evidence(
+            &mut result,
+            "effect",
+            &archive,
+            || panic!("No transport was dispatched"),
+            || panic!("No OCI invocation exists"),
+        )
+        .unwrap();
+        assert!(result.unwrap_err().was_not_dispatched());
+    }
+
+    #[test]
+    fn missing_observation_keeps_raw_transport_in_the_effects_evidence() {
+        let archive = EvidenceArchive::default();
+        let raw = br#"{"stdout":[112,97,114,116,105,97,108],"stderr":[101,114,114],"exit_code":7}"#
+            .to_vec();
+        let mut result = Ok(evidence_test_observation(EffectExecutionStatus::Failed));
+        let references = sandbox_execution_evidence(
+            &mut result,
+            "effect",
+            &archive,
+            || Ok(vec![raw.clone()]),
+            || Err("invalid observation".into()),
+        )
+        .unwrap();
+        let effect = result.unwrap();
+        assert_eq!(
+            effect.execution_status,
+            EffectExecutionStatus::UnknownOutcome
+        );
+        assert_eq!(effect.usage.tool_calls, 1);
+        assert!(
+            effect
+                .evidence
+                .iter()
+                .any(|reference| reference.digest == raw_hash(&raw))
+        );
+        assert_eq!(archive.lock().unwrap()[&raw_hash(&raw)], raw);
+        assert!(
+            references
+                .iter()
+                .any(|reference| reference.evidence_type == EffectEvidenceType::UnknownOutcome)
+        );
+    }
+
+    #[test]
+    fn failed_or_malformed_verifier_output_produces_a_failed_report_input() {
+        for (success, stdout, stderr) in [
+            (false, b"{}".as_slice(), b"".as_slice()),
+            (true, b"not JSON".as_slice(), b"".as_slice()),
+            (true, b"{}".as_slice(), b"error".as_slice()),
+        ] {
+            let (observed, valid) = verifier_output(success, stdout, stderr);
+            assert!(!valid);
+            assert!(observed["failure"].is_string());
+        }
+        assert!(verifier_output(true, b"{}", b"").1);
+    }
+
+    #[test]
+    fn failed_oci_verification_returns_linked_original_execution_evidence() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "gaap-verifier-evidence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        let fixture = Fixture(path.canonicalize().unwrap());
+        let root = fixture.0.join("repository");
+        fs::create_dir(&root).unwrap();
+        for (name, content) in [
+            ("shipping.py", "def shipping_quote(q,p): return 0"),
+            ("terminal.txt", "terminal witnessed"),
+            ("mcp.txt", "mcp witnessed"),
+        ] {
+            fs::write(root.join(name), content).unwrap();
+        }
+        let state = fixture.0.join("state");
+        fs::create_dir(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        let archive = EvidenceArchive::default();
+        let subject = snapshot(&root, &archive).unwrap();
+        let echo = fs::canonicalize("/bin/echo").unwrap();
+        let host = SandboxHost::new(
+            ReferenceSandbox {
+                executable: echo.clone(),
+                docker_executable: echo.clone(),
+                // Refuse locally before any Docker process: this is real setup-failure evidence.
+                docker_environment: BTreeMap::new(),
+                engine_version: "unadopted".into(),
+                runtime_version: "unadopted".into(),
+                image: gaap::sandbox::SandboxImage {
+                    reference: format!("python@sha256:{}", "0".repeat(64)),
+                    digest: format!("sha256:{}", "0".repeat(64)),
+                },
+                user: "1000:1000".into(),
+                state_directory: state,
+            },
+            root.clone(),
+            &subject,
+        )
+        .unwrap();
+        let python = Command::new("python3")
+            .args(["-c", "import sys;print(sys.executable)"])
+            .output()
+            .unwrap();
+        let python = fs::canonicalize(String::from_utf8(python.stdout).unwrap().trim()).unwrap();
+        let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("server.py");
+        let mut mcp_config = ServerConfig::new(python.clone(), "gaap-effect", "1");
+        mcp_config.arguments = vec![server.display().to_string(), "effect".into()];
+        mcp_config.working_directory = root.clone();
+        mcp_config.artifacts = [&python, &server]
+            .into_iter()
+            .map(|path| gaap_mcp::LaunchArtifact {
+                path: path.clone(),
+                digest: raw_hash(&fs::read(path).unwrap()),
+            })
+            .collect();
+        mcp_config.artifact_digest = mcp_config.artifact_manifest_digest().unwrap();
+        let mcp = McpExecutor::discover(mcp_config, TransportLimits::default()).unwrap();
+        let ingress = AgentConfig {
+            executable: python.clone(),
+            arguments: vec![server.display().to_string(), "effect".into()],
+            environment: BTreeMap::new(),
+            working_directory: root.clone(),
+            expected_name: "gaap-proposals".into(),
+            expected_version: "1".into(),
+            artifacts: [&python, &server]
+                .into_iter()
+                .map(|path| gaap_acp::LaunchArtifact {
+                    path: path.clone(),
+                    digest: raw_hash(&fs::read(path).unwrap()),
+                })
+                .collect(),
+        };
+        let agent = AgentConfig {
+            executable: echo.clone(),
+            arguments: vec![],
+            environment: BTreeMap::new(),
+            working_directory: root.clone(),
+            expected_name: "goose".into(),
+            expected_version: "1.54.0".into(),
+            artifacts: vec![gaap_acp::LaunchArtifact {
+                path: echo.clone(),
+                digest: raw_hash(&fs::read(&echo).unwrap()),
+            }],
+        };
+        // No Goose conversation starts; Ports supplies only the verifier's usage meter.
+        let conversation = GooseConversation::new(
+            agent,
+            GooseProfile {
+                proposal_server: ingress,
+                server_name: "gaap-proposals".into(),
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        let shared = Arc::new(Mutex::new(Ports {
+            conversation,
+            mcp,
+            pending: None,
+            last_meter: Instant::now(),
+            ingress_responses: vec![],
+            protected_effect_requests: vec![],
+            raw_proposals: vec![],
+        }));
+        let mut verifier = Verifier {
+            sandbox: Some(Arc::new(host)),
+            archive: archive.clone(),
+            root,
+            python,
+            report: Arc::default(),
+            shared,
+        };
+        let request = template_request();
+        let usage = usage(0);
+        let report = verifier
+            .verify(VerificationContext {
+                request: &request,
+                current_subject: &subject,
+                usage: &usage,
+            })
+            .unwrap()
+            .value;
+        assert_eq!(report.verdict, VerificationVerdict::Fail);
+        let blobs = archive.lock().unwrap();
+        assert!(report.evidence.iter().any(|reference| {
+            blobs
+                .get(&reference.digest)
+                .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+                .is_some_and(|observation| {
+                    observation["schema_version"] == "gaap.sandbox-observation/0.1"
+                        && observation["status"] == "setup_failed"
+                        && observation["runtime"].is_null()
+                })
+        }));
     }
 }

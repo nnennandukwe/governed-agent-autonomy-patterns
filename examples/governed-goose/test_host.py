@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from server import sandbox_operation
+from server import capture_sandbox, sandbox_operation
 
 from run import run_host
 
@@ -52,6 +52,7 @@ class HostCleanupTests(unittest.TestCase):
             context.write_text(json.dumps({
                 "arguments": arguments, "executable": sys.executable,
                 "config": str(child), "observation": str(observation),
+                "transport": str(root / "transport.json"), "request_digest": "sha256:" + "0" * 64,
                 "request": {"limits": {"wall_clock_ms": 10000, "cleanup_ms": 2000}},
             }))
             with patch.dict(os.environ, {"GAAP_SANDBOX_CONTEXT": str(context)}):
@@ -59,6 +60,51 @@ class HostCleanupTests(unittest.TestCase):
             self.assertFalse(result["isError"])
             self.assertEqual(json.loads(observation.read_bytes())["status"], "exited")
             self.assertEqual(observation.stat().st_mode & 0o777, 0o600)
+
+    def test_failed_adapter_transport_retains_original_bytes(self):
+        """Invalid output and nonzero exits remain available before parsing fails."""
+        for program, expected_error in (
+            ("import sys;sys.stdout.write('partial output');sys.stderr.write('runtime detail');sys.exit(7)", ValueError),
+            ("print('invalid observation')", json.JSONDecodeError),
+        ):
+            with self.subTest(program=program), tempfile.TemporaryDirectory(prefix="sandbox-failure-") as temporary:
+                root = pathlib.Path(temporary)
+                child = root / "child.py"
+                child.write_text(program)
+                context = root / "context.json"
+                transport = root / "transport.json"
+                observation = root / "observation.json"
+                context.write_text(json.dumps({
+                    "arguments": {}, "request": {"limits": {"wall_clock_ms": 100, "cleanup_ms": 100}},
+                    "request_digest": "sha256:" + "0" * 64,
+                    "executable": sys.executable, "config": str(child),
+                    "transport": str(transport), "observation": str(observation),
+                }))
+                with patch.dict(os.environ, {"GAAP_SANDBOX_CONTEXT": str(context)}), self.assertRaises(expected_error):
+                    sandbox_operation({})
+                retained = json.loads(transport.read_bytes())
+                self.assertTrue(retained['stdout'])
+                self.assertEqual(transport.stat().st_mode & 0o777, 0o600)
+                self.assertFalse(observation.exists())
+                if retained['exit_code'] == 7:
+                    self.assertEqual(bytes(retained['stdout']), b'partial output')
+                    self.assertEqual(bytes(retained['stderr']), b'runtime detail')
+
+    def test_adapter_pipe_overflow_retains_a_bounded_prefix(self):
+        """Output overflow terminates its owned group without unbounded retention."""
+        retained = capture_sandbox([sys.executable, '-c', "import os;os.write(1,b'x'*(2*1024*1024))"], b'', 2, 0.1)
+        self.assertTrue(retained['stdout_truncated'])
+        self.assertEqual(len(retained['stdout']), 1024 * 1024)
+        self.assertEqual(retained['termination'], 'output_overflow')
+
+    def test_adapter_deadline_stops_inherited_output_pipes(self):
+        """A parent exit can't leave its response reader waiting on a descendant."""
+        retained = capture_sandbox([sys.executable, '-c',
+            "import subprocess,sys;child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);print(child.pid,flush=True)"], b'', 0.1, 0.1)
+        self.assertEqual(retained['termination'], 'response_timeout')
+        child_pid = bytes(retained['stdout']).decode().strip()
+        result = subprocess.run(['ps', '-p', child_pid, '-o', 'stat='], capture_output=True, text=True, check=False)
+        self.assertTrue(not result.stdout.strip() or result.stdout.strip().startswith('Z'))
 
     def test_successful_host_exits_normally(self):
         """Keep a normal host exit as the control for timeout cleanup."""

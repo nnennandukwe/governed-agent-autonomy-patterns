@@ -153,3 +153,9 @@ can retain its terminal evidence. The ordinary stdio profile keeps its existing
 
 Development builds optimize SHA-256 for launch-byte checks. They still rehash
 all approved bytes before launch; the existing setup deadlines stay enforced.
+
+The MCP backend retains bounded adapter stdout, stderr, exit code and termination
+reason before parsing. Each raw stream and its digest metadata enter the signed
+archive, including transport failures. Confirmed pre-dispatch refusals keep
+zero attempts. Failed OCI verification returns a failed verification report
+with its original sandbox observation linked as evidence.

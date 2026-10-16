@@ -1,7 +1,7 @@
 //! Host-owned composition of the neutral OCI adapter with the reference MCP backend.
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -40,6 +40,20 @@ pub struct SandboxHost {
 pub struct PreparedSandbox {
     request: SandboxRequest,
     observation: PathBuf,
+    transport: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxTransport {
+    schema_version: String,
+    request_digest: String,
+    exit_code: Option<i32>,
+    termination: Option<String>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
 }
 
 fn write_new(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -246,7 +260,11 @@ impl SandboxHost {
             .state_directory
             .join(format!("{key}.effect.json"));
         write_new(&config_path, &self.adopted(&request)?)?;
-        let context = json!({"arguments":arguments,"request":request,"executable":self.config.executable,"config":config_path,"observation":observation});
+        let transport = self
+            .config
+            .state_directory
+            .join(format!("{key}.transport.json"));
+        let context = json!({"arguments":arguments,"request":request,"request_digest":hash(&request),"executable":self.config.executable,"config":config_path,"observation":observation,"transport":transport});
         let staged = self
             .config
             .state_directory
@@ -257,7 +275,37 @@ impl SandboxHost {
         Ok(PreparedSandbox {
             request,
             observation,
+            transport,
         })
+    }
+
+    pub fn transport(&self, prepared: &PreparedSandbox) -> Result<Vec<Vec<u8>>> {
+        let file = fs::File::open(&prepared.transport)?;
+        let mut bytes = Vec::new();
+        file.take(6 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 6 * 1024 * 1024 {
+            return Err("Oversized sandbox transport evidence".into());
+        }
+        let transport: SandboxTransport = serde_json::from_slice(&bytes)?;
+        if transport.schema_version != "gaap.sandbox-transport/0.1"
+            || transport.request_digest != hash(&prepared.request)
+            || transport.stdout.len() > 1024 * 1024
+            || transport.stderr.len() > 8192
+            || transport
+                .termination
+                .as_ref()
+                .is_some_and(|reason| reason.len() > 512)
+        {
+            return Err("Sandbox transport doesn't bind the admitted request and bounds".into());
+        }
+        // Keep each raw stream within the attestation adapter's 1 MiB blob bound.
+        let metadata = serde_jcs::to_vec(&json!({
+            "schema_version":transport.schema_version,"request_digest":transport.request_digest,
+            "exit_code":transport.exit_code,"termination":transport.termination,
+            "stdout_digest":super::raw_hash(&transport.stdout),"stderr_digest":super::raw_hash(&transport.stderr),
+            "stdout_truncated":transport.stdout_truncated,"stderr_truncated":transport.stderr_truncated,
+        }))?;
+        Ok(vec![transport.stdout, transport.stderr, metadata])
     }
 
     pub fn observe(&self, prepared: &PreparedSandbox) -> Result<SandboxObservation> {
@@ -301,12 +349,19 @@ impl SandboxHost {
         Ok(())
     }
 
-    pub fn verify(&self, subject: Subject, request_digest: String) -> Result<SandboxObservation> {
+    pub fn verify(
+        &self,
+        subject: Subject,
+        request_digest: String,
+    ) -> Result<(SandboxObservation, Option<String>)> {
         let request = self.request(subject, request_digest, "verify", Value::Null)?;
         let observation =
             LocalOciAdapter::new(self.adopted(&request)?).execute(&request, &|| false);
-        self.check(&request, &observation)?;
-        Ok(observation)
+        let rejection = self
+            .check(&request, &observation)
+            .err()
+            .map(|error| error.to_string());
+        Ok((observation, rejection))
     }
 }
 
