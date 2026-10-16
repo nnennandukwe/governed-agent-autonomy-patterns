@@ -27,6 +27,7 @@ struct Transport {
     reader: io::BufReader<io::Stdin>,
     transcript: Vec<u8>,
     sequence: u64,
+    failure: Option<String>,
 }
 impl Transport {
     fn read(&mut self) -> Result<(Value, Vec<u8>), String> {
@@ -54,6 +55,9 @@ impl Transport {
         Ok(line)
     }
     fn call(&mut self, port: &str, input: Value) -> Result<Value, String> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
         self.sequence += 1;
         let call = json!({"kind":"call", "sequence":self.sequence,"port":port,"input":input});
         let line = self.write(&call)?;
@@ -75,9 +79,12 @@ impl Transport {
 use std::io::Read;
 type Wire = Rc<RefCell<Transport>>;
 fn call(wire: &Wire, port: &str, input: Value) -> Result<Value, RuntimePortError> {
-    wire.borrow_mut()
-        .call(port, input)
-        .map_err(RuntimePortError::new)
+    let mut transport = wire.borrow_mut();
+    let result = transport.call(port, input);
+    if let Err(error) = &result {
+        transport.failure = Some(error.clone());
+    }
+    result.map_err(RuntimePortError::new)
 }
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RuntimePortError> {
     serde_json::from_value(value).map_err(|error| RuntimePortError::new(error.to_string()))
@@ -258,6 +265,7 @@ pub fn run() -> Result<(), String> {
         reader: io::BufReader::new(io::stdin()),
         transcript: vec![],
         sequence: 0,
+        failure: None,
     }));
     let (value, start_bytes) = wire.borrow_mut().read()?;
     let start: Start = serde_json::from_value(value).map_err(|error| error.to_string())?;
@@ -316,6 +324,9 @@ pub fn run() -> Result<(), String> {
     let execution = engine
         .run(start.request)
         .map_err(|error| error.to_string())?;
+    if let Some(error) = wire.borrow().failure.clone() {
+        return Err(error);
+    }
     verify_terminal_receipt(
         &request,
         &ContractSupport::new(request.policies.clone()),

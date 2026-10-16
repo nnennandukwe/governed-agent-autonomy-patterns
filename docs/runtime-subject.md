@@ -60,3 +60,11 @@ maximum cost: an estimate that reaches that threshold is blocked before dispatch
 The request budget remains an upper bound, and the runtime policy can stop earlier.
 Sampled executor-failure usage survives in the receipt, including setup usage when
 dispatch was refused. An attempted effect still counts at least one tool call.
+
+Invalid frame bytes or reply envelopes end the protocol without another call or a
+terminal frame. A valid reply describing a failed operation can still produce a
+failed receipt. When an operation fails while exceeding a budget, its failure
+remains the primary terminal reason and the receipt retains all observed usage.
+Completion-claim failures follow the same accounting rule. Contradictory evidence
+on an unknown executor outcome is rejected; known failures or interruptions must
+use the matching executor observation instead of a lost-response error.

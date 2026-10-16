@@ -107,3 +107,45 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
         );
     }
 }
+
+#[test]
+fn runtime_subject_refuses_invalid_reply_without_further_calls_or_receipt() {
+    let request: Value = serde_json::from_str(include_str!(
+        "../examples/contracts/v0.1.0/agent-run-request.json"
+    ))
+    .unwrap();
+    let start = json!({"kind":"start","protocol":"run-invariant.runtime/0.2.0","request":request,"support":{"policies":request["policies"],"capabilities":[request["requested_capability"]],"tool_schemas":[],"effect_usage_estimate":{"cost_micros":0,"elapsed_ms":0,"model_tokens":0,"tool_calls":1},"permission":"allow","executor":{"name":"fixture-executor","version":"1","digest":format!("sha256:{}","9".repeat(64))},"verifier_ids":["fixture-verifier"],"max_effects":4}});
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gaap"))
+        .arg("runtime-subject")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    input.write_all(&frame(&start)).unwrap();
+    input.flush().unwrap();
+    let mut first = String::new();
+    output.read_line(&mut first).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["port"],
+        "agent.plan"
+    );
+    input
+        .write_all(&frame(&json!({"kind":"reply","sequence":999,"value":null})))
+        .unwrap();
+    input.flush().unwrap();
+    let mut next = String::new();
+    output.read_line(&mut next).unwrap();
+    if !next.is_empty() {
+        child.kill().unwrap();
+    }
+    drop(input);
+    let status = child.wait().unwrap();
+    assert!(
+        next.is_empty(),
+        "invalid envelope admitted more output: {next}"
+    );
+    assert_eq!(status.code(), Some(1));
+}

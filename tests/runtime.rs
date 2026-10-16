@@ -454,6 +454,7 @@ fn passing_verification(subject_digest: &str) -> VerificationReport {
 }
 
 struct ScriptedAgent {
+    claim_error: Option<RuntimePortError>,
     plan: Option<Result<PortObservation<PlanProposal>, RuntimePortError>>,
     steps: VecDeque<Result<PortObservation<AgentStep>, RuntimePortError>>,
 }
@@ -477,6 +478,7 @@ impl ScriptedAgent {
         steps: impl IntoIterator<Item = Result<PortObservation<AgentStep>, RuntimePortError>>,
     ) -> Self {
         Self {
+            claim_error: None,
             plan: Some(Ok(plan)),
             steps: steps.into_iter().collect(),
         }
@@ -484,6 +486,9 @@ impl ScriptedAgent {
 }
 
 impl AgentAdapter for ScriptedAgent {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        self.claim_error.take().map_or(Ok(None), Err)
+    }
     fn plan(
         &mut self,
         _request: &AgentRunRequest,
@@ -504,6 +509,7 @@ impl AgentAdapter for ScriptedAgent {
 }
 
 struct RecordingExecutor {
+    claim_error: Option<RuntimePortError>,
     calls: Rc<RefCell<Vec<String>>>,
     observations: VecDeque<Result<ExecutorObservation, RuntimePortError>>,
 }
@@ -514,6 +520,7 @@ impl RecordingExecutor {
         observations: impl IntoIterator<Item = Result<ExecutorObservation, RuntimePortError>>,
     ) -> Self {
         Self {
+            claim_error: None,
             calls,
             observations: observations.into_iter().collect(),
         }
@@ -521,6 +528,9 @@ impl RecordingExecutor {
 }
 
 impl ExecutorPort for RecordingExecutor {
+    fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
+        self.claim_error.take().map_or(Ok(None), Err)
+    }
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -2114,5 +2124,34 @@ fn executor_failures_retain_sampled_usage_and_known_dispatch_minimum() {
             execution.protected_effect_results[0].body.usage.tool_calls,
             u64::from(dispatched)
         );
+    }
+}
+
+#[test]
+fn completion_claim_failures_retain_sampled_usage_without_completion_authority() {
+    for agent_fails in [true, false] {
+        let run_request = request();
+        let sampled = resource_usage(7);
+        let mut agent = ScriptedAgent::new(plan_for(&run_request), [Ok(AgentStep::Finish)]);
+        let mut executor = RecordingExecutor::new(Rc::new(RefCell::new(Vec::new())), []);
+        let error = RuntimePortError::new("claim failed").with_usage(sampled.clone());
+        if agent_fails {
+            agent.claim_error = Some(error);
+        } else {
+            executor.claim_error = Some(error);
+        }
+        let execution = run_with(
+            run_request,
+            runtime_support(vec![capability()]),
+            agent,
+            executor,
+            ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+        );
+        assert_eq!(execution.receipt.body.usage, sampled);
+        assert_eq!(
+            execution.receipt.body.terminal_status,
+            AgentRunStatus::Failed
+        );
+        assert!(!execution.receipt.body.events.iter().any(|event| matches!(event, RunEvent::ProtectedEffectDecision { decision_id, .. } if decision_id == "decision-completion")));
     }
 }

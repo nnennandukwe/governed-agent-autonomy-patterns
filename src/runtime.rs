@@ -331,6 +331,9 @@ impl RuntimePortError {
     }
 
     /// Host-owned evidence retained when an attempted effect loses its response.
+    /// References must fit UnknownOutcome; contradictory failure/interruption
+    /// evidence is rejected by the frozen result validator. Known outcomes use
+    /// the corresponding ExecutorObservation instead.
     pub fn with_evidence(mut self, evidence: Vec<EffectEvidenceReference>) -> Self {
         self.evidence = evidence;
         self
@@ -1153,6 +1156,9 @@ where
                 }
                 Ok(None) => (),
                 Err(error) => {
+                    if let Some(usage) = &error.observed_usage {
+                        let _ = ledger.record_usage(usage);
+                    }
                     return self.finish(
                         ledger,
                         AgentRunStatus::Failed,
