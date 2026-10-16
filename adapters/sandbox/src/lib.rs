@@ -418,7 +418,7 @@ impl LocalOciAdapter {
 }
 
 impl LocalOciAdapter {
-    fn oom_event(
+    fn oom_evidence(
         &self,
         name: &str,
         owner: &str,
@@ -458,11 +458,20 @@ impl LocalOciAdapter {
                 && event["Actor"]["Attributes"]["org.gaap.owner"] == owner
             {
                 return Ok(Some(serde_json::json!({
-                    "type":"container", "action":"oom", "container_id":container_id, "owner":owner,
+                    "source":"event", "type":"container", "action":"oom", "container_id":container_id, "owner":owner,
                     "time":event["time"],
                     "time_nano":event["timeNano"].as_u64().map(|value| value.to_string()),
                 })));
             }
+        }
+        let fresh = self.inspect(name, deadline, cancelled)?;
+        if fresh["Id"] == container_id
+            && fresh["Config"]["Labels"]["org.gaap.owner"] == owner
+            && fresh["State"]["OOMKilled"] == true
+        {
+            return Ok(Some(
+                serde_json::json!({"source":"state", "oom_killed":true, "container_id":container_id, "owner":owner}),
+            ));
         }
         Ok(None)
     }
@@ -1031,20 +1040,26 @@ impl SandboxAdapter for LocalOciAdapter {
                 }
                 observation.exit_code = state["ExitCode"].as_i64();
                 let file_limit_signal = observation.exit_code == Some(128 + 25);
-                let oom_event = if state["OOMKilled"] != true && observation.exit_code == Some(137)
+                let oom_evidence = if state["OOMKilled"] != true
+                    && observation.exit_code == Some(137)
                 {
                     match inspected["Id"].as_str() {
-                        Some(id) => self.oom_event(&name, &owner, id, deadline, cancelled)?,
+                        Some(id) => self.oom_evidence(&name, &owner, id, deadline, cancelled)?,
                         None => None,
                     }
                 } else {
                     None
                 };
-                observation.status = if state["OOMKilled"] == true || oom_event.is_some() {
-                    observation.reason = Some(match oom_event {
-                        Some(event) => {
-                            format!("sandbox.resource_limit: Docker reported an OOM event {event}")
+                observation.status = if state["OOMKilled"] == true || oom_evidence.is_some() {
+                    observation.reason = Some(match oom_evidence {
+                        Some(evidence) if evidence["source"] == "event" => {
+                            format!(
+                                "sandbox.resource_limit: Docker reported an OOM event {evidence}"
+                            )
                         }
+                        Some(evidence) => format!(
+                            "sandbox.resource_limit: Docker reports OOMKilled after terminal reconciliation {evidence}"
+                        ),
                         None => "sandbox.resource_limit: Docker reports OOMKilled".into(),
                     });
                     SandboxStatus::ResourceLimit

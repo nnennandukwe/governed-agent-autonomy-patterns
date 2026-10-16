@@ -687,3 +687,46 @@ fn native_exit_137_alone_doesnt_prove_oom() {
     );
     assert_eq!(observation.cleanup, SandboxCleanup::Removed);
 }
+
+#[test]
+#[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
+fn native_terminal_oom_marker_can_arrive_after_event_probe() {
+    let mut fixture = fixture();
+    fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
+    fixture.request.command[5] =
+        "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
+    let real = fixture
+        .config
+        .executable
+        .to_str()
+        .unwrap()
+        .replace('\'', "'\\''");
+    let marker = fixture
+        .root
+        .join("mask-first-oom-state")
+        .to_str()
+        .unwrap()
+        .replace('\'', "'\\''");
+    proxy(
+        &mut fixture,
+        &format!(
+            "if [ \"$1\" = events ]; then exit 0; fi\nif [ \"$1\" = container ] && [ \"$2\" = start ]; then '{real}' \"$@\"; result=$?; : > '{marker}'; exit \"$result\"; fi\nif [ \"$1\" = container ] && [ \"$2\" = inspect ] && [ -f '{marker}' ]; then /bin/rm '{marker}'; '{real}' \"$@\" | /usr/bin/python3 -I -S -B -c 'import json,sys;v=json.load(sys.stdin);v[0][\"State\"][\"OOMKilled\"]=False;json.dump(v,sys.stdout)'; exit $?; fi"
+        ),
+    );
+    fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+    let observation = run(&fixture);
+    assert_eq!(
+        observation.status,
+        SandboxStatus::ResourceLimit,
+        "{observation:?}"
+    );
+    assert_eq!(observation.exit_code, Some(137));
+    assert!(
+        observation
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("terminal reconciliation")
+    );
+    assert_eq!(observation.cleanup, SandboxCleanup::Removed);
+}
