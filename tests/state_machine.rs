@@ -297,7 +297,15 @@ regression!(
     Success,
     ChangedAfter
 );
-regression!(lost_reply_refuses_repeatable_retry, LostReply, Pass);
+#[test]
+fn lost_reply_refuses_repeatable_retry() {
+    let mut history = fixture(Outcome::LostReply, Verification::Pass);
+    if let Operation::Effect { repeatable, .. } = &mut history.operations[0] {
+        *repeatable = true;
+    }
+    history.operations.insert(1, success(1));
+    check(&history).unwrap();
+}
 #[test]
 fn duplicate_identity_with_changed_content_cant_execute_again() {
     check(&History {
