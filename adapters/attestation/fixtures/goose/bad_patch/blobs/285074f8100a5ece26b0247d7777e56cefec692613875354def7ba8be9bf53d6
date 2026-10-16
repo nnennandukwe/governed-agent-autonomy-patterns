@@ -1,0 +1,2 @@
+def shipping_quote(quantity, unit_price):
+    return 1

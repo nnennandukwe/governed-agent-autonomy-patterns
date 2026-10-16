@@ -45,6 +45,8 @@ impl SnapshotManifest {
                 && (path.is_empty()
                     || path.len() > 1024
                     || path.starts_with('/')
+                    || path == ".git"
+                    || path.starts_with(".git/")
                     || path.contains('\\')
                     || path.contains('\0')
                     || path.split('/').count() > MAX_DEPTH

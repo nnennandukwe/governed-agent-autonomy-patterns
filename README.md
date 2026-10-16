@@ -29,7 +29,7 @@ A stable-v1 ACP client mediates delegated agent filesystem operations through th
 The Rust module is the implementation under test. The conformance protocol and
 fixture corpus live in the separate
 [`run-invariant`](https://github.com/nnennandukwe/run-invariant) repository.
-GAAP does not import or vendor RunInvariant.
+GAAP doesn't import or vendor RunInvariant.
 
 ## Status
 
@@ -62,6 +62,8 @@ Implemented and tested now:
   separation, interruption evidence, and stale-verification rejection;
 - a separate MCP stdio client with exact capability approval, bounded transport and retained invocation evidence;
 - a separate ACP v1 client with session ownership, delegated filesystem effects, host metering and strict protocol checks;
+- a pinned real Goose conversation through ACP/MCP with per-effect gates and independent verification;
+- offline DSSE/in-toto signing with explicit trust and retained content;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and
@@ -74,12 +76,11 @@ Not implemented yet:
   reconciliation, or persistence;
 - repository mutation interception;
 - approval persistence, revocation, or delegated authority;
-- sandbox, budget-meter, verifier, or evidence-ledger adapters beyond the Rust
-  test ports; and
+- production sandbox isolation, provider billing meters or durable evidence ledgers; and
 - crash recovery or resumable run state.
 
 The conformance packet proves normalized decision compatibility for the frozen
-cases. It does not prove those missing runtime properties or certify GAAP for
+cases. It doesn't prove those missing runtime properties or certify GAAP for
 production use.
 
 ## Build And Test
@@ -161,12 +162,11 @@ Architecture decisions:
 
 The normative contract guide is
 [`Agent Run Contract 0.1.0`](./docs/contracts/agent-run-v0.1.md). Contract
-receipts are content-addressed but not signed; they provide integrity and
-interoperability, not producer authenticity.
+receipts are content-addressed; the separate attestation adapter below adds authenticated producer evidence without changing those contracts.
 
 The inner effect boundary is defined by
 [`Protected Effect Contract 0.1.0`](./docs/contracts/protected-effect-v0.1.md).
-Its validators check contract consistency; they do not replace
+Its validators check contract consistency; they don't replace
 `RunCoordinator` or grant effect authority.
 
 ## Pattern Library
@@ -209,7 +209,7 @@ agent execution, terminal capabilities aren't advertised, and draft-v2 features 
 
 This profile requires a trusted local agent that delegates filesystem access over ACP and a host meter for model usage.
 It doesn't isolate the agent's own system calls or prove that arbitrary agents comply. See the compatibility and recovery
-policy in [ADR 0007](docs/adr/0007-acp-client-adapter.md). Live Goose interoperability remains #14.
+policy in [ADR 0007](docs/adr/0007-acp-client-adapter.md). The governed Goose reference below exercises real interoperability.
 
 ## MCP stdio client adapter
 
@@ -219,10 +219,14 @@ immutable effect bindings, host subject observation, and bounded stdio. Its dete
 through AgentRunEngine and validate the resulting receipts independently.
 
 The initial profile pins MCP `2025-11-25` and rmcp `3.5.1`. The local stdio execution profile doesn't provide OS isolation.
-Live Goose interoperability, authenticated receipts, durable reconciliation, and ThreadLoop ingestion retain their own
+The governed Goose reference exercises interoperability; durable reconciliation and ThreadLoop ingestion retain their own
 roadmap issues. The [reuse mapping](docs/adr/0006-mcp-client-adapter.md) records which conference-demo patterns carry
 forward and which capabilities remain separate work.
 
 The [governed Goose reference](examples/governed-goose/README.md) drives a real,
 pinned Goose conversation through both official adapters with local deterministic
 provider fixtures, per-effect gates and independent shipping-code verification.
+
+## Signed run evidence
+
+The [attestation adapter](adapters/attestation/README.md) carries full run/effect ledgers in a versioned in-toto Statement and DSSE envelope. Offline consumers use explicit signer and policy trust, frozen contract validation and retained content bytes. The Goose reference emits public-key fixtures for controller integration tests; signing alone doesn't authorize a lifecycle transition.

@@ -50,11 +50,16 @@ struct Config {
     case: String,
 }
 
-fn snapshot(root: &Path) -> std::result::Result<Subject, RuntimePortError> {
+type EvidenceArchive = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
+fn snapshot(
+    root: &Path,
+    archive: &EvidenceArchive,
+) -> std::result::Result<Subject, RuntimePortError> {
     fn collect(
         root: &Path,
         directory: &Path,
         files: &mut BTreeMap<String, Value>,
+        blobs: &mut BTreeMap<String, Vec<u8>>,
         entries: &mut usize,
     ) -> std::result::Result<(), RuntimePortError> {
         for entry in fs::read_dir(directory).map_err(port_error)? {
@@ -79,7 +84,7 @@ fn snapshot(root: &Path) -> std::result::Result<Subject, RuntimePortError> {
             let mode = metadata.permissions().mode() & 0o7777;
             if metadata.is_dir() {
                 files.insert(key, json!({"kind":"directory","mode":mode}));
-                collect(root, &path, files, entries)?;
+                collect(root, &path, files, blobs, entries)?;
             } else if metadata.is_file() && metadata.len() <= 8192 {
                 let mut bytes = Vec::new();
                 fs::File::open(&path)
@@ -90,7 +95,9 @@ fn snapshot(root: &Path) -> std::result::Result<Subject, RuntimePortError> {
                 if bytes.len() > 8192 {
                     return Err(port_error("reference.subject_limit"));
                 }
-                files.insert(key,json!({"kind":"file","mode":mode,"digest":format!("sha256:{:x}",Sha256::digest(bytes))}));
+                let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+                blobs.insert(digest.clone(), bytes);
+                files.insert(key, json!({"kind":"file","mode":mode,"digest":digest}));
             } else {
                 return Err(port_error("reference.subject_boundary"));
             }
@@ -101,11 +108,16 @@ fn snapshot(root: &Path) -> std::result::Result<Subject, RuntimePortError> {
         ".".into(),
         json!({"kind":"directory","mode":fs::metadata(root).map_err(port_error)?.permissions().mode() & 0o7777}),
     )]);
-    collect(root, root, &mut files, &mut 0)?;
+    let mut blobs = BTreeMap::new();
+    collect(root, root, &mut files, &mut blobs, &mut 0)?;
+    let bytes = serde_jcs::to_vec(&files).map_err(port_error)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    blobs.insert(digest.clone(), bytes);
+    archive.lock().map_err(port_error)?.extend(blobs);
     Ok(Subject {
         kind: SubjectKind::Repository,
         locator: root.display().to_string(),
-        digest: hash(&files),
+        digest,
     })
 }
 
@@ -352,6 +364,7 @@ impl ExecutorPort for Executor {
 }
 
 struct Verifier {
+    archive: EvidenceArchive,
     root: PathBuf,
     python: PathBuf,
     report: Arc<Mutex<Value>>,
@@ -363,7 +376,7 @@ impl VerifierPort for Verifier {
         context: VerificationContext<'_>,
     ) -> std::result::Result<PortObservation<VerificationReport>, RuntimePortError> {
         let started = Instant::now();
-        let before = snapshot(&self.root)?;
+        let before = snapshot(&self.root, &self.archive)?;
         let source = fs::read_to_string(self.root.join("shipping.py")).map_err(port_error)?;
         let mut child = Command::new(&self.python)
             .args(["-I", "-S", "-B", "-c", include_str!("../verify.py")])
@@ -432,7 +445,7 @@ impl VerifierPort for Verifier {
                     .is_some_and(|actual| (actual - value).abs() < 0.00001),
                 None => observed["observations"][index]["error"] == "ValueError",
             });
-        let after = snapshot(&self.root)?;
+        let after = snapshot(&self.root, &self.archive)?;
         let passed = cases
             && before == after
             && before == *context.current_subject
@@ -506,7 +519,8 @@ fn main() -> Result<()> {
     ))?;
     request.run_id = format!("governed-goose-{}", config.case);
     request.request_id = format!("request-{}", config.case);
-    request.subject = snapshot(&root)?;
+    let archive: EvidenceArchive = Arc::default();
+    request.subject = snapshot(&root, &archive)?;
     request.requested_capability = capability.clone();
     request.approval_context = vec![ApprovalReference {
         approval_id: "fixture-subject-approval".into(),
@@ -538,15 +552,18 @@ fn main() -> Result<()> {
         approvals: vec![],
     };
     let observer_root = root.clone();
+    let observer_archive = archive.clone();
     let mut previous = request.subject.clone();
     mcp.bind_run(
         request.clone(),
         support.clone(),
         permission.clone(),
         move |_: &ProtectedEffectRequest| {
-            let subject = snapshot(&observer_root).map_err(|error| gaap_mcp::McpError {
-                code: "reference.observation_failed",
-                detail: error.to_string(),
+            let subject = snapshot(&observer_root, &observer_archive).map_err(|error| {
+                gaap_mcp::McpError {
+                    code: "reference.observation_failed",
+                    detail: error.to_string(),
+                }
             })?;
             let changed = subject != previous;
             previous = subject.clone();
@@ -621,6 +638,7 @@ fn main() -> Result<()> {
             shared: shared.clone(),
         },
         Verifier {
+            archive: archive.clone(),
             root: root.clone(),
             python: config.python,
             report: report.clone(),
@@ -630,7 +648,61 @@ fn main() -> Result<()> {
     let execution = engine.run(request.clone())?;
     let calls = shared.lock().expect("ports").mcp.call_evidence().to_vec();
     let ports = shared.lock().expect("ports");
-    let output = json!({"request":request,"receipt":execution.receipt,"protected_effect_requests":ports.protected_effect_requests,"raw_proposals":ports.raw_proposals,"protected_effect_results":execution.protected_effect_results,"tool_inventory":ports.mcp.tools(),"acp":evidence.snapshot(),"mcp":calls,"ingress_responses":ports.ingress_responses,"verification":*report.lock().expect("report"),"after":snapshot(&root)?});
+    let after = snapshot(&root, &archive)?;
+    let report = report.lock().expect("report").clone();
+    if !report.is_null() {
+        let bytes = serde_jcs::to_vec(&report)?;
+        archive
+            .lock()
+            .expect("archive")
+            .insert(hash(&report), bytes);
+    }
+    for (effect, raw) in ports
+        .protected_effect_requests
+        .iter()
+        .zip(&ports.raw_proposals)
+    {
+        let service = effect
+            .requested_scopes
+            .iter()
+            .find_map(|scope| match scope {
+                RequestedScope::ExternalService { service, .. } => Some(service),
+                _ => None,
+            })
+            .ok_or("missing MCP scope")?;
+        let input = json!({"server":service,"tool":"governed_operation","arguments":raw});
+        let bytes = serde_jcs::to_vec(&input)?;
+        if hash(&input) != effect.input_digest {
+            return Err("input identity mismatch".into());
+        }
+        archive
+            .lock()
+            .expect("archive")
+            .insert(effect.input_digest.clone(), bytes);
+    }
+    for tool in ports.mcp.tools() {
+        let schema = &tool.descriptor["inputSchema"];
+        if hash(schema) != tool.schema_digest {
+            return Err("schema identity mismatch".into());
+        }
+        archive
+            .lock()
+            .expect("archive")
+            .insert(tool.schema_digest.clone(), serde_jcs::to_vec(schema)?);
+    }
+    for call in &calls {
+        if let (Some(digest), Some(value)) = (&call.output_digest, &call.output) {
+            if hash(value) != *digest {
+                return Err("output identity mismatch".into());
+            }
+            archive
+                .lock()
+                .expect("archive")
+                .insert(digest.clone(), serde_jcs::to_vec(value)?);
+        }
+    }
+    // JSON byte arrays preserve arbitrary file bytes without text transcoding.
+    let output = json!({"evidence_blobs":*archive.lock().expect("archive"),"request":request,"receipt":execution.receipt,"protected_effect_requests":ports.protected_effect_requests,"raw_proposals":ports.raw_proposals,"protected_effect_results":execution.protected_effect_results,"tool_inventory":ports.mcp.tools(),"acp":evidence.snapshot(),"mcp":calls,"ingress_responses":ports.ingress_responses,"verification":report,"after":after});
     fs::write(config.output, serde_json::to_vec_pretty(&output)?)?;
     Ok(())
 }

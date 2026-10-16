@@ -4,6 +4,7 @@ pub mod dsse;
 pub mod ed25519;
 pub mod json;
 pub mod snapshot;
+pub mod statement;
 
 use std::fmt;
 

@@ -119,6 +119,27 @@ fn envelope_extensions_are_ignored_but_duplicate_authentication_fields_fail() {
         br#"{"payloadType":"type","payload":"","signatures":[],"future_extension":{"value":1}}"#;
     assert!(dsse::parse_envelope(extended).is_ok());
 }
+
+#[test]
+fn serde_struct_deserialization_rejects_every_duplicate_authentication_field() {
+    for field in ["payloadType", "payload", "signatures"] {
+        let value = if field == "signatures" {
+            "[]"
+        } else {
+            "\"same\""
+        };
+        let input = format!(
+            "{{\"payloadType\":\"type\",\"payload\":\"\",\"signatures\":[],\"{field}\":{value}}}"
+        );
+        assert!(dsse::parse_envelope(input.as_bytes()).is_err(), "{field}");
+    }
+    for field in ["keyid", "sig"] {
+        let input = format!(
+            "{{\"payloadType\":\"type\",\"payload\":\"\",\"signatures\":[{{\"keyid\":\"key\",\"sig\":\"value\",\"{field}\":\"same\"}}]}}"
+        );
+        assert!(dsse::parse_envelope(input.as_bytes()).is_err(), "{field}");
+    }
+}
 #[test]
 fn malformed_encodings_and_payload_bounds_fail_closed() {
     let (mut signer, mut verifier) = keys();

@@ -105,3 +105,9 @@ binding failures and cancellation still get a no-dispatch response during cleanu
 Cancellation can close the peer before a refusal is written. The host still
 retains the refusal with `written: false`. That delivery failure doesn't erase
 the zero-dispatch outcome or imply that Goose received the message.
+
+## Signed fixtures and offline verification
+
+Each run now retains portable snapshot manifests, original file bytes, effect inputs, tool schemas, MCP outputs and verifier output alongside its unsigned bundle. The runner builds the [attestation adapter](../../adapters/attestation/README.md), emits a separate `CASE-signed` directory and verifies it in a new process. The directory contains `envelope.json`, content-addressed `blobs`, explicitly named fixture trust/policy files and the offline verification result. Its signing key is public test data; don't configure it as production trust.
+
+The first signed subject is the final observed workspace. The receipt still reports the last admitted subject; unreported changes keep those digests different and remain blocked. Failed and interrupted runs also keep their status after signing. Offline verification doesn't rerun the shipping oracle or authorize ThreadLoop lifecycle progression.

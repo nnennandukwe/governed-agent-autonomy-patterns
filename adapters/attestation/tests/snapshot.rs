@@ -66,6 +66,8 @@ fn escaping_ambiguous_and_parentless_paths_are_rejected() {
     for path in [
         "../outside",
         "/absolute",
+        ".git",
+        ".git/config",
         "a//b",
         "a/./b",
         "a\\b",

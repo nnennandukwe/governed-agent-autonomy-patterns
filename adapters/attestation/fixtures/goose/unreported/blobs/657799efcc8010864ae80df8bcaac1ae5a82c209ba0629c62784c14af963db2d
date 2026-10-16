@@ -1,0 +1,1 @@
+{"fresh":true,"observed":{"observations":[{"value":27},{"value":87},{"value":97},{"value":112.5},{"value":100},{"value":107.95},{"error":"ValueError"},{"error":"ValueError"}]},"passed":false,"subject_digest":"sha256:6c3fc6f0e51d22cefcb7181a8df6eadc3fef8375fb3c334027a9085646aaf850"}
