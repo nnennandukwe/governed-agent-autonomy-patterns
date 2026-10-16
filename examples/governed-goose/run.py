@@ -121,6 +121,27 @@ def run_host(command, timeout=55):
             process.wait(timeout=3)
 
 
+def sandbox_observations(record):
+    """Count executions once when raw transport and canonical evidence agree."""
+    decoded = {}
+    for value in record['evidence_blobs'].values():
+        if not isinstance(value, list) or not value or value[0] != ord('{'):
+            continue
+        try:
+            entry = json.loads(bytes(value))
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(entry, dict) or entry.get('schema_version') != 'gaap.sandbox-observation/0.1':
+            continue
+        key = entry.get('request_digest')
+        if not isinstance(key, str):
+            raise AssertionError('Sandbox observation has no request binding')
+        if key in decoded and decoded[key] != entry:
+            raise AssertionError('Conflicting sandbox observations for the same invocation')
+        decoded[key] = entry
+    return list(decoded.values())
+
+
 def run_case(case, goose, binary, output, attestor=None, bind_controller=False, sandbox=None):
     """Own one disposable repository, provider, conversation and terminal receipt."""
     host_binary_digest = file_hash(binary)
@@ -237,16 +258,7 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False, 
     if case == "allow" and record["verification"]["passed"] is not True:
         raise AssertionError("Independent verification didn't pass")
     if sandbox is not None:
-        observations = [value for value in record['evidence_blobs'].values()
-                        if isinstance(value, list) and value and value[0] == ord('{')]
-        decoded = []
-        for value in observations:
-            try:
-                entry = json.loads(bytes(value))
-            except (ValueError, UnicodeDecodeError):
-                continue
-            if isinstance(entry, dict) and entry.get('schema_version') == 'gaap.sandbox-observation/0.1':
-                decoded.append(entry)
+        decoded = sandbox_observations(record)
         expected_count = 0 if case in ('ask', 'block', 'report_only', 'cancel_before_dispatch') else 4
         if len(decoded) != expected_count or any(entry['cleanup'] != 'removed' or (entry.get('runtime') or {}).get('runtime') != 'runc' for entry in decoded):
             raise AssertionError('OCI runtime or cleanup mismatch: ' + json.dumps([{'status': entry.get('status'), 'reason': entry.get('reason'), 'cleanup': entry.get('cleanup'), 'runtime': entry.get('runtime')} for entry in decoded]))
