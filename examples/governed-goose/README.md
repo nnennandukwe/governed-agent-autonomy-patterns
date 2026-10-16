@@ -129,7 +129,8 @@ The trusted host configuration can then include an optional `agent_run_request` 
 may differ from the freshly discovered template. The host validates the full request against its selected contract
 support and compares every other canonical field before starting the conversation. A changed subject, capability,
 policy, task, constraint, approval, budget or verification requirement is rejected. Existing configurations keep their
-case-derived identities.
+case-derived identities. Discovery always returns the fresh template, even when the configuration still contains a
+previously bound request; executing that stale request still fails.
 
 The runner reproduces the original nine outcome cases plus an additional completed run with caller-selected identities.
 Each run first checks discovery, and the extra run signs and verifies its own output like the original cases. This

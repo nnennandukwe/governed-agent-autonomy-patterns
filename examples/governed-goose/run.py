@@ -179,6 +179,20 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
     record = json.loads(evidence.read_text())
     if record["request"] != template:
         raise AssertionError("The executed request differs from its selected discovery template")
+    if bind_controller:
+        retained = evidence.read_bytes()
+        refreshed = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=15))
+        if refreshed["subject"] != record["after"] or refreshed["subject"] == template["subject"]:
+            raise AssertionError("Discovery didn't refresh the changed subject independently of the old bound request")
+        try:
+            run_host([str(binary), str(manifest)], timeout=15)
+        except RuntimeError as error:
+            if "Controller request differs" not in str(error):
+                raise AssertionError("A stale bound request failed for the wrong reason") from error
+        else:
+            raise AssertionError("A stale bound request started another run")
+        if evidence.read_bytes() != retained:
+            raise AssertionError("Stale-request rejection overwrote the retained native evidence")
     receipt = record["receipt"]["body"]
     expected = {"allow": "completed", "ask": "blocked", "block": "blocked", "bad_patch": "blocked", "report_only": "failed", "unreported": "blocked", "unreported_directory": "blocked", "unreported_mode": "blocked", "cancel_before_dispatch":"interrupted"}[case]
     if receipt["terminal_status"] != expected:

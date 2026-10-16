@@ -560,13 +560,13 @@ fn main() -> Result<()> {
     request.task.constraints = vec!["No ambient tools, external services or credentials.".into()];
     request.resource_budget.max_elapsed_ms = 40000;
     request.resource_budget.max_tool_calls = 3;
-    let request = select_request(request, config.agent_run_request)?;
     if describe {
         let mut output = std::io::stdout().lock();
         output.write_all(&canonical_request_bytes(&request)?)?;
         output.write_all(b"\n")?;
         return Ok(());
     }
+    let request = select_request(request, config.agent_run_request)?;
     let listener = UnixListener::bind(&config.socket)?;
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
