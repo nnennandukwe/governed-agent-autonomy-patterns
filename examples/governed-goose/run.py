@@ -107,9 +107,10 @@ def run_host(command, timeout=55):
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           start_new_session=True, env={"PATH": os.defpath}) as process:
         try:
-            _, errors = process.communicate(timeout=timeout)
+            output, errors = process.communicate(timeout=timeout)
             if process.returncode:
                 raise RuntimeError("Host failed: " + errors.decode()[:2000])
+            return output
         finally:
             # The controlled host and its children share this new process group.
             try:
@@ -119,7 +120,7 @@ def run_host(command, timeout=55):
             process.wait(timeout=3)
 
 
-def run_case(case, goose, binary, output, attestor=None):
+def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
     """Own one disposable repository, provider, conversation and terminal receipt."""
     host_binary_digest = file_hash(binary)
     root = pathlib.Path(tempfile.mkdtemp(prefix="gg-", dir="/tmp")).resolve()
@@ -159,6 +160,15 @@ def run_case(case, goose, binary, output, attestor=None):
                                     "output": str(evidence), "case": case}))
     try:
         print("Running " + case + " with real Goose 1.54.0", file=sys.stderr, flush=True)
+        template = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=15))
+        if transcript or evidence.exists() or socket_path.exists() or (workspace / "shipping.py").read_text() != BAD:
+            raise AssertionError("Discovery started a conversation or changed the reference workspace")
+        if bind_controller:
+            template["request_id"] = "controller-request-" + case
+            template["run_id"] = "controller-run-" + case
+            configuration = json.loads(manifest.read_text())
+            configuration["agent_run_request"] = template
+            manifest.write_text(json.dumps(configuration))
         run_host([str(binary), str(manifest)])
     finally:
         server.shutdown()
@@ -167,6 +177,22 @@ def run_case(case, goose, binary, output, attestor=None):
     if file_hash(binary) != host_binary_digest:
         raise RuntimeError("The host binary changed during this case; rerun from a stable build")
     record = json.loads(evidence.read_text())
+    if record["request"] != template:
+        raise AssertionError("The executed request differs from its selected discovery template")
+    if bind_controller:
+        retained = evidence.read_bytes()
+        refreshed = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=15))
+        if refreshed["subject"] != record["after"] or refreshed["subject"] == template["subject"]:
+            raise AssertionError("Discovery didn't refresh the changed subject independently of the old bound request")
+        try:
+            run_host([str(binary), str(manifest)], timeout=15)
+        except RuntimeError as error:
+            if "Controller request differs" not in str(error):
+                raise AssertionError("A stale bound request failed for the wrong reason") from error
+        else:
+            raise AssertionError("A stale bound request started another run")
+        if evidence.read_bytes() != retained:
+            raise AssertionError("Stale-request rejection overwrote the retained native evidence")
     receipt = record["receipt"]["body"]
     expected = {"allow": "completed", "ask": "blocked", "block": "blocked", "bad_patch": "blocked", "report_only": "failed", "unreported": "blocked", "unreported_directory": "blocked", "unreported_mode": "blocked", "cancel_before_dispatch":"interrupted"}[case]
     if receipt["terminal_status"] != expected:
@@ -199,6 +225,7 @@ def run_case(case, goose, binary, output, attestor=None):
     record["fixture"] = {"goose_version": "1.54.0", "binary_digest": file_hash(goose),
                          "host_binary_digest": host_binary_digest,
                          "host_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(HERE), text=True).strip(),
+                         "controller_request_bound": bind_controller,
                          "host_tree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=str(HERE), text=True).strip()),
                          "provider": "local deterministic fixture; no inference or external billing",
                          "repository": str(workspace), "case": case, "provider_requests": transcript,
@@ -236,6 +263,10 @@ def main():
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(attestation_manifest)], check=True)
     attestor = attestation_manifest.parent / "target" / "debug" / "gaap-attestation"
     results = [run_case(case, goose, binary, output, attestor) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
+    bound_output = output / "controller-bound"
+    bound_output.mkdir()
+    bound = run_case("allow", goose, binary, bound_output, attestor, bind_controller=True)
+    results.append({**bound, "case": "controller_bound"})
     (output / "summary.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
 

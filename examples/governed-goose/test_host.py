@@ -32,7 +32,8 @@ class HostCleanupTests(unittest.TestCase):
 
     def test_successful_host_exits_normally(self):
         """Keep a normal host exit as the control for timeout cleanup."""
-        run_host([sys.executable, "-c", "print('host completed')"], timeout=2)
+        output = run_host([sys.executable, "-c", "print('host completed')"], timeout=2)
+        self.assertEqual(output, b"host completed\n")
 
 
 if __name__ == "__main__":
