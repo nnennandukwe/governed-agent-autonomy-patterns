@@ -39,6 +39,7 @@ fn usage(elapsed: u64) -> ResourceUsage {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     agent: AgentConfig,
     proposal_server: AgentConfig,
@@ -745,6 +746,16 @@ mod tests {
             "../../contracts/v0.1.0/agent-run-request.json"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn misspelled_controller_binding_cant_fall_back_to_default_identities() {
+        // Reject the key before absent required fields can mask the binding error.
+        let error = serde_json::from_str::<Config>(r#"{"agent_run_requst":{}}"#)
+            .err()
+            .expect("unknown binding key must fail")
+            .to_string();
+        assert!(error.contains("unknown field `agent_run_requst`"));
     }
 
     #[test]
