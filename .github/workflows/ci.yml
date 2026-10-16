@@ -176,8 +176,10 @@ jobs:
       - name: Install pinned dependency auditor
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Audit adapter dependency lockfile
-        run: cargo audit --file adapters/mcp/Cargo.lock
+      - name: Audit core and MCP dependency lockfiles
+        run: |
+          cargo audit --file Cargo.lock
+          cargo audit --file adapters/mcp/Cargo.lock
 
   acp:
     runs-on: ubuntu-latest
