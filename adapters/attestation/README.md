@@ -2,7 +2,7 @@
 
 This adapter signs a complete run ledger in an [in-toto Statement v1](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md), carried by a [DSSE v1.0.2 envelope](https://github.com/secure-systems-lab/dsse/blob/v1.0.2/protocol.md). An external controller can verify the signature, frozen GAAP contracts and retained content without GAAP's process memory. This doesn't authorize a controller transition or prove that a trusted signer reported the truth.
 
-The standalone crate requires Rust 1.88+. Tests also require Node.js for an independent Ed25519/JCS consumer. Dependency versions and the crate's own lockfile are pinned.
+The [contribution guide](../../CONTRIBUTING.md#final-review-gate) lists the full local CI matrix. The standalone crate requires Rust 1.88+. Tests also require Node.js for an independent Ed25519/JCS consumer. Dependency versions and the crate's own lockfile are pinned.
 
 ```sh
 cargo test --manifest-path adapters/attestation/Cargo.toml --locked

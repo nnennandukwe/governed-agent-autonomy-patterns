@@ -409,3 +409,190 @@ fn resealed_action_identity_tampering_still_fails_the_cross_ledger_binding() {
         "attestation.result_evidence_mismatch"
     );
 }
+
+#[test]
+fn an_explicit_interruption_cant_be_resealed_as_completion() {
+    let (_, mut changed, mut blobs) = fixture("allow");
+    let support = ContractSupport::new(changed.predicate.request.policies.clone());
+    let events = &mut changed.predicate.receipt.body.events;
+    let index = events.len() - 1;
+    events.insert(
+        index,
+        RunEvent::Interruption {
+            sequence: index as u64 + 1,
+            actor_id: Some("fixture-operator".into()),
+            reason: "operator.cancelled".into(),
+            evidence: EvidenceReference {
+                evidence_type: EvidenceType::Interruption,
+                digest: content_digest(b"operator cancelled"),
+                locator: None,
+            },
+        },
+    );
+    if let RunEvent::StatusTransition { sequence, .. } = events.last_mut().unwrap() {
+        *sequence += 1;
+    }
+    // The frozen core accepts this shape; the adapter must reject the contradiction.
+    changed.predicate.receipt = contracts::seal_terminal_receipt(
+        &changed.predicate.request,
+        &support,
+        changed.predicate.receipt.body.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        statement::verify(
+            &signed_unchecked(&changed),
+            &support,
+            &mut blobs,
+            &mut verifier()
+        )
+        .err()
+        .unwrap()
+        .code,
+        "attestation.interruption_status_mismatch"
+    );
+}
+#[test]
+fn attempted_effects_cant_claim_zero_known_tool_attempts() {
+    let (_, mut changed, mut blobs) = fixture("allow");
+    let support = ContractSupport::new(changed.predicate.request.policies.clone());
+    for effect in &mut changed.predicate.effects {
+        let old = effect.result.result_digest.clone();
+        let mut body = effect.result.body.clone();
+        body.usage.tool_calls = 0;
+        effect.result = contracts::seal_protected_effect_result(
+            &changed.predicate.request,
+            &support,
+            &effect.request,
+            body,
+        )
+        .unwrap();
+        for event in &mut changed.predicate.receipt.body.events {
+            if let RunEvent::ToolExecution { evidence, .. } = event {
+                for reference in evidence {
+                    if reference.digest == old {
+                        reference.digest = effect.result.result_digest.clone();
+                    }
+                }
+            }
+        }
+    }
+    for event in &mut changed.predicate.receipt.body.events {
+        if let RunEvent::Usage { usage, .. } = event {
+            usage.tool_calls = 0;
+        }
+    }
+    changed.predicate.receipt.body.usage.tool_calls = 0;
+    changed.predicate.receipt = contracts::seal_terminal_receipt(
+        &changed.predicate.request,
+        &support,
+        changed.predicate.receipt.body.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        statement::verify(
+            &signed_unchecked(&changed),
+            &support,
+            &mut blobs,
+            &mut verifier()
+        )
+        .err()
+        .unwrap()
+        .code,
+        "attestation.missing_known_attempt_usage"
+    );
+}
+
+#[test]
+fn resealed_completed_effect_sequences_must_start_at_one_without_gaps() {
+    let (_, mut changed, mut blobs) = fixture("allow");
+    let support = ContractSupport::new(changed.predicate.request.policies.clone());
+    for effect in &mut changed.predicate.effects {
+        let old_request = effect.result.body.effect_request_digest.clone();
+        let old_result = effect.result.result_digest.clone();
+        effect.request.effect_sequence += 1;
+        let digest = contracts::validate_protected_effect_request(
+            &changed.predicate.request,
+            &support,
+            &effect.request,
+        )
+        .unwrap();
+        let mut body = effect.result.body.clone();
+        body.effect_sequence = effect.request.effect_sequence;
+        body.effect_request_digest = digest.clone();
+        body.decision.effect_request_digest = digest.clone();
+        effect.result = contracts::seal_protected_effect_result(
+            &changed.predicate.request,
+            &support,
+            &effect.request,
+            body,
+        )
+        .unwrap();
+        for event in &mut changed.predicate.receipt.body.events {
+            match event {
+                RunEvent::ProtectedEffectDecision {
+                    protected_effect_digest,
+                    ..
+                }
+                | RunEvent::Mutation {
+                    protected_effect_digest,
+                    ..
+                } if *protected_effect_digest == old_request => {
+                    *protected_effect_digest = digest.clone()
+                }
+                RunEvent::ToolExecution {
+                    protected_effect_digest,
+                    action_digest,
+                    evidence,
+                    ..
+                } if *protected_effect_digest == old_request => {
+                    *protected_effect_digest = digest.clone();
+                    *action_digest = digest.clone();
+                    for reference in evidence {
+                        if reference.digest == old_result {
+                            reference.digest = effect.result.result_digest.clone();
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+    changed.predicate.receipt = contracts::seal_terminal_receipt(
+        &changed.predicate.request,
+        &support,
+        changed.predicate.receipt.body.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        statement::verify(
+            &signed_unchecked(&changed),
+            &support,
+            &mut blobs,
+            &mut verifier()
+        )
+        .err()
+        .unwrap()
+        .code,
+        "attestation.effect_order_or_subject"
+    );
+}
+#[test]
+fn real_failed_and_cancelled_goose_fixtures_keep_their_terminal_status() {
+    for (case, status) in [
+        ("report_only", AgentRunStatus::Failed),
+        ("cancel_before_dispatch", AgentRunStatus::Interrupted),
+    ] {
+        let (envelope, original, mut blobs) = fixture(case);
+        let support = ContractSupport::new(original.predicate.request.policies.clone());
+        let verified = statement::verify(&envelope, &support, &mut blobs, &mut verifier()).unwrap();
+        assert_eq!(
+            verified.statement().predicate.receipt.body.terminal_status,
+            status
+        );
+        assert_eq!(
+            verified.statement().predicate.receipt.body.usage.tool_calls,
+            0
+        );
+    }
+}

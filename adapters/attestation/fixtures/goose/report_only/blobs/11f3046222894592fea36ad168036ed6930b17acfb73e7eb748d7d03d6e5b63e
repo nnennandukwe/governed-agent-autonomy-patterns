@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"content":{"maxLength":8192,"type":"string"},"operation":{"enum":["file_write","terminal_echo","mcp_echo"],"type":"string"}},"required":["operation","content"],"type":"object"}

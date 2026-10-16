@@ -91,6 +91,7 @@ fn fixture_sign(
         .zip(bundle.protected_effect_results)
         .map(|(request, result)| {
             snapshots.push(request.subject.digest.clone());
+            snapshots.push(result.body.observed_pre_effect_subject.digest.clone());
             if let Some(subject) = &result.body.observed_post_effect_subject {
                 snapshots.push(subject.digest.clone());
             }

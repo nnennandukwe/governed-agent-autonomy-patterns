@@ -213,6 +213,16 @@ fn validate(
     }
     verify_terminal_receipt(&predicate.request, support, &predicate.receipt)
         .map_err(|_| error("attestation.invalid_receipt"))?;
+    if predicate.receipt.body.terminal_status != AgentRunStatus::Interrupted
+        && predicate
+            .receipt
+            .body
+            .events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Interruption { .. }))
+    {
+        return Err(error("attestation.interruption_status_mismatch"));
+    }
     if predicate.receipt.body.terminal_status == AgentRunStatus::Completed
         && predicate.observed_subject.digest != predicate.receipt.body.resulting_subject_digest
     {
@@ -259,7 +269,6 @@ fn validate_effects(
     let mut ids = BTreeSet::new();
     let mut current_subject = &predicate.request.subject.digest;
     let mut sums = [0u64; 4];
-    let mut prior_sequence = 0;
     for (index, effect) in predicate.effects.iter().enumerate() {
         let request = &effect.request;
         let result = &effect.result;
@@ -279,12 +288,11 @@ fn validate_effects(
             .map_err(|_| error("attestation.invalid_effect_result"))?;
         if &digest != order[index]
             || !ids.insert(&request.effect_id)
-            || request.effect_sequence <= prior_sequence
+            || request.effect_sequence != index as u64 + 1
             || &request.subject.digest != current_subject
         {
             return Err(error("attestation.effect_order_or_subject"));
         }
-        prior_sequence = request.effect_sequence;
         let decision = &result.body.decision;
         if !events.iter().any(|event| matches!(event,
             RunEvent::ProtectedEffectDecision { decision_id, gate, protected_effect_digest, subject_digest, decision: value, .. }
@@ -298,6 +306,9 @@ fn validate_effects(
             result.body.execution_status,
             EffectExecutionStatus::Denied | EffectExecutionStatus::AwaitingAuthority
         );
+        if attempted && result.body.usage.tool_calls == 0 {
+            return Err(error("attestation.missing_known_attempt_usage"));
+        }
         if executions.len() != usize::from(attempted) {
             return Err(error("attestation.execution_mismatch"));
         }
@@ -426,6 +437,7 @@ fn validate_content(
             }
         }
         required.insert(&effect.request.subject.digest);
+        required.insert(&effect.result.body.observed_pre_effect_subject.digest);
         if let Some(subject) = &effect.result.body.observed_post_effect_subject {
             required.insert(&subject.digest);
         }
@@ -508,4 +520,42 @@ fn snapshot_profile_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
 }
 fn contract_versions_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"array","minItems":4,"maxItems":4,"prefixItems":contract_versions().into_iter().map(|version|serde_json::json!({"type":"string","const":version})).collect::<Vec<_>>()})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    #[test]
+    fn content_validation_requires_every_pre_effect_observation_snapshot() {
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/goose/allow");
+        let envelope =
+            dsse::parse_envelope(&std::fs::read(root.join("envelope.json")).unwrap()).unwrap();
+        let mut statement: Statement =
+            serde_json::from_slice(&STANDARD.decode(envelope.payload).unwrap()).unwrap();
+        let mut blobs: BTreeMap<String, Vec<u8>> = std::fs::read_dir(root.join("blobs"))
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    format!("sha256:{}", path.file_name().unwrap().to_str().unwrap()),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect();
+        validate_content(&statement.predicate, &mut blobs).unwrap();
+        // Isolate retention validation; full contract checks separately reject inconsistent ledgers.
+        statement.predicate.effects[0]
+            .result
+            .body
+            .observed_pre_effect_subject
+            .digest = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(
+            validate_content(&statement.predicate, &mut blobs)
+                .unwrap_err()
+                .code,
+            "evidence.missing_snapshot"
+        );
+    }
 }
