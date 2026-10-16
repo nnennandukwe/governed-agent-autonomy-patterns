@@ -95,6 +95,7 @@ fn fixture() -> Fixture {
         executable,
         environment,
         state_directory: PathBuf::new(),
+        allowed_mount_roots: Vec::new(),
         approved_profile_digest: String::new(),
         engine_version: version["Version"].as_str().unwrap().into(),
         runtime: "runc".into(),
@@ -123,6 +124,7 @@ fn fixture() -> Fixture {
     fs::set_permissions(&config.state_directory, fs::Permissions::from_mode(0o700)).unwrap();
     let workspace = root.join("workspace");
     fs::create_dir(&workspace).unwrap();
+    config.allowed_mount_roots = vec![workspace.clone()];
     fs::write(workspace.join("source.txt"), b"initial owned subject\n").unwrap();
     fs::write(root.join("undeclared.txt"), b"host-only-canary").unwrap();
     let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();

@@ -34,6 +34,8 @@ pub struct OciConfig {
     pub executable: PathBuf,
     pub environment: BTreeMap<String, String>,
     pub state_directory: PathBuf,
+    /// Canonical administrator-selected roots from which workload mounts may be sourced.
+    pub allowed_mount_roots: Vec<PathBuf>,
     pub approved_profile_digest: String,
     pub engine_version: String,
     pub runtime: String,
@@ -63,13 +65,20 @@ fn absolute(path: &str) -> bool {
         && !path.split('/').any(|part| part == "." || part == "..")
 }
 
-fn safe_host_path(path: &str) -> Checked<PathBuf> {
+fn safe_host_path(path: &str, allowed_roots: &[PathBuf]) -> Checked<PathBuf> {
     if !absolute(path) || path == "/" {
         return Err("sandbox.mount_path: select an absolute bounded host path".into());
     }
     let selected = PathBuf::from(path);
-    if fs::canonicalize(&selected).map_err(|error| error.to_string())? != selected {
+    let canonical = fs::canonicalize(&selected).map_err(|error| error.to_string())?;
+    if canonical != selected {
         return Err("sandbox.mount_path: symlinked or noncanonical host path".into());
+    }
+    if !allowed_roots
+        .iter()
+        .any(|root| canonical == root.as_path() || canonical.starts_with(root))
+    {
+        return Err("sandbox.mount_path: source is outside the administrator-approved host roots".into());
     }
     let metadata = fs::symlink_metadata(&selected).map_err(|error| error.to_string())?;
     if !metadata.is_file() && !metadata.is_dir() {
@@ -103,7 +112,7 @@ fn write_record(directory: &Path, name: &str, bytes: &[u8]) -> Checked<PathBuf> 
     Ok(path)
 }
 
-fn validate(request: &SandboxRequest) -> Checked<()> {
+fn validate(request: &SandboxRequest, allowed_mount_roots: &[PathBuf]) -> Checked<()> {
     let limits = &request.limits;
     if !valid_digest(&request.invocation_digest) || !valid_digest(&request.input_subject.digest) {
         return Err("sandbox.binding: require exact protected-effect and subject digests".into());
@@ -184,7 +193,7 @@ fn validate(request: &SandboxRequest) -> Checked<()> {
         return Err("sandbox.mounts: declare bounded input mounts".into());
     }
     for (index, mount) in request.mounts.iter().enumerate() {
-        safe_host_path(&mount.source)?;
+        safe_host_path(&mount.source, allowed_mount_roots)?;
         if !absolute(&mount.destination)
             || mount.destination == "/"
             || [
@@ -445,7 +454,27 @@ impl LocalOciAdapter {
                     .into(),
             );
         }
-        validate(request)?;
+        let allowed_mount_roots: Vec<PathBuf> = self
+            .config
+            .allowed_mount_roots
+            .iter()
+            .map(|root| {
+                let canonical = fs::canonicalize(root).map_err(|error| error.to_string())?;
+                let metadata = fs::symlink_metadata(&canonical).map_err(|error| error.to_string())?;
+                if !canonical.is_absolute() || canonical == Path::new("/") || !metadata.is_dir() {
+                    return Err("sandbox.mount_path: configured host root must be a canonical directory".into());
+                }
+                Ok(canonical)
+            })
+            .collect::<Checked<Vec<_>>>()?;
+        if allowed_mount_roots.is_empty()
+            || allowed_mount_roots
+                .iter()
+                .any(|root| allowed_mount_roots.iter().any(|other| root != other && root.starts_with(other)))
+        {
+            return Err("sandbox.mount_path: configure explicit, non-overlapping host roots".into());
+        }
+        validate(request, &allowed_mount_roots)?;
         let state = &self.config.state_directory;
         let metadata = fs::symlink_metadata(state).map_err(|error| error.to_string())?;
         if !state.is_absolute()
@@ -455,6 +484,9 @@ impl LocalOciAdapter {
             || request.mounts.iter().any(|mount| {
                 state.starts_with(&mount.source) || Path::new(&mount.source).starts_with(state)
             })
+            || allowed_mount_roots
+                .iter()
+                .any(|root| state.starts_with(root) || root.starts_with(state))
         {
             return Err("sandbox.state: select a private canonical host directory outside all workload mounts".into());
         }
@@ -821,17 +853,25 @@ fn read_file(
 
 fn artifacts(
     request: &SandboxRequest,
+    allowed_mount_roots: &[PathBuf],
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Checked<Vec<SandboxArtifact>> {
     let request = request.clone();
+    let allowed_mount_roots = allowed_mount_roots.to_owned();
     bounded_io(deadline, cancelled, move |stop| {
-        collect_artifacts(&request, deadline, &|| stop.load(Ordering::Acquire))
+        collect_artifacts(
+            &request,
+            &allowed_mount_roots,
+            deadline,
+            &|| stop.load(Ordering::Acquire),
+        )
     })
 }
 
 fn collect_artifacts(
     request: &SandboxRequest,
+    allowed_mount_roots: &[PathBuf],
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Checked<Vec<SandboxArtifact>> {
@@ -852,9 +892,13 @@ fn collect_artifacts(
         } else {
             Path::new(&mount.source).join(relative)
         };
-        if fs::canonicalize(&host).map_err(|error| error.to_string())? != host {
-            return Err("sandbox.outputs: output traverses a symlink".into());
-        }
+        // Re-check the resolved artifact against the administrator-approved roots;
+        // request.writable only authorizes the container mount, not host reads.
+        safe_host_path(
+            host.to_str()
+                .ok_or("sandbox.outputs: output path is not valid UTF-8")?,
+            allowed_mount_roots,
+        )?;
         let bytes = read_file(&host, remaining, deadline, cancelled)?;
         remaining -= bytes.len();
         artifacts.push(SandboxArtifact {
@@ -906,6 +950,12 @@ impl SandboxAdapter for LocalOciAdapter {
                 return Ok(());
             }
             let (runtime, image_id) = self.preflight(request, deadline, cancelled)?;
+            let allowed_mount_roots: Vec<PathBuf> = self
+                .config
+                .allowed_mount_roots
+                .iter()
+                .map(|root| fs::canonicalize(root).map_err(|error| error.to_string()))
+                .collect::<Checked<Vec<_>>>()?;
             observation.runtime = Some(runtime);
             observation.image_digest = Some(request.image.digest.clone());
             observation.resolved_image_id = Some(image_id.clone());
@@ -1006,7 +1056,8 @@ impl SandboxAdapter for LocalOciAdapter {
                     observation.reason =
                         Some("sandbox.exit: attached CLI and workload exits disagree".into());
                 }
-                observation.artifacts = artifacts(request, deadline, cancelled)?;
+                observation.artifacts =
+                    artifacts(request, &allowed_mount_roots, deadline, cancelled)?;
                 let current_executable =
                     hash_executable(&self.config.executable, deadline, cancelled)?;
                 if observation
@@ -1066,6 +1117,7 @@ mod tests {
             executable: fs::canonicalize("/bin/sh").unwrap(),
             environment: BTreeMap::new(),
             state_directory: PathBuf::new(),
+            allowed_mount_roots: Vec::new(),
             approved_profile_digest: String::new(),
             engine_version: String::new(),
             runtime: "runc".into(),

@@ -229,6 +229,7 @@ impl SandboxHost {
             executable: self.config.docker_executable.clone(),
             environment: self.config.docker_environment.clone(),
             state_directory: self.config.state_directory.clone(),
+            allowed_mount_roots: vec![self.root.clone()],
             approved_profile_digest: request.profile_digest()?,
             engine_version: self.config.engine_version.clone(),
             runtime: "runc".into(),
