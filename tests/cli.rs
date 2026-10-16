@@ -120,3 +120,26 @@ fn subject_adapter_rejects_an_unknown_protocol_digest() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported decision protocol"));
 }
+
+#[test]
+fn runtime_subject_rejects_noncanonical_or_unknown_start_frames() {
+    for input in [
+        b"{ \"kind\":\"start\"}\n".as_slice(),
+        b"{\"kind\":\"start\",\"kind\":\"start\"}\n".as_slice(),
+        b"{\"kind\":\"start\",\"protocol\":\"unknown\"}\n".as_slice(),
+        b"{}".as_slice(),
+    ] {
+        let mut child = gaap()
+            .arg("runtime-subject")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("gaap runtime subject error"));
+    }
+}

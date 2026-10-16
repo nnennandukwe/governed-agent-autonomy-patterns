@@ -33,6 +33,7 @@ pub struct RuntimeSupport {
     protected_effect_usage_estimate: EffectUsage,
     runtime_approvals: Vec<GateApproval>,
     trusted_verifier_ids: Vec<String>,
+    trusted_tool_schema_digests: Option<Vec<String>>,
 }
 
 impl RuntimeSupport {
@@ -52,7 +53,14 @@ impl RuntimeSupport {
             protected_effect_usage_estimate,
             runtime_approvals,
             trusted_verifier_ids,
+            trusted_tool_schema_digests: None,
         }
+    }
+
+    /// Pin tool schemas independently of capability names and digests.
+    pub fn with_trusted_tool_schemas(mut self, digests: Vec<String>) -> Self {
+        self.trusted_tool_schema_digests = Some(digests);
+        self
     }
 
     /// Return the contract support used for request and receipt validation.
@@ -594,7 +602,11 @@ where
 
         let tool_trust_decision = self.coordinator.evaluate(
             Gate::ToolTrust,
-            &tool_trust_input(&self.support, &proposal.request.capability),
+            &tool_trust_input(
+                &self.support,
+                &proposal.request.capability,
+                proposal.request.tool_schema_digest.as_deref(),
+            ),
         );
         let tool_trust_decision_id =
             ledger.decision_id("tool-trust", proposal.request.effect_sequence);
@@ -1638,6 +1650,15 @@ fn validate_config(config: &RuntimeConfig, request: &AgentRunRequest) -> Result<
 }
 
 fn validate_support(support: &RuntimeSupport) -> Result<(), RuntimeError> {
+    if support
+        .trusted_tool_schema_digests
+        .as_ref()
+        .is_some_and(|digests| digests.iter().any(|digest| !is_digest_string(digest)))
+    {
+        return Err(RuntimeError::InvalidConfig(
+            "trusted tool schema digests must be valid content digests".into(),
+        ));
+    }
     for (index, approval) in support.runtime_approvals.iter().enumerate() {
         if !is_digest_string(&approval.subject_digest)
             || approval
@@ -1700,8 +1721,18 @@ fn permission_input(action_digest: &str, permission: &PermissionPolicy) -> Value
     })
 }
 
-fn tool_trust_input(support: &RuntimeSupport, capability: &CapabilityIdentity) -> Value {
-    let approval = if support.trusts_capability(capability) {
+fn tool_trust_input(
+    support: &RuntimeSupport,
+    capability: &CapabilityIdentity,
+    tool_schema_digest: Option<&str>,
+) -> Value {
+    let approval = if support.trusts_capability(capability)
+        && support
+            .trusted_tool_schema_digests
+            .as_ref()
+            .is_none_or(|trusted| {
+                tool_schema_digest.is_some_and(|digest| trusted.iter().any(|item| item == digest))
+            }) {
         json!({
             "status": "approved",
             "subject_digest": capability.digest,

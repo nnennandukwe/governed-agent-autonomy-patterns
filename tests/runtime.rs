@@ -1944,3 +1944,34 @@ fn missing_or_malformed_executor_identity_is_explicitly_unverified() {
         verify_protected_effect_result(&run_request, &support, &effect, result).unwrap();
     }
 }
+
+#[test]
+fn pinned_tool_schema_change_blocks_before_executor() {
+    let run_request = request();
+    let mut proposed = effect_request(&run_request, &support(), 1);
+    proposed.tool_schema_digest = Some(digest(b'f'));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability()]).with_trusted_tool_schemas(vec![digest(b'6')]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(proposed))))],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine
+        .run(run_request)
+        .expect("schema drift seals a blocked receipt");
+    assert!(calls.borrow().is_empty());
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+    assert_eq!(
+        result.receipt.body.terminal_reason,
+        "tool_trust.approval_required"
+    );
+    assert_eq!(
+        result.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::Denied
+    );
+}
