@@ -32,6 +32,7 @@ MUTANTS = {
 
 
 def main():
+    """Compile isolated source mutants and report their replayable counterexamples."""
     target = ROOT / "target"
     target.mkdir(exist_ok=True)
     logs = target / "state-machine-mutants"
