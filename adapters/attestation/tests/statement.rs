@@ -596,3 +596,58 @@ fn real_failed_and_cancelled_goose_fixtures_keep_their_terminal_status() {
         );
     }
 }
+
+#[test]
+fn every_dispatch_gate_must_allow_before_the_execution() {
+    let (_, original, mut blobs) = fixture("allow");
+    let support = ContractSupport::new(original.predicate.request.policies.clone());
+    for gate in [gaap::Gate::ToolTrust, gaap::Gate::Runtime] {
+        for mode in ["block", "ask", "missing", "late"] {
+            let mut changed = original.clone();
+            let events = &mut changed.predicate.receipt.body.events;
+            let index=events.iter().position(|event|matches!(event,RunEvent::ProtectedEffectDecision{gate:event_gate,..} if *event_gate==gate)).unwrap();
+            if matches!(mode, "block" | "ask") {
+                if let RunEvent::ProtectedEffectDecision { decision, .. } = &mut events[index] {
+                    decision.outcome = if mode == "ask" {
+                        gaap::Outcome::Ask
+                    } else {
+                        gaap::Outcome::Block
+                    };
+                    decision.code = "synthetic.gate_refusal".into();
+                }
+            } else {
+                let decision = events.remove(index);
+                if mode == "late" {
+                    let execution = events
+                        .iter()
+                        .position(|event| matches!(event, RunEvent::ToolExecution { .. }))
+                        .unwrap();
+                    events.insert(execution + 1, decision);
+                }
+                let mut value = serde_json::to_value(&events).unwrap();
+                for (index, event) in value.as_array_mut().unwrap().iter_mut().enumerate() {
+                    event["sequence"] = serde_json::json!(index + 1);
+                }
+                *events = serde_json::from_value(value).unwrap();
+            }
+            changed.predicate.receipt = contracts::seal_terminal_receipt(
+                &changed.predicate.request,
+                &support,
+                changed.predicate.receipt.body.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                statement::verify(
+                    &signed_unchecked(&changed),
+                    &support,
+                    &mut blobs,
+                    &mut verifier()
+                )
+                .err()
+                .expect("missing, late or refusing gates must stop dispatch")
+                .code,
+                "attestation.gates_not_admitted"
+            );
+        }
+    }
+}

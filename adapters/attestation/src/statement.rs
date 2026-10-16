@@ -312,6 +312,9 @@ fn validate_effects(
         if executions.len() != usize::from(attempted) {
             return Err(error("attestation.execution_mismatch"));
         }
+        if let Some(RunEvent::ToolExecution { sequence, .. }) = executions.first().copied() {
+            validate_admission(events, &digest, request, *sequence)?;
+        }
         if let Some(RunEvent::ToolExecution {
             action_digest,
             capability_digest,
@@ -395,6 +398,50 @@ fn validate_effects(
     Ok(())
 }
 
+fn validate_admission(
+    events: &[RunEvent],
+    digest: &str,
+    request: &ProtectedEffectRequest,
+    execution_sequence: u64,
+) -> Result<(), AttestationError> {
+    let mut required = vec![
+        gaap::Gate::Permission,
+        gaap::Gate::ToolTrust,
+        gaap::Gate::Runtime,
+    ];
+    if request.expected_effect_class == EffectClass::Mutation {
+        required.push(gaap::Gate::Workflow);
+    }
+    let decisions: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::ProtectedEffectDecision {
+                sequence,
+                protected_effect_digest,
+                gate,
+                decision,
+                ..
+            } if protected_effect_digest == digest => Some((*sequence, *gate, decision)),
+            _ => None,
+        })
+        .collect();
+    if decisions
+        .iter()
+        .any(|(_, _, decision)| decision.outcome != gaap::Outcome::Allow)
+        || required.iter().any(|required_gate| {
+            !decisions.iter().any(|(sequence, gate, decision)| {
+                gate == required_gate
+                    && *sequence < execution_sequence
+                    && (*gate != gaap::Gate::Workflow
+                        || decision.code == "workflow.mutation_authorized")
+            })
+        })
+    {
+        return Err(error("attestation.gates_not_admitted"));
+    }
+    Ok(())
+}
+
 fn validate_content(
     predicate: &Predicate,
     reader: &mut impl BlobReader,
@@ -431,6 +478,7 @@ fn validate_content(
     for effect in &predicate.effects {
         for digest in std::iter::once(&effect.request.input_digest)
             .chain(effect.request.tool_schema_digest.iter())
+            .chain(effect.result.body.observed_tool_schema_digest.iter())
         {
             if !blobs.contains_key(digest) {
                 return Err(error("evidence.missing_input_or_schema"));
@@ -465,6 +513,16 @@ fn validate_content(
         }
     }
     let mut unresolved = BTreeSet::new();
+    for approval in predicate.request.approval_context.iter().chain(
+        predicate
+            .effects
+            .iter()
+            .flat_map(|effect| &effect.request.approval_context),
+    ) {
+        if !blobs.contains_key(&approval.evidence.digest) {
+            unresolved.insert(approval.evidence.digest.clone());
+        }
+    }
     for event in &predicate.receipt.body.events {
         let references = match event {
             RunEvent::Verification { evidence, .. } => {
@@ -526,15 +584,15 @@ fn contract_versions_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sche
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
-    #[test]
-    fn content_validation_requires_every_pre_effect_observation_snapshot() {
-        let root =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/goose/allow");
+    fn content_fixture(case: &str) -> (Predicate, BTreeMap<String, Vec<u8>>) {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/goose")
+            .join(case);
         let envelope =
             dsse::parse_envelope(&std::fs::read(root.join("envelope.json")).unwrap()).unwrap();
-        let mut statement: Statement =
+        let statement: Statement =
             serde_json::from_slice(&STANDARD.decode(envelope.payload).unwrap()).unwrap();
-        let mut blobs: BTreeMap<String, Vec<u8>> = std::fs::read_dir(root.join("blobs"))
+        let blobs = std::fs::read_dir(root.join("blobs"))
             .unwrap()
             .map(|entry| {
                 let path = entry.unwrap().path();
@@ -544,18 +602,45 @@ mod tests {
                 )
             })
             .collect();
-        validate_content(&statement.predicate, &mut blobs).unwrap();
+        (statement.predicate, blobs)
+    }
+    #[test]
+    fn content_validation_requires_every_pre_effect_observation_snapshot() {
+        let (mut predicate, mut blobs) = content_fixture("allow");
+        validate_content(&predicate, &mut blobs).unwrap();
         // Isolate retention validation; full contract checks separately reject inconsistent ledgers.
-        statement.predicate.effects[0]
+        predicate.effects[0]
             .result
             .body
             .observed_pre_effect_subject
             .digest = format!("sha256:{}", "0".repeat(64));
         assert_eq!(
-            validate_content(&statement.predicate, &mut blobs)
-                .unwrap_err()
-                .code,
+            validate_content(&predicate, &mut blobs).unwrap_err().code,
             "evidence.missing_snapshot"
         );
+    }
+    #[test]
+    fn content_validation_requires_the_observed_schema_bytes() {
+        let (mut predicate, mut blobs) = content_fixture("ask");
+        validate_content(&predicate, &mut blobs).unwrap();
+        predicate.effects[0].result.body.observed_tool_schema_digest =
+            Some(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            validate_content(&predicate, &mut blobs).unwrap_err().code,
+            "evidence.missing_input_or_schema"
+        );
+    }
+    #[test]
+    fn request_only_approval_references_are_disclosed_when_bytes_arent_retained() {
+        let (mut predicate, mut blobs) = content_fixture("allow");
+        let run_digest = format!("sha256:{}", "0".repeat(64));
+        let effect_digest = format!("sha256:{}", "1".repeat(64));
+        predicate.request.approval_context[0].evidence.digest = run_digest.clone();
+        predicate.effects[0].request.approval_context[0]
+            .evidence
+            .digest = effect_digest.clone();
+        let unresolved = validate_content(&predicate, &mut blobs).unwrap();
+        assert!(unresolved.contains(&run_digest));
+        assert!(unresolved.contains(&effect_digest));
     }
 }
