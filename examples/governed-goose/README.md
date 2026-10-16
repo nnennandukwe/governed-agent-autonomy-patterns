@@ -74,7 +74,7 @@ also checked independently of the agent's completion message.
 
 ## Evidence limits
 
-This controlled profile trusts pinned local executable bytes and serialized
+The default stdio profile trusts pinned local executable bytes and serialized
 host files. It doesn't provide OS isolation or prevent a malicious trusted
 process from using unrelated syscalls. The runner owns a new process group and kills it on host timeout. ACP cancellation reaps Goose; arbitrary
 child-process termination and interrupted external effects still need host
@@ -82,8 +82,8 @@ reconciliation. The ingress has its own finite socket deadline. The host uses an
 
 External model spend isn't estimated as zero: there's no external model in this
 fixture. Using a paid provider would need independent host billing and token
-measurement. Signing (#15), isolation (#16/#17/#21), durable recovery (#32) and
-ThreadLoop launch, independent admission and persistence (#111) remain separate.
+measurement. Production isolation (#17/#21), durable recovery (#32) and
+ThreadLoop launch, independent admission and persistence (#111) remain separate from this reference.
 
 The unreported-mutation case is deliberate fault injection: after all three
 admitted effects, the provider fixture writes an additional repository file, creates an empty directory or changes permissions
@@ -105,6 +105,12 @@ binding failures and cancellation still get a no-dispatch response during cleanu
 Cancellation can close the peer before a refusal is written. The host still
 retains the refusal with `written: false`. That delivery failure doesn't erase
 the zero-dispatch outcome or imply that Goose received the message.
+
+## Optional local OCI profile
+
+Select `--oci` on the runner to execute the same outcome matrix with Docker-compatible Linux containers. Install the immutable image first using the [sandbox guide](../../adapters/sandbox/README.md). The selected engine, runc version, image, limits, programs and mount profile are bound into host adoption; a missing or mismatched runtime fails instead of falling back.
+
+Each protected operation receives one preexisting writable subject file. The arithmetic verifier receives only a read-only shipping file. The signed archive retains original sandbox observations, stdout/stderr and output artifacts; Protected Effect Results reference their execution observations. The host's oracle and evidence remain outside writable mounts. This is a reproducibility boundary, and it doesn't make ordinary containers sufficient isolation for hostile code.
 
 ## Signed fixtures and offline verification
 
@@ -137,3 +143,13 @@ Each run first checks discovery, and the extra run signs and verifies its own ou
 supports [ThreadLoop #111](https://github.com/nnennandukwe/threadloop/issues/111); ThreadLoop still owns claim fencing,
 signature trust, durable evidence admission and its lifecycle guards. The reference remains a fixed three-operation task;
 [GAAP #31](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/31) owns reusable submitted proposals.
+
+The OCI profile budgets ten seconds per execution and two seconds for cleanup.
+Its MCP response budget includes cleanup and publication; the host allows twenty
+seconds per MCP call and 120 seconds for the run's three effects, independent
+verification and launch checks. The outer runner allows 150 seconds so the host
+can retain its terminal evidence. The ordinary stdio profile keeps its existing
+40-second run budget. No timeout retries a protected effect.
+
+Development builds optimize SHA-256 for launch-byte checks. They still rehash
+all approved bytes before launch; the existing setup deadlines stay enforced.

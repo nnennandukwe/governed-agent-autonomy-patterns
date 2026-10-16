@@ -1,5 +1,7 @@
 """Proposal ingress and separate, host-approved effect backend for the reference."""
 import json
+import os
+import signal
 import pathlib
 import socket
 import subprocess
@@ -22,6 +24,8 @@ TOOL = {
 
 def operation(arguments):
     """Perform only the host's fixed reference operations after admission."""
+    if os.environ.get('GAAP_SANDBOX_CONTEXT'):
+        return sandbox_operation(arguments)
     root = pathlib.Path.cwd()
     content = arguments["content"]
     if not isinstance(content, str) or len(content) > 8192 or set(arguments) != {"operation", "content"}:
@@ -52,6 +56,40 @@ def operation(arguments):
     else:
         raise ValueError("Unsupported operation")
     return {"content": [{"type": "text", "text": "Host effect finished; independent verification is still required."}]}
+
+
+def sandbox_operation(arguments):
+    """Use only the host-prepared invocation; agent arguments can't select its profile."""
+    context_bytes = pathlib.Path(os.environ['GAAP_SANDBOX_CONTEXT']).read_bytes()
+    if len(context_bytes) > 65536:
+        raise ValueError('Oversized sandbox context')
+    context = json.loads(context_bytes)
+    if context['arguments'] != arguments:
+        raise ValueError('Sandbox arguments differ from the admitted invocation')
+    limits = context['request']['limits']
+    response_seconds = (limits['wall_clock_ms'] + limits['cleanup_ms']) / 1000 + 1
+    cancellation_seconds = limits['cleanup_ms'] / 1000 + 1
+    child = subprocess.Popen([context['executable'], context['config']], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={}, start_new_session=True)
+    try:
+        output, errors = child.communicate(json.dumps(context['request']).encode(), timeout=response_seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGTERM)
+        try:
+            output, errors = child.communicate(timeout=cancellation_seconds)
+        except subprocess.TimeoutExpired:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.communicate()
+            raise ValueError('Sandbox response is uncertain; inspect its owned intent before recovery')
+    if child.returncode or errors or len(output) > 1024 * 1024:
+        raise ValueError('Sandbox transport failed; retained ownership must be inspected')
+    observation = json.loads(output)
+    descriptor = os.open(context['observation'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as retained:
+        retained.write(output)
+        retained.flush()
+        os.fsync(retained.fileno())
+    succeeded = observation['status'] == 'exited' and observation['exit_code'] == 0 and observation['cleanup'] == 'removed' and observation['publication_error'] is None
+    return {'content': [{'type': 'text', 'text': 'Host OCI observation retained; independent verification is still required.'}], 'isError': not succeeded}
 
 
 def proposal(arguments):

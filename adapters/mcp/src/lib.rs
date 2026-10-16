@@ -310,6 +310,36 @@ impl McpExecutor {
     pub fn profile(&self) -> &SandboxProfileIdentity {
         &self.profile
     }
+    /// Adopt the trusted host's execution profile before binding a run.
+    /// The host must supply actual execution evidence; this label isn't runtime proof.
+    pub fn adopt_sandbox_profile(
+        &mut self,
+        profile: SandboxProfileIdentity,
+    ) -> Result<(), McpError> {
+        if self.binding.is_some() || !self.prepared.is_empty() || !self.calls.is_empty() {
+            return Err(McpError::new(
+                "mcp.profile_already_bound",
+                "select the host profile before binding a run",
+            ));
+        }
+        if profile.name.trim().is_empty()
+            || profile.version.trim().is_empty()
+            || profile.name.len() > 128
+            || profile.version.len() > 128
+            || profile.digest.len() != 71
+            || !profile.digest.starts_with("sha256:")
+            || !profile.digest[7..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(McpError::new(
+                "mcp.invalid_profile",
+                "select an exact named, versioned profile digest",
+            ));
+        }
+        self.profile = profile;
+        Ok(())
+    }
     pub fn cancellation_handle(&self) -> CancelHandle {
         CancelHandle(self.cancellation.clone())
     }

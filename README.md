@@ -7,7 +7,7 @@ agent run.
 The current executable slice provides the integrity coordinator, frozen
 contracts, and a deterministic Rust runtime that calls explicit adapter ports
 before protected effects. A separate MCP stdio client executes external tools through that runtime.
-A stable-v1 ACP client mediates delegated agent filesystem operations through the same runtime. Provider-specific integrations, persistence, signing, sandbox enforcement and ThreadLoop integration remain pending.
+A stable-v1 ACP client mediates delegated agent filesystem operations through the same runtime. A separate attestation adapter signs and verifies retained evidence. The Goose reference can select a local OCI profile for protected effects and independent verification. Provider-specific integrations, durable recovery and production isolation remain pending.
 
 ## Current Interfaces And Evidence
 
@@ -16,6 +16,7 @@ A stable-v1 ACP client mediates delegated agent filesystem operations through th
 | [`RunCoordinator::evaluate(gate, input)`](./src/lib.rs) | Accepts a typed `Gate` and normalized JSON input, then returns an `allow`, `ask`, or `block` decision with a code and effects. | Put one deterministic decision module behind future provider, tool, and runtime adapters. |
 | [`gaap::runtime`](./src/runtime.rs) | Runs one bounded Agent Run through plan, runtime-owned permission/tool-trust/runtime gates, workflow, execution, and verification ports, then seals exactly one Terminal Run Receipt. | Test runtime lifecycle behavior without provider SDKs, persistence, or real sandbox/executor integrations. |
 | [`gaap::contracts`](./src/contracts) | Defines and validates provider-neutral Agent Run and Protected Effect `0.1.0` contracts. | Parse, canonicalize, validate, seal, and verify immutable contract values without importing provider SDK types. |
+| [`gaap::sandbox`](./src/sandbox.rs) and [`adapters/sandbox`](./adapters/sandbox/README.md) | Define a neutral execution profile and record real local OCI runtime, image, output and cleanup observations. | Run declared protected effects and verification through a reproducible container boundary. |
 | [`gaap::contracts::protected_effect`](./src/contracts/protected_effect) | Defines typed effect scopes, request binding, result-state invariants, evidence references, and replay/tamper checks. It performs no effect or policy evaluation. | Integrate a future executor at one small contract seam while keeping `RunCoordinator` authoritative. |
 | [`schemas/agent-run/v0.1.0`](./schemas/agent-run/v0.1.0) | Freezes Draft 2020-12 request and receipt schemas with strict fields, versions, enums, digests, and safe integers. | Generate or validate cross-language contract documents. |
 | [`schemas/protected-effect/v0.1.0`](./schemas/protected-effect/v0.1.0) | Freezes separate Draft 2020-12 Protected Effect Request and Result schemas. | Validate cross-language effect proposals and observed outcomes. |
@@ -64,6 +65,7 @@ Implemented and tested now:
 - a separate ACP v1 client with session ownership, delegated filesystem effects, host metering and strict protocol checks;
 - a pinned real Goose conversation through ACP/MCP with per-effect gates and independent verification;
 - offline DSSE/in-toto signing with explicit trust and retained content;
+- a local OCI profile with explicit image, mounts, environment, network and resource limits, plus retained runtime and cleanup evidence;
 - generated Draft 2020-12 JSON Schemas; and
 - Agent Run terminal examples plus completed/executed, denied,
   awaiting-authority, failed, interrupted, stale-subject, schema-drift, and

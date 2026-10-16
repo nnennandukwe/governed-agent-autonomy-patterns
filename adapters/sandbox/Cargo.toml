@@ -1,0 +1,22 @@
+[package]
+name = "gaap-sandbox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+ctrlc = { version = "=3.5.2", features = ["termination"] }
+gaap = { path = "../..", version = "=0.1.0" }
+nix = { version = "=0.31.3", features = ["fs", "signal", "process"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+serde_jcs = "=0.2.0"
+sha2 = "=0.10.9"
+
+# Launch-byte pin checks share bounded runtime deadlines, including in dev builds.
+[profile.dev.package.sha2]
+opt-level = 3

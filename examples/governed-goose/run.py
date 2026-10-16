@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import http.server
 import json
+import shutil
 import os
 import pathlib
 import platform
@@ -120,7 +121,7 @@ def run_host(command, timeout=55):
             process.wait(timeout=3)
 
 
-def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
+def run_case(case, goose, binary, output, attestor=None, bind_controller=False, sandbox=None):
     """Own one disposable repository, provider, conversation and terminal receipt."""
     host_binary_digest = file_hash(binary)
     root = pathlib.Path(tempfile.mkdtemp(prefix="gg-", dir="/tmp")).resolve()
@@ -132,6 +133,16 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
     config_file = state / "config" / "config.yaml"
     config_file.write_text("extensions:\n  developer:\n    enabled: false\n    type: builtin\n    name: developer\n")
     (workspace / "shipping.py").write_text(BAD)
+    if sandbox is not None:
+        (workspace / "terminal.txt").write_text('')
+        (workspace / "mcp.txt").write_text('')
+        sandbox = dict(sandbox)
+        sandbox['state_directory'] = str(root / 'sandbox-state')
+        pathlib.Path(sandbox['state_directory']).mkdir(mode=0o700)
+        if os.getuid() == 0:
+            uid, gid = map(int, sandbox['user'].split(':'))
+            for name in ('shipping.py', 'terminal.txt', 'mcp.txt'):
+                os.chown(workspace / name, uid, gid)
     templates = root / "git-templates"
     templates.mkdir()
     subprocess.run(["git", "init", "--quiet", str(workspace)], check=True,
@@ -155,12 +166,15 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
                "environment": {}, "working_directory": str(workspace), "expected_name": "gaap-proposals", "expected_version": "1",
                "artifacts": [artifact(python), artifact(HERE / "server.py")]}
     manifest = root / "host.json"
-    manifest.write_text(json.dumps({"agent": agent, "proposal_server": ingress, "python": str(python),
-                                    "server": str(HERE / "server.py"), "socket": str(socket_path), "token": token,
-                                    "output": str(evidence), "case": case}))
+    configuration = {"agent": agent, "proposal_server": ingress, "python": str(python),
+                     "server": str(HERE / "server.py"), "socket": str(socket_path), "token": token,
+                     "output": str(evidence), "case": case}
+    if sandbox is not None:
+        configuration['sandbox'] = sandbox
+    manifest.write_text(json.dumps(configuration))
     try:
         print("Running " + case + " with real Goose 1.54.0", file=sys.stderr, flush=True)
-        template = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=15))
+        template = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=25 if sandbox is not None else 15))
         if transcript or evidence.exists() or socket_path.exists() or (workspace / "shipping.py").read_text() != BAD:
             raise AssertionError("Discovery started a conversation or changed the reference workspace")
         if bind_controller:
@@ -169,7 +183,7 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
             configuration = json.loads(manifest.read_text())
             configuration["agent_run_request"] = template
             manifest.write_text(json.dumps(configuration))
-        run_host([str(binary), str(manifest)])
+        run_host([str(binary), str(manifest)], timeout=150 if sandbox is not None else 55)
     finally:
         server.shutdown()
         server.server_close()
@@ -181,7 +195,7 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
         raise AssertionError("The executed request differs from its selected discovery template")
     if bind_controller:
         retained = evidence.read_bytes()
-        refreshed = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=15))
+        refreshed = json.loads(run_host([str(binary), "--describe", str(manifest)], timeout=25 if sandbox is not None else 15))
         if refreshed["subject"] != record["after"] or refreshed["subject"] == template["subject"]:
             raise AssertionError("Discovery didn't refresh the changed subject independently of the old bound request")
         try:
@@ -214,7 +228,7 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
         if response["response"]["structuredContent"]["status"] != "not_dispatched" or not isinstance(response.get("written"), bool):
             raise AssertionError("The early refusal lost its pending proposal response")
     if case in ("ask", "block", "report_only", "cancel_before_dispatch"):
-        if attempted or (workspace / "shipping.py").read_text() != BAD or (workspace / "terminal.txt").exists() or (workspace / "mcp.txt").exists():
+        if attempted or (workspace / "shipping.py").read_text() != BAD or ((workspace / "terminal.txt").read_text() != '' or (workspace / "mcp.txt").read_text() != '' if sandbox is not None else (workspace / "terminal.txt").exists() or (workspace / "mcp.txt").exists()):
             raise AssertionError("Refused or fabricated work caused a protected effect")
     elif attempted != 3:
         raise AssertionError("The full conversation didn't execute all three admitted operations")
@@ -222,10 +236,27 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False):
         raise AssertionError("Independent verification didn't reject the bad patch")
     if case == "allow" and record["verification"]["passed"] is not True:
         raise AssertionError("Independent verification didn't pass")
+    if sandbox is not None:
+        observations = [value for value in record['evidence_blobs'].values()
+                        if isinstance(value, list) and value and value[0] == ord('{')]
+        decoded = []
+        for value in observations:
+            try:
+                entry = json.loads(bytes(value))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(entry, dict) and entry.get('schema_version') == 'gaap.sandbox-observation/0.1':
+                decoded.append(entry)
+        expected_count = 0 if case in ('ask', 'block', 'report_only', 'cancel_before_dispatch') else 4
+        if len(decoded) != expected_count or any(entry['cleanup'] != 'removed' or (entry.get('runtime') or {}).get('runtime') != 'runc' for entry in decoded):
+            raise AssertionError('OCI runtime or cleanup mismatch: ' + json.dumps([{'status': entry.get('status'), 'reason': entry.get('reason'), 'cleanup': entry.get('cleanup'), 'runtime': entry.get('runtime')} for entry in decoded]))
+        if any(result['body']['sandbox_profile']['name'] != 'governed-goose-local-oci' for result in effects if result['body']['executor'] is not None):
+            raise AssertionError('A protected effect reported the wrong selected profile')
     record["fixture"] = {"goose_version": "1.54.0", "binary_digest": file_hash(goose),
                          "host_binary_digest": host_binary_digest,
                          "host_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(HERE), text=True).strip(),
                          "controller_request_bound": bind_controller,
+                         "sandbox_profile": 'local-oci/0.1' if sandbox is not None else 'local-stdio-unisolated',
                          "host_tree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=str(HERE), text=True).strip()),
                          "provider": "local deterministic fixture; no inference or external billing",
                          "repository": str(workspace), "case": case, "provider_requests": transcript,
@@ -250,6 +281,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--goose", required=True, type=pathlib.Path, help="Checksum-pinned Goose 1.54.0 executable")
     parser.add_argument("--output", required=True, type=pathlib.Path, help="New directory for the nine-case evidence")
+    parser.add_argument('--oci', action='store_true', help='Run the same matrix through the pinned local OCI profile')
     args = parser.parse_args()
     goose = args.goose.resolve(strict=True)
     expected = PINS.get((platform.system(), platform.machine()))
@@ -262,10 +294,28 @@ def main():
     attestation_manifest = HERE.parent.parent / "adapters" / "attestation" / "Cargo.toml"
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(attestation_manifest)], check=True)
     attestor = attestation_manifest.parent / "target" / "debug" / "gaap-attestation"
-    results = [run_case(case, goose, binary, output, attestor) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
+    sandbox = None
+    if args.oci:
+        sandbox_manifest = HERE.parent.parent / 'adapters' / 'sandbox' / 'Cargo.toml'
+        subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(sandbox_manifest)], check=True)
+        docker_name = shutil.which('docker')
+        if docker_name is None:
+            raise ValueError('Install a Docker-compatible local CLI before selecting --oci')
+        docker = pathlib.Path(docker_name).resolve(strict=True)
+        version = json.loads(subprocess.check_output([str(docker), 'version', '--format', '{{json .Server}}']))
+        endpoint = subprocess.check_output([str(docker), 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], text=True).strip()
+        image_digest = 'sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a'
+        image = 'python@' + image_digest
+        subprocess.run([str(docker), 'image', 'inspect', image], stdout=subprocess.DEVNULL, check=True)
+        sandbox = {'executable': str((sandbox_manifest.parent / 'target' / 'debug' / 'gaap-sandbox').resolve(strict=True)),
+                   'docker_executable': str(docker), 'docker_environment': {'DOCKER_HOST': endpoint},
+                   'engine_version': version['Version'], 'runtime_version': next(component['Version'] for component in version['Components'] if component['Name'] == 'runc'),
+                   'image': {'reference': image, 'digest': image_digest},
+                   'user': str(os.getuid() or 1000) + ':' + str(os.getgid() or 1000)}
+    results = [run_case(case, goose, binary, output, attestor, sandbox=sandbox) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
     bound_output = output / "controller-bound"
     bound_output.mkdir()
-    bound = run_case("allow", goose, binary, bound_output, attestor, bind_controller=True)
+    bound = run_case("allow", goose, binary, bound_output, attestor, bind_controller=True, sandbox=sandbox)
     results.append({**bound, "case": "controller_bound"})
     (output / "summary.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))

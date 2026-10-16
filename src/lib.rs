@@ -12,6 +12,7 @@ use serde_json::Value;
 
 pub mod contracts;
 pub mod runtime;
+pub mod sandbox;
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const DANGEROUS_RISK_TAGS: &[&str] = &["destructive_flag", "destructive_path"];

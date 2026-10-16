@@ -19,9 +19,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+mod sandbox;
+use sandbox::{ReferenceSandbox, SandboxHost};
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn port_error(error: impl std::fmt::Display) -> RuntimePortError {
     RuntimePortError::new(error.to_string())
+}
+fn raw_hash(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 fn hash(value: &impl serde::Serialize) -> String {
     format!(
@@ -51,6 +57,8 @@ struct Config {
     case: String,
     #[serde(default)]
     agent_run_request: Option<AgentRunRequest>,
+    #[serde(default)]
+    sandbox: Option<ReferenceSandbox>,
 }
 
 type EvidenceArchive = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
@@ -324,6 +332,8 @@ impl AgentAdapter for AgentPort {
 }
 struct Executor {
     shared: Arc<Mutex<Ports>>,
+    sandbox: Option<Arc<SandboxHost>>,
+    archive: EvidenceArchive,
 }
 impl ExecutorPort for Executor {
     fn execute(
@@ -341,9 +351,82 @@ impl ExecutorPort for Executor {
                 "reference.proposal_binding",
             ));
         }
+        let prepared = if let Some(host) = &self.sandbox {
+            Some(
+                host.prepare(
+                    request,
+                    ports.raw_proposals.last().cloned().ok_or_else(|| {
+                        RuntimePortError::before_dispatch("reference.missing_arguments")
+                    })?,
+                )
+                .map_err(|error| RuntimePortError::before_dispatch(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         ports.conversation.claim_dispatch(request)?;
         let mut pending = ports.pending.take().expect("admitted proposal");
-        let result = ports.mcp.execute(request);
+        let mut result = ports.mcp.execute(request);
+        if let (Some(host), Some(prepared)) = (&self.sandbox, &prepared) {
+            match host.observe(prepared) {
+                Ok(observation) => {
+                    let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
+                    let digest = raw_hash(&bytes);
+                    self.archive
+                        .lock()
+                        .map_err(port_error)?
+                        .insert(digest.clone(), bytes);
+                    if let Ok(effect) = &mut result {
+                        effect.evidence.push(EffectEvidenceReference {
+                            evidence_type: EffectEvidenceType::Sandbox,
+                            digest: digest.clone(),
+                            locator: None,
+                        });
+                        if !sandbox::succeeded(&observation) {
+                            effect.execution_status = EffectExecutionStatus::UnknownOutcome;
+                            effect.evidence.push(EffectEvidenceReference {
+                                evidence_type: EffectEvidenceType::UnknownOutcome,
+                                digest: digest.clone(),
+                                locator: None,
+                            });
+                            effect.reason = Some(format!(
+                                "reference.sandbox_{:?}_cleanup_{:?}",
+                                observation.status, observation.cleanup
+                            ));
+                        }
+                    }
+                    if let Err(error) = result {
+                        result = Err(error.with_evidence(vec![EffectEvidenceReference {
+                            evidence_type: EffectEvidenceType::Sandbox,
+                            digest,
+                            locator: None,
+                        }]));
+                    }
+                }
+                Err(error) => {
+                    if let Ok(effect) = &mut result {
+                        effect.execution_status = EffectExecutionStatus::UnknownOutcome;
+                        effect.reason = Some(format!("reference.sandbox_evidence: {error}"));
+                        let bytes = serde_jcs::to_vec(&json!({
+                            "schema_version":"gaap.sandbox-evidence-missing/0.1",
+                            "effect_request_digest":hash(request),
+                            "reason":effect.reason,
+                        }))
+                        .map_err(port_error)?;
+                        let digest = raw_hash(&bytes);
+                        self.archive
+                            .lock()
+                            .map_err(port_error)?
+                            .insert(digest.clone(), bytes);
+                        effect.evidence.push(EffectEvidenceReference {
+                            evidence_type: EffectEvidenceType::UnknownOutcome,
+                            digest,
+                            locator: None,
+                        });
+                    }
+                }
+            }
+        }
         let session_evidence = ports.conversation.effect_evidence()?;
         let result = match result {
             Ok(mut observation) => {
@@ -367,6 +450,7 @@ impl ExecutorPort for Executor {
 }
 
 struct Verifier {
+    sandbox: Option<Arc<SandboxHost>>,
     archive: EvidenceArchive,
     root: PathBuf,
     python: PathBuf,
@@ -380,52 +464,75 @@ impl VerifierPort for Verifier {
     ) -> std::result::Result<PortObservation<VerificationReport>, RuntimePortError> {
         let started = Instant::now();
         let before = snapshot(&self.root, &self.archive)?;
-        let source = fs::read_to_string(self.root.join("shipping.py")).map_err(port_error)?;
-        let mut child = Command::new(&self.python)
-            .args(["-I", "-S", "-B", "-c", include_str!("../verify.py")])
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(port_error)?;
-        let payload = json!({"source":source,"inputs":[[1,20],[4,20],[5,20],[5,25],[1,100],[6,19.99],[0,20],[-1,20]]});
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(payload.to_string().as_bytes())
-            .map_err(port_error)?;
-        let stdout = child.stdout.take().expect("stdout");
-        let stderr = child.stderr.take().expect("stderr");
-        let out = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stdout.take(32769).read_to_end(&mut bytes).map(|_| bytes)
-        });
-        let err = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stderr.take(8193).read_to_end(&mut bytes).map(|_| bytes)
-        });
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(port_error)? {
-                break status;
-            }
-            if started.elapsed() > Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(port_error("reference.verifier_timeout"));
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        let (success, output, errors, sandbox_evidence) = if let Some(host) = &self.sandbox {
+            let observation = host
+                .verify(context.current_subject.clone(), hash(context.request))
+                .map_err(port_error)?;
+            let bytes = serde_jcs::to_vec(&observation).map_err(port_error)?;
+            let digest = raw_hash(&bytes);
+            self.archive
+                .lock()
+                .map_err(port_error)?
+                .insert(digest.clone(), bytes);
+            (
+                sandbox::succeeded(&observation),
+                observation.stdout,
+                observation.stderr,
+                Some(EvidenceReference {
+                    evidence_type: EvidenceType::Artifact,
+                    digest,
+                    locator: None,
+                }),
+            )
+        } else {
+            let source = fs::read_to_string(self.root.join("shipping.py")).map_err(port_error)?;
+            let mut child = Command::new(&self.python)
+                .args(["-I", "-S", "-B", "-c", include_str!("../verify.py")])
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(port_error)?;
+            let payload = json!({"source":source,"inputs":[[1,20],[4,20],[5,20],[5,25],[1,100],[6,19.99],[0,20],[-1,20]]});
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(payload.to_string().as_bytes())
+                .map_err(port_error)?;
+            let stdout = child.stdout.take().expect("stdout");
+            let stderr = child.stderr.take().expect("stderr");
+            let out = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.take(32769).read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let err = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.take(8193).read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let status = loop {
+                if let Some(status) = child.try_wait().map_err(port_error)? {
+                    break status;
+                }
+                if started.elapsed() > Duration::from_secs(5) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(port_error("reference.verifier_timeout"));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let output = out
+                .join()
+                .map_err(|_| port_error("reference.verifier_reader"))?
+                .map_err(port_error)?;
+            let errors = err
+                .join()
+                .map_err(|_| port_error("reference.verifier_reader"))?
+                .map_err(port_error)?;
+            (status.success(), output, errors, None)
         };
-        let output = out
-            .join()
-            .map_err(|_| port_error("reference.verifier_reader"))?
-            .map_err(port_error)?;
-        let errors = err
-            .join()
-            .map_err(|_| port_error("reference.verifier_reader"))?
-            .map_err(port_error)?;
-        if !status.success() || !errors.is_empty() || output.len() > 32768 {
+        if !success || !errors.is_empty() || output.len() > 32768 {
             return Err(port_error("reference.verifier_failed"));
         }
         let observed: Value = serde_json::from_slice(&output).map_err(port_error)?;
@@ -484,7 +591,10 @@ impl VerifierPort for Verifier {
                         digest: after.digest,
                         locator: None,
                     },
-                ],
+                ]
+                .into_iter()
+                .chain(sandbox_evidence)
+                .collect(),
             },
         })
     }
@@ -517,6 +627,13 @@ fn main() -> Result<()> {
     };
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     let root = config.agent.working_directory.clone();
+    let archive: EvidenceArchive = Arc::default();
+    let initial_subject = snapshot(&root, &archive)?;
+    let sandbox = config
+        .sandbox
+        .clone()
+        .map(|settings| SandboxHost::new(settings, root.clone(), &initial_subject).map(Arc::new))
+        .transpose()?;
     let mut server = ServerConfig::new(config.python.clone(), "gaap-effect", "1");
     server.arguments = vec![config.server.display().to_string(), "effect".into()];
     server.working_directory = root.clone();
@@ -529,8 +646,37 @@ fn main() -> Result<()> {
             digest: artifact.digest.clone(),
         })
         .collect();
+    if let Some(host) = &sandbox {
+        server.environment.insert(
+            "GAAP_SANDBOX_CONTEXT".into(),
+            host.context_path().display().to_string(),
+        );
+        server.artifacts.push(gaap_mcp::LaunchArtifact {
+            path: host.executable().to_path_buf(),
+            digest: raw_hash(&fs::read(host.executable())?),
+        });
+        server.artifacts.push(host.docker_artifact()?);
+        server.artifacts.push(host.profile_artifact());
+        archive.lock().expect("archive").insert(
+            host.profile.digest.clone(),
+            serde_jcs::to_vec(&host.manifest)?,
+        );
+        archive
+            .lock()
+            .expect("archive")
+            .insert(hash(&host.profile), serde_jcs::to_vec(&host.profile)?);
+    }
     server.artifact_digest = server.artifact_manifest_digest()?;
-    let mut mcp = McpExecutor::discover(server, TransportLimits::default())?;
+    // OCI includes engine/image probes, launch checks, cleanup and publication.
+    // Keep the ordinary stdio profile's bounds unchanged.
+    let limits = TransportLimits {
+        timeout: Duration::from_secs(if sandbox.is_some() { 20 } else { 10 }),
+        ..TransportLimits::default()
+    };
+    let mut mcp = McpExecutor::discover(server, limits)?;
+    if let Some(host) = &sandbox {
+        mcp.adopt_sandbox_profile(host.profile.clone())?;
+    }
     if mcp.tools().len() != 1 || mcp.tools()[0].tool_name != "governed_operation" {
         return Err("Unexpected backend inventory".into());
     }
@@ -540,7 +686,6 @@ fn main() -> Result<()> {
     ))?;
     request.run_id = format!("governed-goose-{}", config.case);
     request.request_id = format!("request-{}", config.case);
-    let archive: EvidenceArchive = Arc::default();
     request.subject = snapshot(&root, &archive)?;
     request.requested_capability = capability.clone();
     request.approval_context = vec![ApprovalReference {
@@ -559,7 +704,8 @@ fn main() -> Result<()> {
     request.task.instructions =
         "Apply the three bounded reference operations through governed_operation.".into();
     request.task.constraints = vec!["No ambient tools, external services or credentials.".into()];
-    request.resource_budget.max_elapsed_ms = 40000;
+    // Three MCP calls (20s each), one verifier (12s), plus host/ACP work.
+    request.resource_budget.max_elapsed_ms = if sandbox.is_some() { 120000 } else { 40000 };
     request.resource_budget.max_tool_calls = 3;
     if describe {
         let mut output = std::io::stdout().lock();
@@ -568,6 +714,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let request = select_request(request, config.agent_run_request)?;
+    if let Some(host) = &sandbox {
+        host.ensure_fresh_run()?;
+    }
     let listener = UnixListener::bind(&config.socket)?;
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
@@ -667,8 +816,11 @@ fn main() -> Result<()> {
         },
         Executor {
             shared: shared.clone(),
+            sandbox: sandbox.clone(),
+            archive: archive.clone(),
         },
         Verifier {
+            sandbox: sandbox.clone(),
             archive: archive.clone(),
             root: root.clone(),
             python: config.python,
