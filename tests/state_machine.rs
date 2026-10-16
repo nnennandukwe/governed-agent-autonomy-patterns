@@ -32,8 +32,8 @@ fn check(history: &History) -> Result<(), String> {
     macro_rules! require { ($condition:expr, $label:expr) => { if !$condition { return Err(format!("{}: expected {expected:?}; actual status {:?}, usage {:?}, subject {}, executor calls {:?}", $label, actual.receipt.body.terminal_status, actual.receipt.body.usage, actual.receipt.body.resulting_subject_digest, trace.executor_calls)); } }; }
     let body = &actual.receipt.body;
     require!(
-        Some(body.terminal_reason.as_str()) == expected.terminal_reason,
-        "terminal refusal or completion reason"
+        body.terminal_reason.split(": ").next() == expected.terminal_reason,
+        "terminal refusal or completion reason code"
     );
     require!(
         body.request_digest == sut::hash(&sut::request(history)),

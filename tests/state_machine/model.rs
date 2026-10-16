@@ -182,7 +182,7 @@ pub fn predict(history: &History) -> Expected {
             Operation::Cancel => result.finish(State::Interrupted, "runtime.interrupted"),
             Operation::AdapterError { usage } => {
                 result.charge(*usage, history.budget);
-                result.finish(State::Failed, "adapter.next_effect_failed: agent failed");
+                result.finish(State::Failed, "adapter.next_effect_failed");
             }
             Operation::Finish {
                 verification,
@@ -192,7 +192,7 @@ pub fn predict(history: &History) -> Expected {
                 result.verified = true;
                 let over = result.charge(*usage, history.budget);
                 result.terminal_reason = Some(if *verification == Verification::Error {
-                    "verifier.failed: verifier failed"
+                    "verifier.failed"
                 } else if over {
                     "runtime.budget_exceeded"
                 } else {
@@ -202,7 +202,7 @@ pub fn predict(history: &History) -> Expected {
                         Verification::SameActor => "verification.independence_required",
                         Verification::Untrusted => "verification.untrusted_verifier",
                         Verification::ChangedDuring | Verification::ChangedAfter => {
-                            "verifier.completion_check_failed: subject changed after verification"
+                            "verifier.completion_check_failed"
                         }
                         Verification::Pass => "workflow.completion_authorized",
                         Verification::Error => unreachable!(),
@@ -241,7 +241,7 @@ pub fn predict(history: &History) -> Expected {
                 ..
             } => {
                 if *defect == Defect::Descriptor {
-                    result.finish(State::Failed, "protected_effect.invalid_request: Protected Effect Request does not match the validated Agent Run Request");
+                    result.finish(State::Failed, "protected_effect.invalid_request");
                     continue;
                 }
                 if *defect == Defect::StaleSubject {

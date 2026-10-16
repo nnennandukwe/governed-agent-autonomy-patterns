@@ -73,7 +73,7 @@ within this crate's declared minimum. No runtime dependency was added.
 | --- | --- |
 | Ask/block never dispatch; post-terminal operations stop | Oracle compares executor calls, external-attempt trace, next-step count and close count; explicit permission fixtures |
 | Terminal states stay terminal; one terminal receipt | Exact transitions, one terminal event, no later events; existing separate-process terminal-envelope fixture |
-| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; every terminal reason; agent callback subject/usage contexts |
+| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; every terminal reason code; agent callback subject/usage contexts |
 | Usage never disappears | All four cumulative axes, event monotonicity, reservation refusal, actual overage and exhaustion fixtures |
 | Identity binds canonical content | Independent JCS hashes for request/result/receipt; changed input under reused identity is refused |
 | Unknown effects don't retry; denied/unverified work can't complete | Unknown, lost-reply, denial and verification-failure histories with later work left pending |
