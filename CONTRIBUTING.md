@@ -92,7 +92,7 @@ cargo audit --file adapters/attestation/Cargo.lock
 
 The [attestation guide](adapters/attestation/README.md) documents explicit signer/policy trust, content bounds and public fixture keys. Reproduce the real Goose matrix and its separate-process signed verification with the [reference commands](examples/governed-goose/README.md). Its own Rust host tests, Python cleanup tests, formatting, Clippy and `cargo audit --file examples/governed-goose/Cargo.lock` are also required locally. CI requires MCP, ACP, attestation and Goose lanes on every PR.
 
-The [local OCI adapter](adapters/sandbox/README.md) adds formatting, Clippy, default control tests, Rust 1.88, dependency audit and explicitly enabled native Docker tests. Pull the pinned image before native checks. Run the Goose matrix with `--oci` as well as the default profile; CI requires both profiles and never skips missing-runtime failures.
+The [local OCI adapter](adapters/sandbox/README.md) adds formatting, Clippy, default control tests, Rust 1.88, dependency audit and explicitly enabled native Docker tests. Pull the pinned image before native checks. Run the Goose matrix with `--oci` as well as the default profile; CI requires both profiles and never skips missing-runtime failures. The separate required `gvisor` lane installs pinned Linux runsc and repeats native failure paths and the signed Goose matrix with `--gvisor`; macOS checks don't establish isolation. See the adapter guide for setup and evidence retention.
 
 Changes to `RunCoordinator` decisions must also reproduce the committed packet
 through RunInvariant commit `e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44`.

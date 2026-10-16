@@ -11,7 +11,9 @@ use gaap::sandbox::{
     SandboxAdapter, SandboxCleanup, SandboxImage, SandboxInvocationKind, SandboxLimits,
     SandboxMount, SandboxNetwork, SandboxOutputs, SandboxRequest, SandboxStatus,
 };
-use gaap_sandbox::{LocalOciAdapter, OciConfig, digest};
+use gaap_sandbox::{
+    GVISOR_FLAGS, GVISOR_PROFILE, GvisorConfig, LocalOciAdapter, OciConfig, digest,
+};
 use serde_json::Value;
 
 const IMAGE: &str = "sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a";
@@ -23,6 +25,21 @@ struct Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(directory) = std::env::var_os("GAAP_SANDBOX_EVIDENCE") {
+            let destination = PathBuf::from(directory).join(self.root.file_name().unwrap());
+            fs::create_dir_all(&destination).unwrap();
+            fs::write(
+                destination.join("request.json"),
+                serde_jcs::to_vec(&self.request).unwrap(),
+            )
+            .unwrap();
+            for entry in fs::read_dir(&self.config.state_directory)
+                .unwrap()
+                .flatten()
+            {
+                fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+            }
+        }
         if let Ok(entries) = fs::read_dir(&self.config.state_directory) {
             for entry in entries.flatten() {
                 if !entry
@@ -92,6 +109,7 @@ fn fixture() -> Fixture {
     let version: Value = serde_json::from_slice(&version.stdout).unwrap();
     let docker = executable.clone();
     let mut config = OciConfig {
+        gvisor: None,
         executable,
         environment,
         state_directory: PathBuf::new(),
@@ -131,7 +149,7 @@ fn fixture() -> Fixture {
         "../../../examples/contracts/v0.1.0/agent-run-request.json"
     ))
     .unwrap();
-    let request = SandboxRequest {
+    let mut request = SandboxRequest {
         schema_version: "gaap.sandbox/0.1".into(),
         profile_id: "local-oci/0.1".into(),
         invocation_kind: SandboxInvocationKind::ProtectedEffect,
@@ -193,6 +211,24 @@ fn fixture() -> Fixture {
                 .success()
         );
     }
+    if let Some(path) = std::env::var_os("GAAP_RUNSC_EXECUTABLE") {
+        assert_eq!(
+            std::env::consts::OS,
+            "linux",
+            "Real runsc tests require Linux"
+        );
+        let executable = fs::canonicalize(path).unwrap();
+        let version = Command::new(&executable).arg("--version").output().unwrap();
+        assert!(version.status.success());
+        config.runtime = "runsc".into();
+        config.runtime_version = String::from_utf8(version.stdout).unwrap().trim().into();
+        config.gvisor = Some(GvisorConfig {
+            executable_digest: digest(&fs::read(&executable).unwrap()),
+            executable,
+        });
+        request.profile_id = GVISOR_PROFILE.into();
+        request.limits.processes = 256;
+    }
     config.approved_profile_digest = request.profile_digest().unwrap();
     Fixture {
         root,
@@ -202,7 +238,16 @@ fn fixture() -> Fixture {
     }
 }
 fn run(fixture: &Fixture) -> gaap::sandbox::SandboxObservation {
-    LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| false)
+    let result = LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| false);
+    let path = fixture.config.state_directory.join(format!(
+        "result-{}.json",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(path, serde_jcs::to_vec(&result).unwrap()).unwrap();
+    result
 }
 fn proxy(fixture: &mut Fixture, condition: &str) {
     let executable = fixture.root.join("docker-proxy");
@@ -273,7 +318,10 @@ fn native_declared_effect_and_cleanup() {
     assert_eq!(published["stdout_digest"], result.stdout_digest);
     assert!(result.publication_error.is_none());
     assert_eq!(result.image_digest.as_deref(), Some(IMAGE));
-    assert_eq!(result.runtime.as_ref().unwrap().runtime, "runc");
+    assert_eq!(
+        result.runtime.as_ref().unwrap().runtime,
+        fixture.config.runtime
+    );
     assert_eq!(result.artifacts[0].bytes, b"effect occurred\n");
     assert_eq!(result.artifacts[0].digest, digest(b"effect occurred\n"));
     assert_eq!(result.stdout_digest, digest(&result.stdout));
@@ -326,25 +374,32 @@ fn native_read_only_mount_refuses_mutation() {
 fn native_timeout_removes_the_owned_container() {
     let mut fixture = fixture();
     fixture.request.limits.wall_clock_ms = 4000;
-    fixture.request.command[5] = "import time;time.sleep(30)".into();
+    fixture.request.command[5] = "import pathlib,time;pathlib.Path('/workspace/started').write_text('workload started');time.sleep(30)".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
     let result = run(&fixture);
     assert_eq!(result.status, SandboxStatus::TimedOut, "{result:?}");
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    assert_eq!(
+        fs::read(fixture.root.join("workspace/started")).unwrap(),
+        b"workload started"
+    );
 }
 
 #[test]
 #[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
 fn native_cancellation_removes_the_owned_container() {
     let mut fixture = fixture();
-    fixture.request.command[5] = "import time;time.sleep(30)".into();
+    fixture.request.command[5] = "import pathlib,time;pathlib.Path('/workspace/started').write_text('workload started');time.sleep(30)".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
-    let start = Instant::now();
-    let result = LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| {
-        start.elapsed() >= Duration::from_secs(3)
-    });
+    let marker = fixture.root.join("workspace/started");
+    let result =
+        LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| marker.exists());
     assert_eq!(result.status, SandboxStatus::Cancelled, "{result:?}");
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    assert_eq!(
+        fs::read(fixture.root.join("workspace/started")).unwrap(),
+        b"workload started"
+    );
 }
 
 #[test]
@@ -365,7 +420,12 @@ fn native_output_overflow_is_bounded_and_cleaned_up() {
 #[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
 fn native_memory_limit_is_recorded() {
     let mut fixture = fixture();
-    fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
+    fixture.request.limits.memory_bytes = if fixture.config.gvisor.is_some() {
+        64
+    } else {
+        32
+    } * 1024
+        * 1024;
     fixture.request.command[5] =
         "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
@@ -402,6 +462,12 @@ fn native_output_symlink_cannot_import_host_content() {
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
     let result = run(&fixture);
     assert_eq!(result.status, SandboxStatus::UnknownOutcome, "{result:?}");
+    assert_eq!(result.exit_code, Some(0));
+    assert!(
+        fs::symlink_metadata(fixture.root.join("workspace/leak"))
+            .unwrap()
+            .is_symlink()
+    );
     assert!(result.artifacts.is_empty());
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
 }
@@ -729,4 +795,153 @@ fn native_terminal_oom_marker_can_arrive_after_event_probe() {
             .contains("terminal reconciliation")
     );
     assert_eq!(observation.cleanup, SandboxCleanup::Removed);
+}
+
+#[test]
+#[ignore = "requires a real Linux runsc host and the pinned image"]
+fn runsc_identity_flags_and_stopped_container_are_original_evidence() {
+    let mut fixture = fixture();
+    fixture.request.command[5] =
+        "import json,os;print(json.dumps({'uid':os.getuid(),'gid':os.getgid()}))".into();
+    let expected = fixture
+        .config
+        .gvisor
+        .as_ref()
+        .expect("Select GAAP_RUNSC_EXECUTABLE");
+    let result = run(&fixture);
+    assert_eq!(result.status, SandboxStatus::Exited, "{result:?}");
+    assert_eq!(result.exit_code, Some(0));
+    assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    let workload: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let ids: Vec<_> = fixture
+        .request
+        .user
+        .split(':')
+        .map(|value| value.parse::<u64>().unwrap())
+        .collect();
+    assert_eq!(workload, serde_json::json!({"uid":ids[0],"gid":ids[1]}));
+    assert_ne!(ids[0], 0);
+    assert_ne!(ids[1], 0);
+    let runtime = result.runtime.unwrap();
+    assert_eq!(runtime.runtime, "runsc");
+    assert_eq!(runtime.runtime_version, fixture.config.runtime_version);
+    assert_eq!(runtime.executable_digest, expected.executable_digest);
+    let resource = result.owned_resource.unwrap();
+    let read = |suffix: &str| -> Value {
+        serde_json::from_slice(
+            &fs::read(
+                fixture
+                    .config
+                    .state_directory
+                    .join(format!("{resource}.{suffix}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let evidence = read("runtime");
+    assert_eq!(evidence["request_digest"], result.request_digest);
+    assert_eq!(evidence["before"], evidence["after"]);
+    assert_eq!(evidence["before"]["flags"], serde_json::json!(GVISOR_FLAGS));
+    assert!(evidence["after_error"].is_null());
+    let container = read("container");
+    assert_eq!(container["container"]["State"]["Status"], "created");
+    assert_eq!(container["container"]["HostConfig"]["Runtime"], "runsc");
+    assert_eq!(container["container"]["HostConfig"]["NetworkMode"], "none");
+}
+
+#[test]
+#[ignore = "requires a real Linux runsc host and the pinned image"]
+fn runsc_hash_and_registration_mismatch_fail_before_any_workload() {
+    for fault in ["hash", "missing", "flags", "fallback"] {
+        let mut fixture = fixture();
+        let selected = fixture
+            .config
+            .gvisor
+            .as_mut()
+            .expect("Select GAAP_RUNSC_EXECUTABLE");
+        match fault {
+            "hash" => selected.executable_digest = digest(b"wrong runsc bytes"),
+            "missing" => proxy(
+                &mut fixture,
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Runtimes\":{}}'; exit 0; fi",
+            ),
+            "flags" => proxy(
+                &mut fixture,
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Runtimes\":{\"runsc\":{\"path\":\"/usr/local/bin/runsc\",\"runtimeArgs\":[\"--network=host\"]}}}'; exit 0; fi",
+            ),
+            _ => fixture.config.runtime = "runc".into(),
+        }
+        let result = run(&fixture);
+        assert_eq!(
+            result.status,
+            SandboxStatus::SetupFailed,
+            "{fault}: {result:?}"
+        );
+        assert_eq!(result.cleanup, SandboxCleanup::NotCreated);
+        assert!(result.owned_resource.is_none());
+        assert!(result.runtime.is_none());
+    }
+}
+
+#[test]
+#[ignore = "requires a real Linux runsc host and the pinned image"]
+fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
+    for exit in [0, 7, 153] {
+        let mut fixture = fixture();
+        assert!(
+            fixture.config.gvisor.is_some(),
+            "Select GAAP_RUNSC_EXECUTABLE"
+        );
+        fixture.request.command[5] = format!(
+            "import sys;print('before failed post probe');print('original workload stderr',file=sys.stderr);sys.exit({exit})"
+        );
+        fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+        let counter = fixture.root.join("info-count");
+        proxy(
+            &mut fixture,
+            &format!(
+                "if [ \"$1\" = info ]; then count=0; [ ! -f '{0}' ] || read -r count < '{0}'; count=$((count+1)); echo \"$count\" > '{0}'; if [ \"$count\" -ge 3 ]; then echo 'injected post-execution registration failure' >&2; exit 71; fi; fi",
+                counter.display()
+            ),
+        );
+        let result = run(&fixture);
+        assert_eq!(
+            result.status,
+            if exit == 0 {
+                SandboxStatus::UnknownOutcome
+            } else if exit == 153 {
+                SandboxStatus::ResourceLimit
+            } else {
+                SandboxStatus::Exited
+            },
+            "{result:?}"
+        );
+        assert_eq!(result.exit_code, Some(exit));
+        assert_eq!(result.stdout, b"before failed post probe\n");
+        assert_eq!(result.stderr, b"original workload stderr\n");
+        assert_eq!(result.cleanup, SandboxCleanup::Removed);
+        let reason = result.reason.unwrap();
+        assert!(reason.contains("injected post-execution registration failure"));
+        if exit == 153 {
+            assert!(reason.contains("consistent with SIGXFSZ"));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a real Linux runsc host and the pinned image"]
+fn runsc_insufficient_helper_budget_fails_before_creation() {
+    let mut fixture = fixture();
+    assert!(
+        fixture.config.gvisor.is_some(),
+        "Select GAAP_RUNSC_EXECUTABLE"
+    );
+    fixture.request.limits.processes = 32;
+    fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+    let result = run(&fixture);
+    assert_eq!(result.status, SandboxStatus::SetupFailed);
+    assert_eq!(result.cleanup, SandboxCleanup::NotCreated);
+    assert!(result.owned_resource.is_none());
+    assert!(result.reason.unwrap().contains("sandbox.runsc_limits"));
 }
