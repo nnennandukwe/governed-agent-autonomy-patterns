@@ -651,3 +651,61 @@ fn every_dispatch_gate_must_allow_before_the_execution() {
         }
     }
 }
+
+#[test]
+fn admission_decisions_for_an_earlier_subject_cant_authorize_later_dispatch() {
+    let (_, mut changed, mut blobs) = fixture("allow");
+    let support = ContractSupport::new(changed.predicate.request.policies.clone());
+    let second_digest = changed.predicate.effects[1]
+        .result
+        .body
+        .effect_request_digest
+        .clone();
+    let initial_subject = changed.predicate.request.subject.digest.clone();
+    let events = &mut changed.predicate.receipt.body.events;
+    let mut stale = Vec::new();
+    events.retain_mut(|event| {
+        if let RunEvent::ProtectedEffectDecision {
+            protected_effect_digest,
+            subject_digest,
+            gate,
+            ..
+        } = event
+            && *protected_effect_digest == second_digest
+            && matches!(*gate, gaap::Gate::ToolTrust | gaap::Gate::Runtime)
+        {
+            *subject_digest = initial_subject.clone();
+            stale.push(event.clone());
+            return false;
+        }
+        true
+    });
+    let first_execution = events
+        .iter()
+        .position(|event| matches!(event, RunEvent::ToolExecution { .. }))
+        .unwrap();
+    events.splice(first_execution..first_execution, stale);
+    let mut value = serde_json::to_value(&events).unwrap();
+    for (index, event) in value.as_array_mut().unwrap().iter_mut().enumerate() {
+        event["sequence"] = serde_json::json!(index + 1);
+    }
+    *events = serde_json::from_value(value).unwrap();
+    changed.predicate.receipt = contracts::seal_terminal_receipt(
+        &changed.predicate.request,
+        &support,
+        changed.predicate.receipt.body.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        statement::verify(
+            &signed_unchecked(&changed),
+            &support,
+            &mut blobs,
+            &mut verifier()
+        )
+        .err()
+        .expect("old subject decisions must not admit a later subject")
+        .code,
+        "attestation.gates_not_admitted"
+    );
+}

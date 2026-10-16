@@ -418,25 +418,26 @@ fn validate_admission(
             RunEvent::ProtectedEffectDecision {
                 sequence,
                 protected_effect_digest,
+                subject_digest,
                 gate,
                 decision,
                 ..
-            } if protected_effect_digest == digest => Some((*sequence, *gate, decision)),
+            } if protected_effect_digest == digest => {
+                Some((*sequence, *gate, subject_digest, decision))
+            }
             _ => None,
         })
         .collect();
-    if decisions
-        .iter()
-        .any(|(_, _, decision)| decision.outcome != gaap::Outcome::Allow)
-        || required.iter().any(|required_gate| {
-            !decisions.iter().any(|(sequence, gate, decision)| {
-                gate == required_gate
-                    && *sequence < execution_sequence
-                    && (*gate != gaap::Gate::Workflow
-                        || decision.code == "workflow.mutation_authorized")
-            })
+    if decisions.iter().any(|(_, _, subject, decision)| {
+        *subject != &request.subject.digest || decision.outcome != gaap::Outcome::Allow
+    }) || required.iter().any(|required_gate| {
+        !decisions.iter().any(|(sequence, gate, _, decision)| {
+            gate == required_gate
+                && *sequence < execution_sequence
+                && (*gate != gaap::Gate::Workflow
+                    || decision.code == "workflow.mutation_authorized")
         })
-    {
+    }) {
         return Err(error("attestation.gates_not_admitted"));
     }
     Ok(())
