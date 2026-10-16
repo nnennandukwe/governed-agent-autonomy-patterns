@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use gaap::contracts::{
     AgentRunRequest, CapabilityIdentity, ContractSupport, EffectClass, EffectExecutionStatus,
-    ProtectedEffectRequest,
+    ProtectedEffectRequest, SandboxProfileIdentity,
 };
 use gaap::runtime::{ExecutorPort, PermissionPolicy, PolicyDecision};
 use gaap_mcp::{LaunchArtifact, McpExecutor, ServerConfig, SubjectObservation, TransportLimits};
@@ -102,6 +102,21 @@ fn fixture(mode: &str, allowed: bool) -> (TempDir, McpExecutor, ProtectedEffectR
         )
         .unwrap();
     (dir, executor, effect)
+}
+
+#[test]
+fn host_profile_adoption_precedes_run_binding() {
+    let dir = TempDir::new().unwrap();
+    let mut executor = McpExecutor::discover(server("normal", &dir), limits()).unwrap();
+    let profile = SandboxProfileIdentity {
+        name: "host-selected-oci".into(),
+        version: "0.1".into(),
+        digest: hash(b"independently approved environment profile"),
+    };
+    executor.adopt_sandbox_profile(profile.clone()).unwrap();
+    assert_eq!(executor.profile(), &profile);
+    let (_dir, mut bound, _effect) = fixture("normal", true);
+    assert!(bound.adopt_sandbox_profile(profile).is_err());
 }
 
 #[test]

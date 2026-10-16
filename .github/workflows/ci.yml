@@ -263,6 +263,47 @@ jobs:
       - name: Audit reference dependency lockfile
         run: cargo audit --file examples/governed-goose/Cargo.lock
 
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check sandbox formatting, warnings and control failure paths
+        run: |
+          cargo fmt --manifest-path adapters/sandbox/Cargo.toml --check
+          cargo clippy --manifest-path adapters/sandbox/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path adapters/sandbox/Cargo.toml --locked
+
+      - name: Install declared minimum Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check minimum Rust compatibility
+        run: cargo +1.88.0 test --manifest-path adapters/sandbox/Cargo.toml --locked
+
+      - name: Install immutable test image
+        run: docker pull python@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+
+      - name: Prove real OCI limits, denied access and cleanup
+        env:
+          GAAP_DOCKER_EXECUTABLE: /usr/bin/docker
+          GAAP_DOCKER_HOST: unix:///var/run/docker.sock
+        run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native -- --ignored --test-threads=1
+
+      - name: Install pinned Goose locally
+        run: python3 examples/governed-goose/install_goose.py /tmp/gaap-goose-oci-1.54.0
+
+      - name: Prove signed Goose execution and verification in OCI
+        run: |
+          python3 examples/governed-goose/run.py --goose /tmp/gaap-goose-oci-1.54.0/goose --output /tmp/gaap-goose-oci-evidence --oci
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit sandbox dependency lockfile
+        run: cargo audit --file adapters/sandbox/Cargo.lock
+
   final:
     if: always()
     needs:
@@ -275,6 +316,7 @@ jobs:
       - acp
       - goose
       - attestation
+      - sandbox
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -292,6 +334,7 @@ jobs:
           ACP_RESULT: ${{ needs.acp.result }}
           ATTESTATION_RESULT: ${{ needs.attestation.result }}
           GOOSE_RESULT: ${{ needs.goose.result }}
+          SANDBOX_RESULT: ${{ needs.sandbox.result }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
@@ -300,6 +343,7 @@ jobs:
           [[ "$ACP_RESULT" == "success" ]]
           [[ "$GOOSE_RESULT" == "success" ]]
           [[ "$ATTESTATION_RESULT" == "success" ]]
+          [[ "$SANDBOX_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else
