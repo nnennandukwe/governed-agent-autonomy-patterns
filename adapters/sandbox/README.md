@@ -128,7 +128,13 @@ complete trimmed `runsc --version` stdout as `runtime_version`; don't use the
 Docker server's runc component version for runsc. Keep configuration and state
 outside agent-writable paths. Request profile digests and the Goose profile
 manifest bind the host's selected image, commands, environment, mounts and limits.
-The manifest also binds the runsc adoption and fixed flags.
+The manifest also binds the runsc adoption and fixed flags. gVisor requires a
+host-task allowance of at least 256 in this profile because its userspace kernel,
+filesystem process and platform helpers consume host tasks. The 32-task OCI
+fixture fails gVisor startup; Linux probes reproduced the failure and passed
+with only that limit raised to 256. This limit bounds host tasks; it isn't a
+claim that each virtual guest process maps to one host task. The Goose gVisor
+profile uses that explicit allowance with the same 64 MiB memory bound.
 
 This version supports Linux x86_64 and aarch64 hosts with a local Docker daemon
 and gVisor's systrap platform. CI exercises x86_64 on Ubuntu 24.04. Native macOS

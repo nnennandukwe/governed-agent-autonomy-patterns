@@ -559,6 +559,9 @@ impl LocalOciAdapter {
             return Err("sandbox.state: select a private canonical host directory outside all workload mounts".into());
         }
         let gvisor = self.config.gvisor.is_some();
+        if gvisor && request.limits.processes < 256 {
+            return Err("sandbox.runsc_limits: adopt at least 256 host tasks for the userspace kernel and helpers".into());
+        }
         if (gvisor && request.profile_id != GVISOR_PROFILE)
             || (!gvisor && request.profile_id != "local-oci/0.1")
             || !self.config.executable.is_absolute()

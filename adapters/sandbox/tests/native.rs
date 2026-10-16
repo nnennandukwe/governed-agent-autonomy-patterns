@@ -227,6 +227,7 @@ fn fixture() -> Fixture {
             executable,
         });
         request.profile_id = GVISOR_PROFILE.into();
+        request.limits.processes = 256;
     }
     config.approved_profile_digest = request.profile_digest().unwrap();
     Fixture {
@@ -412,7 +413,12 @@ fn native_output_overflow_is_bounded_and_cleaned_up() {
 #[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
 fn native_memory_limit_is_recorded() {
     let mut fixture = fixture();
-    fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
+    fixture.request.limits.memory_bytes = if fixture.config.gvisor.is_some() {
+        64
+    } else {
+        32
+    } * 1024
+        * 1024;
     fixture.request.command[5] =
         "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
@@ -895,4 +901,21 @@ fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
                 .contains("injected post-execution registration failure")
         );
     }
+}
+
+#[test]
+#[ignore = "requires a real Linux runsc host and the pinned image"]
+fn runsc_insufficient_helper_budget_fails_before_creation() {
+    let mut fixture = fixture();
+    assert!(
+        fixture.config.gvisor.is_some(),
+        "Select GAAP_RUNSC_EXECUTABLE"
+    );
+    fixture.request.limits.processes = 32;
+    fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+    let result = run(&fixture);
+    assert_eq!(result.status, SandboxStatus::SetupFailed);
+    assert_eq!(result.cleanup, SandboxCleanup::NotCreated);
+    assert!(result.owned_resource.is_none());
+    assert!(result.reason.unwrap().contains("sandbox.runsc_limits"));
 }

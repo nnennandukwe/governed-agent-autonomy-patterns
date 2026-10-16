@@ -232,7 +232,11 @@ impl SandboxHost {
             limits: SandboxLimits {
                 cpu_millis_per_second: 1000,
                 memory_bytes: 64 * 1024 * 1024,
-                processes: 16,
+                processes: if self.config.gvisor.is_some() {
+                    256
+                } else {
+                    16
+                },
                 stdout_bytes: 32768,
                 stderr_bytes: 8192,
                 wall_clock_ms: 10000,
