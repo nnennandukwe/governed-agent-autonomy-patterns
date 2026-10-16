@@ -3,8 +3,10 @@
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 MUTANTS = {
@@ -24,6 +26,12 @@ MUTANTS = {
     "failed_verification_becomes_pass": (
         "let report = report_observation.value;",
         "let mut report = report_observation.value; report.verdict = VerificationVerdict::Pass;"),
+    "agent_sees_stale_subject": (
+        "self.agent.next_effect(AgentRunContext {\n                current_subject: &ledger.current_subject,",
+        "self.agent.next_effect(AgentRunContext {\n                current_subject: &ledger.request.subject,"),
+    "agent_sees_zero_usage": (
+        "usage: &ledger.usage,\n                effects_seen:",
+        "usage: &zero_resource_usage(),\n                effects_seen:"),
     "usage_disappears": ("self.usage = next_usage;", "self.usage = zero_resource_usage();"),
     "changed_content_keeps_digest": ("Ok(digest) => digest,", 'Ok(_) => format!("sha256:{}", "0".repeat(64)),'),
     "unknown_effect_silently_continues": (
@@ -31,8 +39,35 @@ MUTANTS = {
 }
 
 
+def run_cargo(command, checkout, environment, deadline):
+    """Bound each command by the suite's remaining ordinary-CI time budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SystemExit("mutant suite exceeded its 420-second budget; no incomplete run counts as detection")
+    process = subprocess.Popen(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        output, errors = process.communicate(timeout=min(180, remaining))
+    except subprocess.TimeoutExpired as error:
+        # Cargo can exit while a compiler/test descendant still owns captured pipes.
+        # Kill the owned session before collecting output, including when its leader exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.stdout.close()
+            process.stderr.close()
+        raise SystemExit("Cargo exceeded the command/suite budget; its process group was stopped; rerun to complete proof") from error
+    return subprocess.CompletedProcess(command, process.returncode, output, errors)
+
+
+
 def main():
     """Compile isolated source mutants and report their replayable counterexamples."""
+    deadline = time.monotonic() + 420
     target = ROOT / "target"
     target.mkdir(exist_ok=True)
     logs = target / "state-machine-mutants"
@@ -54,7 +89,7 @@ def main():
         source = checkout / "src/runtime.rs"
         original = source.read_text()
         # Infrastructure/build failures don't count as detected semantic mutants.
-        baseline = subprocess.run(command, cwd=checkout, env=environment, capture_output=True, text=True, timeout=300)
+        baseline = run_cargo(command, checkout, environment, deadline)
         (logs / "baseline.log").write_text(baseline.stdout + baseline.stderr)
         if baseline.returncode:
             raise SystemExit("mutant baseline failed; inspect target/state-machine-mutants/baseline.log")
@@ -62,7 +97,7 @@ def main():
             if original.count(before) != 1:
                 raise SystemExit(f"{name}: mutation anchor must match exactly once")
             source.write_text(original.replace(before, after))
-            result = subprocess.run(command, cwd=checkout, env=environment, capture_output=True, text=True, timeout=300)
+            result = run_cargo(command, checkout, environment, deadline)
             output = result.stdout + result.stderr
             (logs / f"{name}.log").write_text(output)
             if result.returncode == 0 or "GAAP_MINIMIZED_HISTORY=" not in output or "error[E" in output:
@@ -79,12 +114,12 @@ def main():
             raise SystemExit("duplicate_terminal_envelope: mutation anchor must match exactly once")
         wire_command = ["cargo", "test", "--locked", "--test", "runtime_subject",
                         "runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input", "--", "--nocapture"]
-        baseline = subprocess.run(wire_command, cwd=checkout, env=environment, capture_output=True, text=True, timeout=300)
+        baseline = run_cargo(wire_command, checkout, environment, deadline)
         (logs / "wire-baseline.log").write_text(baseline.stdout + baseline.stderr)
         if baseline.returncode:
             raise SystemExit("wire baseline failed; inspect target/state-machine-mutants/wire-baseline.log")
         wire_source.write_text(wire_original.replace(wire_before, wire_before + "\n    " + wire_before))
-        result = subprocess.run(wire_command, cwd=checkout, env=environment, capture_output=True, text=True, timeout=300)
+        result = run_cargo(wire_command, checkout, environment, deadline)
         output = result.stdout + result.stderr
         (logs / "duplicate_terminal_envelope.log").write_text(output)
         if result.returncode == 0 or "test result: FAILED" not in output or "error[E" in output:

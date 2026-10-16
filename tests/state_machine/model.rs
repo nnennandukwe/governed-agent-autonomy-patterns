@@ -113,6 +113,7 @@ pub struct Expected {
     pub subject: u64,
     pub dispatched: Vec<usize>,
     pub proposals: usize,
+    pub contexts: Vec<(u64, Meter)>,
     pub verified: bool,
     pub completion_checked: bool,
     pub effect_statuses: Vec<&'static str>,
@@ -149,6 +150,7 @@ pub fn predict(history: &History) -> Expected {
         subject: 0,
         dispatched: vec![],
         proposals: 0,
+        contexts: vec![],
         verified: false,
         completion_checked: false,
         effect_statuses: vec![],
@@ -164,15 +166,11 @@ pub fn predict(history: &History) -> Expected {
     }
     result.transition(State::Executing);
     let mut identities = BTreeSet::new();
-    // Exhausting a script means Finish with a passing independent verifier.
-    let finish = Operation::Finish {
-        verification: Verification::Pass,
-        usage: [0; 4],
-    };
-    for (index, operation) in history.operations.iter().chain([&finish]).enumerate() {
+    for (index, operation) in history.operations.iter().enumerate() {
         if result.state.terminal() {
             break;
         }
+        result.contexts.push((result.subject, result.usage));
         result.proposals += 1;
         match operation {
             Operation::Cancel => result.transition(State::Interrupted),

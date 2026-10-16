@@ -35,6 +35,7 @@ assert_lanes "$runtime_only" tests/state_machine.rs
 assert_lanes "$runtime_only" tests/state_machine/model.rs
 assert_lanes "$runtime_only" tests/state_machine/fixtures/duplicate-stale-subject.json
 assert_lanes "$runtime_only" scripts/test-state-machine-mutants.py
+assert_lanes "$runtime_only" scripts/test_state_machine_mutants.py
 assert_lanes "$runtime_only" docs/state-machine-testing.md
 assert_lanes "$runtime_only" docs/adr/0005-bounded-agent-run-engine.md
 assert_lanes "$all" src/contracts/model.rs src/main.rs

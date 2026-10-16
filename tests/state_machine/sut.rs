@@ -184,15 +184,9 @@ impl AgentAdapter for Agent {
         trace
             .contexts
             .push((context.current_subject.digest.clone(), meter(context.usage)));
-        let operation = self
-            .history
-            .operations
-            .get(index)
-            .cloned()
-            .unwrap_or(Operation::Finish {
-                verification: Verification::Pass,
-                usage: [0; 4],
-            });
+        let operation = self.history.operations.get(index).cloned().ok_or_else(|| {
+            RuntimePortError::new("history exhausted without an explicit terminal operation")
+        })?;
         trace.active_index = index;
         trace.active = Some(operation.clone());
         let step = match &operation {

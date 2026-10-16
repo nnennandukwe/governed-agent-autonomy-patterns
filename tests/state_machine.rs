@@ -25,6 +25,9 @@ fn state(status: AgentRunStatus) -> State {
 }
 fn check(history: &History) -> Result<(), String> {
     let expected = predict(history);
+    if !expected.state.terminal() {
+        return Err("invalid history: missing an explicit terminal operation".into());
+    }
     let (actual, trace) = sut::execute(history)?;
     macro_rules! require { ($condition:expr, $label:expr) => { if !$condition { return Err(format!("{}: expected {expected:?}; actual status {:?}, usage {:?}, subject {}, executor calls {:?}", $label, actual.receipt.body.terminal_status, actual.receipt.body.usage, actual.receipt.body.resulting_subject_digest, trace.executor_calls)); } }; }
     let body = &actual.receipt.body;
@@ -62,6 +65,15 @@ fn check(history: &History) -> Result<(), String> {
     require!(
         trace.external_dispatches == external,
         "external dispatch after pre-dispatch failure"
+    );
+    let expected_contexts: Vec<_> = expected
+        .contexts
+        .iter()
+        .map(|(revision, usage)| (sut::subject(*revision).digest, *usage))
+        .collect();
+    require!(
+        trace.contexts == expected_contexts,
+        "current agent subject and retained usage context"
     );
     require!(
         trace.next_calls == expected.proposals && trace.closes == 1,
@@ -167,8 +179,11 @@ fn histories(max_length: usize) -> impl Strategy<Value = History> {
      prop_oneof![20 => Just(true), 1 => Just(false)], meters(),
      prop_oneof![8 => Just([100;4]), 1 => (1..130u64, 0..130u64, 0..130u64, 0..10u64).prop_map(|(cost,time,tokens,calls)| [cost,time,tokens,calls])],
      prop_oneof![8 => Just([1,1,0,1]), 1 => meters()], 1..17usize,
-     proptest::collection::vec(operations(), 0..=max_length))
-        .prop_map(|(permission,approved_plan,plan_usage,budget,estimate,max_effects,operations)| History { permission,approved_plan,plan_usage,budget,estimate,max_effects,operations })
+     proptest::collection::vec(operations(), 0..max_length))
+        .prop_map(|(permission,approved_plan,plan_usage,budget,estimate,max_effects,mut operations)| {
+            operations.push(Operation::Finish { verification: Verification::Pass, usage: [0;4] });
+            History { permission,approved_plan,plan_usage,budget,estimate,max_effects,operations }
+        })
 }
 /// Proptest minimizes values; this final deletion pass also establishes one-operation minimality.
 fn deletion_minimize(mut history: History) -> History {
@@ -176,7 +191,7 @@ fn deletion_minimize(mut history: History) -> History {
     while index < history.operations.len() {
         let mut candidate = history.clone();
         candidate.operations.remove(index);
-        if check(&candidate).is_err() {
+        if predict(&candidate).state.terminal() && check(&candidate).is_err() {
             history = candidate;
             index = 0;
         } else {
@@ -425,4 +440,32 @@ fn duplicate_identity_with_stale_subject_returns_a_sealed_refusal() {
     ))
     .unwrap();
     check(&history).unwrap();
+}
+
+#[test]
+fn finish_observes_latest_subject_and_cumulative_agent_usage() {
+    check(&History {
+        plan_usage: [2, 3, 4, 0],
+        operations: vec![
+            success(1),
+            Operation::Finish {
+                verification: Verification::Pass,
+                usage: [0; 4],
+            },
+        ],
+        ..History::default()
+    })
+    .unwrap();
+}
+#[test]
+fn histories_dont_invent_a_passing_finish() {
+    let history = History {
+        operations: vec![success(1)],
+        ..History::default()
+    };
+    assert!(!predict(&history).state.terminal());
+    assert_eq!(
+        check(&history).unwrap_err(),
+        "invalid history: missing an explicit terminal operation"
+    );
 }

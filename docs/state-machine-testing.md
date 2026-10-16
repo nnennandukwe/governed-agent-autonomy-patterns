@@ -27,12 +27,13 @@ From the repository root:
 
 ```bash
 cargo test --locked --test state_machine
+python3 -B -m unittest discover -s scripts -p 'test_state_machine_mutants.py'
 python3 scripts/test-state-machine-mutants.py
 GAAP_PROPTEST_PROFILE=deep cargo test --locked --test state_machine generated_agent_run_histories -- --nocapture
 ```
 
-The ordinary profile uses seed `18020261015`, 256 cases and 0-32 operations per
-history. The deeper profile uses 10,000 cases and 0-256 operations. Both bound
+The ordinary profile uses seed `18020261015`, 256 cases and 1-32 operations per
+history. The deeper profile uses 10,000 cases and 1-256 operations. Both bound
 shrinking to 100,000 iterations without a wall-clock cutoff. Change the seed with
 `GAAP_PROPTEST_SEED=123`. Unknown profile names and malformed seeds fail visibly.
 The dependency graph and seed are pinned; the generator isn't stable across
@@ -47,6 +48,11 @@ after `GAAP_MINIMIZED_HISTORY=` as `history.json`, then run:
 ```bash
 GAAP_PROPTEST_REPLAY=history.json cargo test --locked --test state_machine generated_agent_run_histories -- --nocapture
 ```
+
+Every generated history includes its explicit final Finish input in serialized
+operations. The model and adapter never invent a passing Finish on exhaustion.
+Shrinking preserves a history that reaches a terminal state; malformed incomplete
+replays fail with an input diagnostic.
 
 A replay bypasses generation and executes exactly that serialized input. Keep any
 newly found runtime defect as a named test and committed JSON fixture before fixing
@@ -67,7 +73,7 @@ within this crate's declared minimum. No runtime dependency was added.
 | --- | --- |
 | Ask/block never dispatch; post-terminal operations stop | Oracle compares executor calls, external-attempt trace, next-step count and close count; explicit permission fixtures |
 | Terminal states stay terminal; one terminal receipt | Exact transitions, one terminal event, no later events; existing separate-process terminal-envelope fixture |
-| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions |
+| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; agent callback subject/usage contexts |
 | Usage never disappears | All four cumulative axes, event monotonicity, reservation refusal, actual overage and exhaustion fixtures |
 | Identity binds canonical content | Independent JCS hashes for request/result/receipt; changed input under reused identity is refused |
 | Unknown effects don't retry; denied/unverified work can't complete | Unknown, lost-reply, denial and verification-failure histories with later work left pending |
@@ -85,12 +91,17 @@ The Python command copies source and tests into a disposable directory, checks t
 baseline, then changes one source expression at a time. Its separate build directory
 prevents mutated artifacts from entering ordinary tests. It never edits the caller's
 source. Compile failures, timeouts and missing anchors don't count as detections.
-Logs remain in `target/state-machine-mutants/`.
+Logs remain in `target/state-machine-mutants/`. Each Cargo command has a 180-second
+limit within one 420-second suite budget, leaving time for preceding tests in the
+10-minute runtime lane. An exhausted budget fails the proof rather than counting
+unfinished mutants as detected. The POSIX runner stops the whole owned process
+group before collecting output on timeout; its Python regression leaves a child
+holding pipes after its launcher exits and confirms bounded cleanup.
 
-The nine runtime mutants violate permission admission, terminal immutability,
+The eleven runtime mutants violate permission admission, terminal immutability,
 terminal-event cardinality, verifier freshness, verifier actor independence,
-verification verdict, retained usage, content digests and unknown-effect termination.
-Every runtime mutant must produce a generated, shrunk failing history. A tenth
+verification verdict, retained usage, content digests, unknown-effect termination and stale subject/usage supplied to the agent.
+Every runtime mutant must produce a generated, shrunk failing history. A twelfth
 mutant duplicates the terminal wire envelope; its deterministic existing process
 fixture must fail and supplies a named test command for replay. The guard isn't a
 claim about all possible mutants or mutation score across the repository.

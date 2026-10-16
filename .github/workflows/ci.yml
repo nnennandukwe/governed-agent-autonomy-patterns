@@ -152,6 +152,7 @@ jobs:
           CARGO_INCREMENTAL: '0'
         run: |
           cargo test --locked --test state_machine
+          python3 -B -m unittest discover -s scripts -p 'test_state_machine_mutants.py'
           python3 scripts/test-state-machine-mutants.py
 
   mcp:
