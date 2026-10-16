@@ -2077,3 +2077,42 @@ fn lost_executor_reply_preserves_host_evidence_without_synthetic_duplicates() {
         AgentRunStatus::Failed
     );
 }
+
+#[test]
+fn executor_failures_retain_sampled_usage_and_known_dispatch_minimum() {
+    for dispatched in [false, true] {
+        let run_request = request();
+        let effect = effect_request(&run_request, &support(), 1);
+        let sampled = ResourceUsage {
+            cost_micros: 7,
+            elapsed_ms: 13,
+            model_tokens: 3,
+            tool_calls: 0,
+        };
+        let error = if dispatched {
+            RuntimePortError::new("response lost")
+        } else {
+            RuntimePortError::before_dispatch("dispatch refused")
+        }
+        .with_usage(sampled.clone());
+        let execution = run_with(
+            run_request.clone(),
+            runtime_support(vec![capability()]),
+            ScriptedAgent::new(
+                plan_for(&run_request),
+                [Ok(AgentStep::ProtectedEffect(Box::new(proposal(effect))))],
+            ),
+            RecordingExecutor::new(Rc::new(RefCell::new(Vec::new())), [Err(error)]),
+            ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+        );
+        let expected = ResourceUsage {
+            tool_calls: u64::from(dispatched),
+            ..sampled
+        };
+        assert_eq!(execution.receipt.body.usage, expected);
+        assert_eq!(
+            execution.protected_effect_results[0].body.usage.tool_calls,
+            u64::from(dispatched)
+        );
+    }
+}

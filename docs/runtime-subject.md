@@ -54,3 +54,9 @@ cases against the recorded subject binary and bytes.
 A lost executor reply retains host-provided evidence in its original order. The
 engine adds references only for required categories the host didn't supply; it
 retains the known one-call usage lower bound without inventing an external result.
+
+The subject uses GAAP's existing inclusive cost hard-stop policy at the request's
+maximum cost: an estimate that reaches that threshold is blocked before dispatch.
+The request budget remains an upper bound, and the runtime policy can stop earlier.
+Sampled executor-failure usage survives in the receipt, including setup usage when
+dispatch was refused. An attempted effect still counts at least one tool call.

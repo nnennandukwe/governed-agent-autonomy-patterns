@@ -760,6 +760,9 @@ where
         let mut observation = match self.executor.execute(&proposal.request) {
             Ok(observation) => observation,
             Err(error) if error.was_not_dispatched() => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 let mut decision = Decision::block("executor.not_dispatched", &["stop_execution"]);
                 decision.effects.push(error.message().to_owned());
                 return self
@@ -1000,6 +1003,10 @@ where
         error: RuntimePortError,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
         let reason = format!("executor.failed: {}", error.message());
+        let observed_usage = error
+            .observed_usage
+            .clone()
+            .unwrap_or_else(zero_resource_usage);
         let mut evidence = error.evidence;
         // Trusted host observations take precedence; synthesize only missing categories.
         for (kind, label) in [
@@ -1027,8 +1034,10 @@ where
             // The port was invoked and its response was lost. Count that attempt
             // even though its external outcome and additional usage are unknown.
             usage: EffectUsage {
-                tool_calls: 1,
-                ..zero_effect_usage()
+                cost_micros: observed_usage.cost_micros,
+                elapsed_ms: observed_usage.elapsed_ms,
+                model_tokens: observed_usage.model_tokens,
+                tool_calls: observed_usage.tool_calls.max(1),
             },
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
