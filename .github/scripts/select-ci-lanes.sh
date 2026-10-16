@@ -27,7 +27,7 @@ for changed_path in "$@"; do
     src/main.rs|tests/cli.rs|evidence/*|docs/adr/0001-*|docs/adr/0002-*)
       coordinator=true
       ;;
-    src/runtime.rs|tests/runtime.rs|docs/adr/0005-*)
+    src/runtime.rs|tests/runtime.rs|tests/state_machine.rs|tests/state_machine/*|scripts/test-state-machine-mutants.py|scripts/test_state_machine_mutants.py|docs/state-machine-testing.md|docs/adr/0005-*)
       runtime=true
       ;;
     README.md|CONTRIBUTING.md|LICENSE*|docs/*)

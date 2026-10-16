@@ -140,8 +140,23 @@ jobs:
       - name: Check out GAAP
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Start shared runtime verification deadline
+        run: echo "GAAP_MUTANT_DEADLINE_UNIX=$(( $(date +%s) + 540 ))" >> "$GITHUB_ENV"
+
       - name: Check bounded Agent Run runtime
         run: cargo test --locked --test runtime
+
+      - name: Explore bounded histories and prove source mutants are detected
+        env:
+          GAAP_PROPTEST_PROFILE: ci
+          GAAP_PROPTEST_SEED: '18020261015'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          cargo test --locked --test state_machine
+          python3 -B -m unittest discover -s scripts -p 'test_state_machine_mutants.py'
+          python3 scripts/test-state-machine-mutants.py
 
   mcp:
     runs-on: ubuntu-latest
@@ -165,8 +180,10 @@ jobs:
       - name: Install pinned dependency auditor
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Audit adapter dependency lockfile
-        run: cargo audit --file adapters/mcp/Cargo.lock
+      - name: Audit core and MCP dependency lockfiles
+        run: |
+          cargo audit --file Cargo.lock
+          cargo audit --file adapters/mcp/Cargo.lock
 
   acp:
     runs-on: ubuntu-latest

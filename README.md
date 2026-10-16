@@ -98,6 +98,11 @@ cargo build --locked
 cargo run --locked --example generate-contract-artifacts -- --check
 ```
 
+The [generated-history guide](docs/state-machine-testing.md) covers the independent
+Agent Run model, named regressions, minimized JSON replay, deeper exploration and
+source mutants. Ordinary CI uses bounded deterministic histories; this sampled
+exploration complements RunInvariant's public black-box corpus.
+
 Schemas and examples are registered in one typed catalog. To intentionally
 reconcile all managed artifacts under `schemas/` and `examples/contracts/`, run
 `cargo run --locked --example generate-contract-artifacts`, review the diff,

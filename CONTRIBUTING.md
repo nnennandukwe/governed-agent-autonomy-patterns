@@ -21,6 +21,14 @@ the managed `schemas/` and `examples/contracts/` roots. Generation prunes
 unregistered JSON files in those roots, so review its diff before committing.
 `--check` is read-only and reports all detected drift.
 
+## Generated Runtime Histories
+
+Run `cargo test --locked --test state_machine` for deterministic bounded histories,
+then `python3 scripts/test-state-machine-mutants.py` to verify real source mutants
+are detected. See [the test guide](docs/state-machine-testing.md) for replay,
+deep exploration, seed fixtures and coverage limits. Both commands run in the
+required runtime CI lane.
+
 ## Final Review Gate
 
 Run the complete current matrix once after the implementation is settled:

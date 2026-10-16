@@ -1,0 +1,55 @@
+{
+  "permission": "Allow",
+  "approved_plan": true,
+  "plan_usage": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "budget": [
+    100,
+    100,
+    100,
+    100
+  ],
+  "estimate": [
+    1,
+    1,
+    0,
+    1
+  ],
+  "max_effects": 2,
+  "operations": [
+    {
+      "Effect": {
+        "identity": 2,
+        "content": 0,
+        "defect": "None",
+        "outcome": "Success",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "repeatable": false
+      }
+    },
+    {
+      "Effect": {
+        "identity": 2,
+        "content": 0,
+        "defect": "StaleSubject",
+        "outcome": "Success",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "repeatable": false
+      }
+    }
+  ]
+}
