@@ -199,6 +199,43 @@ jobs:
       - name: Audit adapter dependency lockfile
         run: cargo audit --file adapters/acp/Cargo.lock
 
+  attestation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up independent JavaScript consumer
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+
+      - name: Check attestation formatting and warnings
+        run: |
+          cargo fmt --manifest-path adapters/attestation/Cargo.toml --check
+          cargo clippy --manifest-path adapters/attestation/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Verify signatures, contracts, blobs and tamper rejection offline
+        run: cargo test --manifest-path adapters/attestation/Cargo.toml --locked
+
+      - name: Check versioned predicate schema
+        run: |
+          cargo run --manifest-path adapters/attestation/Cargo.toml --locked -- schema > /tmp/gaap-attestation-schema.json
+          diff -u adapters/attestation/schema/terminal-run-v1.json /tmp/gaap-attestation-schema.json
+
+      - name: Install declared minimum Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check minimum Rust compatibility
+        run: cargo +1.88.0 test --manifest-path adapters/attestation/Cargo.toml --locked
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit attestation dependency lockfile
+        run: cargo audit --file adapters/attestation/Cargo.lock
+
   goose:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -237,6 +274,7 @@ jobs:
       - mcp
       - acp
       - goose
+      - attestation
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -252,6 +290,7 @@ jobs:
           RUNTIME_RESULT: ${{ needs.runtime.result }}
           MCP_RESULT: ${{ needs.mcp.result }}
           ACP_RESULT: ${{ needs.acp.result }}
+          ATTESTATION_RESULT: ${{ needs.attestation.result }}
           GOOSE_RESULT: ${{ needs.goose.result }}
         run: |
           set -euo pipefail
@@ -260,6 +299,7 @@ jobs:
           [[ "$MCP_RESULT" == "success" ]]
           [[ "$ACP_RESULT" == "success" ]]
           [[ "$GOOSE_RESULT" == "success" ]]
+          [[ "$ATTESTATION_RESULT" == "success" ]]
           if [[ "$CONTRACT_SELECTED" == "true" ]]; then
             [[ "$CONTRACT_RESULT" == "success" ]]
           else

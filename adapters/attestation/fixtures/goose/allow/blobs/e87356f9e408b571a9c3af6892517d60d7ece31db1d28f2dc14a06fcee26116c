@@ -1,0 +1,9 @@
+def shipping_quote(quantity, unit_price):
+    if quantity <= 0:
+        raise ValueError('quantity must be positive')
+    subtotal = quantity * unit_price
+    if quantity >= 5:
+        subtotal = subtotal * 0.9
+    if subtotal < 100:
+        subtotal = subtotal + 7
+    return round(subtotal, 2)

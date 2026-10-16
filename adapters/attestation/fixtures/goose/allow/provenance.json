@@ -1,0 +1,12 @@
+{
+  "source_commit": "f53e351387f530dd7c10ff4b95e87128a95cd068",
+  "source_tree_dirty": false,
+  "host_binary_digest": "sha256:29e160634039569af47fa4e627caaaffabff12a317bf80686c8f3c523024b5d7",
+  "goose_version": "1.54.0",
+  "goose_binary_digest": "sha256:4b8258c24adad9e07957d1dddfc7d965b97883dce2eff64af7e3d3c005655d81",
+  "provider": "local deterministic fixture; no inference or external billing",
+  "case": "allow",
+  "terminal_status": "completed",
+  "receipt_digest": "sha256:5e491c2a0c1464ce8be1dbfcdc9163bd0c66e004c1a180d26439b6852b574822",
+  "trust": "public fixture key only; not production trust"
+}

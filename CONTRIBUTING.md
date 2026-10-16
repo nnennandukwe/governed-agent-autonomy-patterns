@@ -70,6 +70,20 @@ An attempted host observation can't erase that known minimum with a zero counter
 the correction. Other usage stays a lower bound until reconciliation. Authority-required decisions retain the one-shot
 blocked result, including when cancellation follows the Ask.
 
+The separate attestation adapter requires Rust 1.88 and Node.js 22.22.2 for its independent signature/canonicalization tests:
+
+```bash
+cargo fmt --manifest-path adapters/attestation/Cargo.toml --check
+cargo clippy --manifest-path adapters/attestation/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/attestation/Cargo.toml --locked
+cargo +1.88.0 test --manifest-path adapters/attestation/Cargo.toml --locked
+cargo run --manifest-path adapters/attestation/Cargo.toml --locked -- schema > /tmp/gaap-attestation-schema.json
+diff -u adapters/attestation/schema/terminal-run-v1.json /tmp/gaap-attestation-schema.json
+cargo audit --file adapters/attestation/Cargo.lock
+```
+
+The [attestation guide](adapters/attestation/README.md) documents explicit signer/policy trust, content bounds and public fixture keys. Reproduce the real Goose matrix and its separate-process signed verification with the [reference commands](examples/governed-goose/README.md). Its own Rust host tests, Python cleanup tests, formatting, Clippy and `cargo audit --file examples/governed-goose/Cargo.lock` are also required locally. CI requires MCP, ACP, attestation and Goose lanes on every PR.
+
 Changes to `RunCoordinator` decisions must also reproduce the committed packet
 through RunInvariant commit `e3eb0dfb36390c32d2cd84bbbdf903f5dc55de44`.
 Don't edit the conformance packet by hand or update it to make a failing

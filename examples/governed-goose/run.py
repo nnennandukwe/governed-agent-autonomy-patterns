@@ -119,7 +119,7 @@ def run_host(command, timeout=55):
             process.wait(timeout=3)
 
 
-def run_case(case, goose, binary, output):
+def run_case(case, goose, binary, output, attestor=None):
     """Own one disposable repository, provider, conversation and terminal receipt."""
     host_binary_digest = file_hash(binary)
     root = pathlib.Path(tempfile.mkdtemp(prefix="gg-", dir="/tmp")).resolve()
@@ -204,6 +204,16 @@ def run_case(case, goose, binary, output):
                          "repository": str(workspace), "case": case, "provider_requests": transcript,
                          "fault_injection": case + ": provider fixture changed the working tree after three governed effects" if case.startswith("unreported") else None}
     evidence.write_text(json.dumps(record, indent=2))
+    if attestor is not None:
+        signed = output / (case + "-signed")
+        subprocess.run([str(attestor), "fixture-sign", str(evidence), str(signed), host_binary_digest], check=True)
+        verified = subprocess.check_output([str(attestor), "verify", str(signed / "envelope.json"),
+                                           str(signed / "fixture-trust.json"), str(signed / "fixture-policies.json"),
+                                           str(signed / "blobs")], text=True)
+        check = json.loads(verified)
+        if check["terminal_status"] != receipt["terminal_status"] or check["controller_authority"] != "none":
+            raise AssertionError("Signing changed the run's meaning")
+        (signed / "verification.json").write_text(verified)
     # Leave the disposable repository for evidence inspection; it contains no credentials.
     return {"case": case, "status": receipt["terminal_status"], "executed_effects": attempted, "evidence": str(evidence)}
 
@@ -222,7 +232,10 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(HERE / "Cargo.toml")], check=True)
     binary = HERE / "target" / "debug" / "gaap-governed-goose"
-    results = [run_case(case, goose, binary, output) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
+    attestation_manifest = HERE.parent.parent / "adapters" / "attestation" / "Cargo.toml"
+    subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(attestation_manifest)], check=True)
+    attestor = attestation_manifest.parent / "target" / "debug" / "gaap-attestation"
+    results = [run_case(case, goose, binary, output, attestor) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
     (output / "summary.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
 
