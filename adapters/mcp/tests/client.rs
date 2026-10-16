@@ -761,10 +761,10 @@ fn altered_launch_artifacts_fail_before_spawn() {
 #[test]
 fn endless_empty_pages_reject_within_the_total_discovery_bound() {
     let dir = TempDir::new().unwrap();
+    // Interpreter discovery and launch-artifact hashing aren't part of the transport deadline.
+    let config = server("empty_pages", &dir);
     let begin = std::time::Instant::now();
-    let error = McpExecutor::discover(server("empty_pages", &dir), limits())
-        .err()
-        .unwrap();
+    let error = McpExecutor::discover(config, limits()).err().unwrap();
     assert!(
         matches!(error.code, "mcp.pagination" | "mcp.discovery_failed"),
         "{error}"
