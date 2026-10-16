@@ -31,6 +31,12 @@ fn check(history: &History) -> Result<(), String> {
     let (actual, trace) = sut::execute(history)?;
     macro_rules! require { ($condition:expr, $label:expr) => { if !$condition { return Err(format!("{}: expected {expected:?}; actual status {:?}, usage {:?}, subject {}, executor calls {:?}", $label, actual.receipt.body.terminal_status, actual.receipt.body.usage, actual.receipt.body.resulting_subject_digest, trace.executor_calls)); } }; }
     let body = &actual.receipt.body;
+    if let Some(reason) = expected.verification_reason {
+        require!(
+            body.terminal_reason == reason,
+            "verification refusal or completion reason"
+        );
+    }
     require!(
         body.request_digest == sut::hash(&sut::request(history)),
         "canonical run identity"
@@ -468,4 +474,17 @@ fn histories_dont_invent_a_passing_finish() {
         check(&history).unwrap_err(),
         "invalid history: missing an explicit terminal operation"
     );
+}
+
+#[test]
+fn verification_refusals_preserve_the_selected_failure_reason() {
+    for verification in [
+        Verification::Fail,
+        Verification::Stale,
+        Verification::SameActor,
+        Verification::Untrusted,
+        Verification::Error,
+    ] {
+        check(&fixture(Outcome::Success, verification)).unwrap();
+    }
 }

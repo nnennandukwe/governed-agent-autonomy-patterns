@@ -140,6 +140,9 @@ jobs:
       - name: Check out GAAP
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Start shared runtime verification deadline
+        run: echo "GAAP_MUTANT_DEADLINE_UNIX=$(( $(date +%s) + 540 ))" >> "$GITHUB_ENV"
+
       - name: Check bounded Agent Run runtime
         run: cargo test --locked --test runtime
 

@@ -115,6 +115,7 @@ pub struct Expected {
     pub proposals: usize,
     pub contexts: Vec<(u64, Meter)>,
     pub verified: bool,
+    pub verification_reason: Option<&'static str>,
     pub completion_checked: bool,
     pub effect_statuses: Vec<&'static str>,
 }
@@ -152,6 +153,7 @@ pub fn predict(history: &History) -> Expected {
         proposals: 0,
         contexts: vec![],
         verified: false,
+        verification_reason: None,
         completion_checked: false,
         effect_statuses: vec![],
     };
@@ -185,6 +187,23 @@ pub fn predict(history: &History) -> Expected {
                 result.transition(State::Verifying);
                 result.verified = true;
                 let over = result.charge(*usage, history.budget);
+                result.verification_reason = Some(if *verification == Verification::Error {
+                    "verifier.failed: verifier failed"
+                } else if over {
+                    "runtime.budget_exceeded"
+                } else {
+                    match verification {
+                        Verification::Fail => "verification.pass_required",
+                        Verification::Stale => "verification.stale_subject",
+                        Verification::SameActor => "verification.independence_required",
+                        Verification::Untrusted => "verification.untrusted_verifier",
+                        Verification::ChangedDuring | Verification::ChangedAfter => {
+                            "verifier.completion_check_failed: subject changed after verification"
+                        }
+                        Verification::Pass => "workflow.completion_authorized",
+                        Verification::Error => unreachable!(),
+                    }
+                });
                 let terminal = if *verification == Verification::Error {
                     State::Failed
                 } else if over

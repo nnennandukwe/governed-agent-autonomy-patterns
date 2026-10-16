@@ -73,7 +73,7 @@ within this crate's declared minimum. No runtime dependency was added.
 | --- | --- |
 | Ask/block never dispatch; post-terminal operations stop | Oracle compares executor calls, external-attempt trace, next-step count and close count; explicit permission fixtures |
 | Terminal states stay terminal; one terminal receipt | Exact transitions, one terminal event, no later events; existing separate-process terminal-envelope fixture |
-| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; agent callback subject/usage contexts |
+| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; refusal reasons; agent callback subject/usage contexts |
 | Usage never disappears | All four cumulative axes, event monotonicity, reservation refusal, actual overage and exhaustion fixtures |
 | Identity binds canonical content | Independent JCS hashes for request/result/receipt; changed input under reused identity is refused |
 | Unknown effects don't retry; denied/unverified work can't complete | Unknown, lost-reply, denial and verification-failure histories with later work left pending |
@@ -93,15 +93,18 @@ prevents mutated artifacts from entering ordinary tests. It never edits the call
 source. Compile failures, timeouts and missing anchors don't count as detections.
 Logs remain in `target/state-machine-mutants/`. Each Cargo command has a 180-second
 limit within one 420-second suite budget, leaving time for preceding tests in the
-10-minute runtime lane. An exhausted budget fails the proof rather than counting
+10-minute runtime lane. CI records a shared deadline before the first runtime
+Cargo command. The runner uses the smaller of its 420-second limit and the time
+remaining before that deadline, reserving 60 seconds for job overhead/cleanup.
+An exhausted budget fails the proof rather than counting
 unfinished mutants as detected. The POSIX runner stops the whole owned process
 group before collecting output on timeout; its Python regression leaves a child
 holding pipes after its launcher exits and confirms bounded cleanup.
 
-The eleven runtime mutants violate permission admission, terminal immutability,
+The twelve runtime mutants violate permission admission, terminal immutability,
 terminal-event cardinality, verifier freshness, verifier actor independence,
-verification verdict, retained usage, content digests, unknown-effect termination and stale subject/usage supplied to the agent.
-Every runtime mutant must produce a generated, shrunk failing history. A twelfth
+verification verdict, retained usage, content digests, unknown-effect termination and stale subject/usage supplied to the agent, and incorrect verification refusal reasons.
+Every runtime mutant must produce a generated, shrunk failing history. A thirteenth
 mutant duplicates the terminal wire envelope; its deterministic existing process
 fixture must fail and supplies a named test command for replay. The guard isn't a
 claim about all possible mutants or mutation score across the repository.

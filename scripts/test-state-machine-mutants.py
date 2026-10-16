@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile real runtime mutants in a disposable copy; never edit the caller's source."""
 import os
+import math
 from pathlib import Path
 import shutil
 import signal
@@ -32,6 +33,9 @@ MUTANTS = {
     "agent_sees_zero_usage": (
         "usage: &ledger.usage,\n                effects_seen:",
         "usage: &zero_resource_usage(),\n                effects_seen:"),
+    "verification_refusal_records_wrong_reason": (
+        ".finish(ledger, AgentRunStatus::Blocked, verification_decision.code)",
+        '.finish(ledger, AgentRunStatus::Blocked, "verification.untrusted_verifier")'),
     "usage_disappears": ("self.usage = next_usage;", "self.usage = zero_resource_usage();"),
     "changed_content_keeps_digest": ("Ok(digest) => digest,", 'Ok(_) => format!("sha256:{}", "0".repeat(64)),'),
     "unknown_effect_silently_continues": (
@@ -39,11 +43,25 @@ MUTANTS = {
 }
 
 
+def suite_deadline():
+    """Respect time already consumed by earlier runtime CI steps."""
+    budget = 420.0
+    if value := os.environ.get("GAAP_MUTANT_DEADLINE_UNIX"):
+        try:
+            job_deadline = float(value)
+        except ValueError as error:
+            raise SystemExit("GAAP_MUTANT_DEADLINE_UNIX must be a finite timestamp") from error
+        if not math.isfinite(job_deadline):
+            raise SystemExit("GAAP_MUTANT_DEADLINE_UNIX must be a finite timestamp")
+        budget = min(budget, job_deadline - time.time())
+    return time.monotonic() + budget
+
+
 def run_cargo(command, checkout, environment, deadline):
     """Bound each command by the suite's remaining ordinary-CI time budget."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise SystemExit("mutant suite exceeded its 420-second budget; no incomplete run counts as detection")
+        raise SystemExit("mutant suite or CI budget is exhausted; no incomplete run counts as detection")
     process = subprocess.Popen(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
@@ -67,7 +85,7 @@ def run_cargo(command, checkout, environment, deadline):
 
 def main():
     """Compile isolated source mutants and report their replayable counterexamples."""
-    deadline = time.monotonic() + 420
+    deadline = suite_deadline()
     target = ROOT / "target"
     target.mkdir(exist_ok=True)
     logs = target / "state-machine-mutants"
