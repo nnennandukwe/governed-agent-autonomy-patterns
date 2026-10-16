@@ -102,6 +102,7 @@ impl SandboxHost {
             );
         }
         host.manifest = json!({"domain":"gaap.governed-goose-oci/0.1","profiles":profiles,"adapter_binary":super::raw_hash(&fs::read(&host.config.executable)?),"docker_binary":super::raw_hash(&fs::read(&host.config.docker_executable)?),"operation_program":super::raw_hash(include_bytes!("../oci_operation.py")),"verifier_program":super::raw_hash(include_bytes!("../verify.py")),"transport":"trusted-host-MCP-stdio","isolation_claim":"local OCI reproducibility boundary"});
+        host.manifest["engine"] = json!("docker-compatible");
         host.manifest["engine_version"] = json!(host.config.engine_version);
         host.manifest["runtime"] = json!({"name":"runc","version":host.config.runtime_version});
         host.profile.digest = hash(&host.manifest);
@@ -331,7 +332,8 @@ impl SandboxHost {
             return Err("Sandbox evidence doesn't bind the exact effect, profile and bytes".into());
         }
         if let Some(runtime) = &observation.runtime {
-            if runtime.runtime != "runc"
+            if self.manifest["engine"].as_str() != Some(runtime.engine.as_str())
+                || runtime.runtime != "runc"
                 || runtime.engine_version != self.config.engine_version
                 || runtime.runtime_version != self.config.runtime_version
                 || self.manifest["docker_binary"].as_str()
@@ -370,4 +372,54 @@ pub fn succeeded(observation: &SandboxObservation) -> bool {
         && observation.exit_code == Some(0)
         && observation.cleanup == SandboxCleanup::Removed
         && observation.publication_error.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_observation_cant_substitute_another_engine_name() {
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let request: SandboxRequest = serde_json::from_value(json!({
+            "schema_version":"gaap.sandbox/0.1", "profile_id":"local-oci/0.1",
+            "invocation_kind":"protected_effect", "invocation_digest":digest,
+            "image":{"reference":format!("python@{digest}"),"digest":digest},
+            "command":["/usr/local/bin/python3"],"working_directory":"/workspace","user":"1000:1000",
+            "environment":{},"mounts":[{"source":"/subject/shipping.py","destination":"/workspace/shipping.py","writable":true}],
+            "network":{"mode":"disabled"},
+            "limits":{"cpu_millis_per_second":1000,"memory_bytes":67108864,"processes":16,"stdout_bytes":32768,"stderr_bytes":8192,"wall_clock_ms":10000,"cleanup_ms":2000},
+            "input_subject":{"kind":"repository","locator":"/subject","digest":digest},
+            "outputs":{"paths":["/workspace/shipping.py"],"max_total_bytes":8192},
+        })).unwrap();
+        let host = SandboxHost {
+            config: ReferenceSandbox {
+                executable: "/adapter".into(),
+                docker_executable: "/docker".into(),
+                docker_environment: BTreeMap::new(),
+                engine_version: "expected".into(),
+                runtime_version: "expected".into(),
+                image: request.image.clone(),
+                user: "1000:1000".into(),
+                state_directory: "/state".into(),
+            },
+            root: "/subject".into(),
+            profile: SandboxProfileIdentity {
+                name: "test".into(),
+                version: "0.1".into(),
+                digest: digest.clone(),
+            },
+            manifest: json!({"docker_binary":digest,"engine":"docker-compatible"}),
+        };
+        let mut observation: SandboxObservation = serde_json::from_value(json!({
+            "schema_version":"gaap.sandbox-observation/0.1","request_digest":hash(&request),
+            "runtime":{"engine":"docker-compatible","engine_version":"expected","runtime":"runc","runtime_version":"expected","executable_digest":digest},
+            "image_digest":digest,"resolved_image_id":digest,"owned_resource":"owned","intent_path":"/state/intent",
+            "status":"exited","exit_code":0,"stdout":[],"stderr":[],"stdout_digest":super::super::raw_hash(b""),"stderr_digest":super::super::raw_hash(b""),
+            "artifacts":[],"elapsed_ms":1,"cleanup":"removed","reason":null,"cleanup_reason":null,"publication_error":null,
+        })).unwrap();
+        host.check(&request, &observation).unwrap();
+        observation.runtime.as_mut().unwrap().engine = "another-engine".into();
+        assert!(host.check(&request, &observation).is_err());
+    }
 }

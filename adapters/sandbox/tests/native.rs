@@ -595,3 +595,39 @@ fn native_file_size_signal_retains_partial_output() {
     assert_eq!(result.artifacts[0].bytes.len(), 8192);
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
 }
+
+#[test]
+#[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
+fn native_weakened_container_profiles_never_start() {
+    for extra in ["--security-opt seccomp=unconfined", "--cap-add SYS_ADMIN"] {
+        let mut fixture = fixture();
+        fixture.request.command[5] =
+            "import pathlib;pathlib.Path('/workspace/source.txt').write_text('weaker profile ran')"
+                .into();
+        let real = fixture
+            .config
+            .executable
+            .to_str()
+            .unwrap()
+            .replace('\'', "'\\''");
+        proxy(
+            &mut fixture,
+            &format!(
+                "if [ \"$1\" = container ] && [ \"$2\" = create ]; then shift 2; exec '{real}' container create {extra} \"$@\"; fi"
+            ),
+        );
+        fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
+        let observation = run(&fixture);
+        assert_eq!(
+            observation.status,
+            SandboxStatus::SetupFailed,
+            "{extra}: {observation:?}"
+        );
+        assert_eq!(observation.exit_code, None);
+        assert_eq!(observation.cleanup, SandboxCleanup::Removed);
+        assert_eq!(
+            fs::read(fixture.root.join("workspace/source.txt")).unwrap(),
+            b"initial owned subject\n"
+        );
+    }
+}

@@ -609,6 +609,9 @@ impl LocalOciAdapter {
     ) -> Checked<()> {
         let host = &value["HostConfig"];
         let config = &value["Config"];
+        let no_extra_access = ["CapAdd", "Devices", "DeviceRequests"].iter().all(|field| {
+            host[*field].is_null() || host[*field].as_array().is_some_and(Vec::is_empty)
+        });
         if config["Labels"]["org.gaap.owner"] != owner
             || value["Image"] != image_id
             || config["User"] != request.user
@@ -626,12 +629,14 @@ impl LocalOciAdapter {
                 != Some(u64::from(request.limits.cpu_millis_per_second) * 1_000_000)
             || host["PidsLimit"].as_u64() != Some(u64::from(request.limits.processes))
             || host["CapDrop"] != serde_json::json!(["ALL"])
+            || !no_extra_access
             || !host["SecurityOpt"].as_array().is_some_and(|options| {
-                options.iter().any(|option| {
-                    option.as_str().is_some_and(|text| {
-                        text == "no-new-privileges" || text == "no-new-privileges:true"
+                options.len() == 1
+                    && options.iter().all(|option| {
+                        option.as_str().is_some_and(|text| {
+                            text == "no-new-privileges" || text == "no-new-privileges:true"
+                        })
                     })
-                })
             })
         {
             return Err(
