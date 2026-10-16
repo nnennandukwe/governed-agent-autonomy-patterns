@@ -26,6 +26,8 @@ def main():
     if platform.system() != 'Linux' or machine not in PINS:
         parser.error("Use Linux x86_64 or aarch64; macOS execution isn't gVisor evidence")
     destination = args.destination.resolve()
+    if destination.exists():
+        parser.error(f'Select a new destination; retained setup files already exist at {destination}')
     destination.mkdir(mode=0o700, parents=True, exist_ok=False)
     archive = destination / 'release.tar.bz2'
     url = f'https://github.com/google/gvisor/releases/download/{RELEASE}/gvisor-{machine}.tar.bz2'

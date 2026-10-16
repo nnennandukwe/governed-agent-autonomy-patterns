@@ -862,8 +862,9 @@ fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
             fixture.config.gvisor.is_some(),
             "Select GAAP_RUNSC_EXECUTABLE"
         );
-        fixture.request.command[5] =
-            format!("import sys;print('before failed post probe');sys.exit({exit})");
+        fixture.request.command[5] = format!(
+            "import sys;print('before failed post probe');print('original workload stderr',file=sys.stderr);sys.exit({exit})"
+        );
         fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
         let counter = fixture.root.join("info-count");
         proxy(
@@ -885,6 +886,7 @@ fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
         );
         assert_eq!(result.exit_code, Some(exit));
         assert_eq!(result.stdout, b"before failed post probe\n");
+        assert_eq!(result.stderr, b"original workload stderr\n");
         assert_eq!(result.cleanup, SandboxCleanup::Removed);
         assert!(
             result
