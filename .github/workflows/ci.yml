@@ -143,6 +143,17 @@ jobs:
       - name: Check bounded Agent Run runtime
         run: cargo test --locked --test runtime
 
+      - name: Explore bounded histories and prove source mutants are detected
+        env:
+          GAAP_PROPTEST_PROFILE: ci
+          GAAP_PROPTEST_SEED: '18020261015'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          cargo test --locked --test state_machine
+          python3 scripts/test-state-machine-mutants.py
+
   mcp:
     runs-on: ubuntu-latest
     timeout-minutes: 15

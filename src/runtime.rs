@@ -555,20 +555,8 @@ where
             }
         };
 
-        if let Some(decision) =
-            ledger.admission_decision(&proposal.request, &effect_digest, self.config.max_effects)
-        {
-            return self
-                .decline_protected_effect(
-                    ledger,
-                    &proposal.request,
-                    &effect_digest,
-                    Gate::Runtime,
-                    decision,
-                )
-                .map(|execution| EffectHandling::Terminal(Box::new(execution)));
-        }
-
+        // A subject mismatch must use the frozen drift-denial result shape,
+        // even when the proposal also reuses an identity or exceeds admission limits.
         if proposal.request.subject != ledger.current_subject {
             let decision = Decision {
                 outcome: Outcome::Block,
@@ -581,6 +569,20 @@ where
                     &proposal.request,
                     &effect_digest,
                     Gate::Permission,
+                    decision,
+                )
+                .map(|execution| EffectHandling::Terminal(Box::new(execution)));
+        }
+
+        if let Some(decision) =
+            ledger.admission_decision(&proposal.request, &effect_digest, self.config.max_effects)
+        {
+            return self
+                .decline_protected_effect(
+                    ledger,
+                    &proposal.request,
+                    &effect_digest,
+                    Gate::Runtime,
                     decision,
                 )
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
