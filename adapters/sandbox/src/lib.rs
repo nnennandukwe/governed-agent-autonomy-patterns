@@ -1259,22 +1259,21 @@ impl SandboxAdapter for LocalOciAdapter {
                     "schema_version":"gaap.runsc-evidence/0.1", "request_digest":observation.request_digest,
                     "before":self.runtime_evidence, "after":after.as_ref().ok(), "after_error":after.as_ref().err(),
                 });
-                if let Err(error) = canonical(&record).and_then(|bytes| {
+                let publication = canonical(&record).and_then(|bytes| {
                     write_record(
                         &self.config.state_directory,
                         &format!("{name}.runtime.json"),
                         &bytes,
                     )
-                }) {
-                    observation.reason = Some(error);
-                    if observation.status == SandboxStatus::Exited
-                        && observation.exit_code == Some(0)
-                    {
-                        observation.status = SandboxStatus::UnknownOutcome;
+                });
+                for error in [publication.err(), after.err()].into_iter().flatten() {
+                    match &mut observation.reason {
+                        Some(reason) => {
+                            reason.push_str("; ");
+                            reason.push_str(&error);
+                        }
+                        None => observation.reason = Some(error),
                     }
-                }
-                if let Err(error) = after {
-                    observation.reason = Some(error);
                     if observation.status == SandboxStatus::Exited
                         && observation.exit_code == Some(0)
                     {

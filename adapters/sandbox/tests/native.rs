@@ -374,25 +374,32 @@ fn native_read_only_mount_refuses_mutation() {
 fn native_timeout_removes_the_owned_container() {
     let mut fixture = fixture();
     fixture.request.limits.wall_clock_ms = 4000;
-    fixture.request.command[5] = "import time;time.sleep(30)".into();
+    fixture.request.command[5] = "import pathlib,time;pathlib.Path('/workspace/started').write_text('workload started');time.sleep(30)".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
     let result = run(&fixture);
     assert_eq!(result.status, SandboxStatus::TimedOut, "{result:?}");
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    assert_eq!(
+        fs::read(fixture.root.join("workspace/started")).unwrap(),
+        b"workload started"
+    );
 }
 
 #[test]
 #[ignore = "requires an explicitly configured real Docker daemon and the pinned image"]
 fn native_cancellation_removes_the_owned_container() {
     let mut fixture = fixture();
-    fixture.request.command[5] = "import time;time.sleep(30)".into();
+    fixture.request.command[5] = "import pathlib,time;pathlib.Path('/workspace/started').write_text('workload started');time.sleep(30)".into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
-    let start = Instant::now();
-    let result = LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| {
-        start.elapsed() >= Duration::from_secs(3)
-    });
+    let marker = fixture.root.join("workspace/started");
+    let result =
+        LocalOciAdapter::new(fixture.config.clone()).execute(&fixture.request, &|| marker.exists());
     assert_eq!(result.status, SandboxStatus::Cancelled, "{result:?}");
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    assert_eq!(
+        fs::read(fixture.root.join("workspace/started")).unwrap(),
+        b"workload started"
+    );
 }
 
 #[test]
@@ -455,6 +462,12 @@ fn native_output_symlink_cannot_import_host_content() {
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
     let result = run(&fixture);
     assert_eq!(result.status, SandboxStatus::UnknownOutcome, "{result:?}");
+    assert_eq!(result.exit_code, Some(0));
+    assert!(
+        fs::symlink_metadata(fixture.root.join("workspace/leak"))
+            .unwrap()
+            .is_symlink()
+    );
     assert!(result.artifacts.is_empty());
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
 }
@@ -787,7 +800,9 @@ fn native_terminal_oom_marker_can_arrive_after_event_probe() {
 #[test]
 #[ignore = "requires a real Linux runsc host and the pinned image"]
 fn runsc_identity_flags_and_stopped_container_are_original_evidence() {
-    let fixture = fixture();
+    let mut fixture = fixture();
+    fixture.request.command[5] =
+        "import json,os;print(json.dumps({'uid':os.getuid(),'gid':os.getgid()}))".into();
     let expected = fixture
         .config
         .gvisor
@@ -797,6 +812,16 @@ fn runsc_identity_flags_and_stopped_container_are_original_evidence() {
     assert_eq!(result.status, SandboxStatus::Exited, "{result:?}");
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.cleanup, SandboxCleanup::Removed);
+    let workload: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let ids: Vec<_> = fixture
+        .request
+        .user
+        .split(':')
+        .map(|value| value.parse::<u64>().unwrap())
+        .collect();
+    assert_eq!(workload, serde_json::json!({"uid":ids[0],"gid":ids[1]}));
+    assert_ne!(ids[0], 0);
+    assert_ne!(ids[1], 0);
     let runtime = result.runtime.unwrap();
     assert_eq!(runtime.runtime, "runsc");
     assert_eq!(runtime.runtime_version, fixture.config.runtime_version);
@@ -862,7 +887,7 @@ fn runsc_hash_and_registration_mismatch_fail_before_any_workload() {
 #[test]
 #[ignore = "requires a real Linux runsc host and the pinned image"]
 fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
-    for exit in [0, 7] {
+    for exit in [0, 7, 153] {
         let mut fixture = fixture();
         assert!(
             fixture.config.gvisor.is_some(),
@@ -885,6 +910,8 @@ fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
             result.status,
             if exit == 0 {
                 SandboxStatus::UnknownOutcome
+            } else if exit == 153 {
+                SandboxStatus::ResourceLimit
             } else {
                 SandboxStatus::Exited
             },
@@ -894,12 +921,11 @@ fn runsc_post_probe_failure_keeps_original_exits_and_cleanup() {
         assert_eq!(result.stdout, b"before failed post probe\n");
         assert_eq!(result.stderr, b"original workload stderr\n");
         assert_eq!(result.cleanup, SandboxCleanup::Removed);
-        assert!(
-            result
-                .reason
-                .unwrap()
-                .contains("injected post-execution registration failure")
-        );
+        let reason = result.reason.unwrap();
+        assert!(reason.contains("injected post-execution registration failure"));
+        if exit == 153 {
+            assert!(reason.contains("consistent with SIGXFSZ"));
+        }
     }
 }
 
