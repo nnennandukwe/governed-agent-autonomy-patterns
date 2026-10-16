@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -24,6 +25,14 @@ pub struct AgentRunExecution {
     pub protected_effect_results: Vec<ProtectedEffectResult>,
 }
 
+/// A host approval binds one tool schema to one exact capability identity.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedToolSchema {
+    pub capability: CapabilityIdentity,
+    pub tool_schema_digest: String,
+}
+
 /// Runtime-only support metadata that does not alter the frozen v0.1 contracts.
 #[derive(Debug, Clone)]
 pub struct RuntimeSupport {
@@ -33,7 +42,7 @@ pub struct RuntimeSupport {
     protected_effect_usage_estimate: EffectUsage,
     runtime_approvals: Vec<GateApproval>,
     trusted_verifier_ids: Vec<String>,
-    trusted_tool_schema_digests: Option<Vec<String>>,
+    trusted_tool_schemas: Option<Vec<TrustedToolSchema>>,
 }
 
 impl RuntimeSupport {
@@ -53,13 +62,13 @@ impl RuntimeSupport {
             protected_effect_usage_estimate,
             runtime_approvals,
             trusted_verifier_ids,
-            trusted_tool_schema_digests: None,
+            trusted_tool_schemas: None,
         }
     }
 
     /// Pin tool schemas independently of capability names and digests.
-    pub fn with_trusted_tool_schemas(mut self, digests: Vec<String>) -> Self {
-        self.trusted_tool_schema_digests = Some(digests);
+    pub fn with_trusted_tool_schemas(mut self, schemas: Vec<TrustedToolSchema>) -> Self {
+        self.trusted_tool_schemas = Some(schemas);
         self
     }
 
@@ -274,6 +283,18 @@ pub trait ExecutorPort {
 
 /// Narrow verifier port used before the terminal completion decision.
 pub trait VerifierPort {
+    /// Recheck host-owned completion conditions after successful verification.
+    /// Existing deterministic verifiers have no asynchronous subject to observe.
+    fn completion_check(
+        &mut self,
+        _context: VerificationContext<'_>,
+    ) -> Result<PortObservation<()>, RuntimePortError> {
+        Ok(PortObservation {
+            value: (),
+            usage: zero_resource_usage(),
+        })
+    }
+
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
@@ -1056,6 +1077,25 @@ where
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);
         }
+        let completion_check = self.verifier.completion_check(VerificationContext {
+            request: &ledger.request,
+            current_subject: &ledger.current_subject,
+            usage: &ledger.usage,
+        });
+        match completion_check {
+            Err(error) => {
+                return self.finish(
+                    ledger,
+                    AgentRunStatus::Failed,
+                    format!("verifier.completion_check_failed: {}", error.message()),
+                );
+            }
+            Ok(observation) => {
+                if let Some(reason) = ledger.record_usage(&observation.usage) {
+                    return self.finish(ledger, AgentRunStatus::Blocked, reason);
+                }
+            }
+        }
         let completion_decision = self.coordinator.evaluate(
             Gate::Workflow,
             &workflow_completion_input(
@@ -1651,9 +1691,16 @@ fn validate_config(config: &RuntimeConfig, request: &AgentRunRequest) -> Result<
 
 fn validate_support(support: &RuntimeSupport) -> Result<(), RuntimeError> {
     if support
-        .trusted_tool_schema_digests
+        .trusted_tool_schemas
         .as_ref()
-        .is_some_and(|digests| digests.iter().any(|digest| !is_digest_string(digest)))
+        .is_some_and(|digests| {
+            digests.iter().any(|pin| {
+                !is_digest_string(&pin.tool_schema_digest)
+                    || !is_digest_string(&pin.capability.digest)
+                    || pin.capability.name.trim().is_empty()
+                    || pin.capability.version.trim().is_empty()
+            })
+        })
     {
         return Err(RuntimeError::InvalidConfig(
             "trusted tool schema digests must be valid content digests".into(),
@@ -1727,12 +1774,13 @@ fn tool_trust_input(
     tool_schema_digest: Option<&str>,
 ) -> Value {
     let approval = if support.trusts_capability(capability)
-        && support
-            .trusted_tool_schema_digests
-            .as_ref()
-            .is_none_or(|trusted| {
-                tool_schema_digest.is_some_and(|digest| trusted.iter().any(|item| item == digest))
-            }) {
+        && support.trusted_tool_schemas.as_ref().is_none_or(|trusted| {
+            tool_schema_digest.is_some_and(|digest| {
+                trusted
+                    .iter()
+                    .any(|pin| pin.capability == *capability && pin.tool_schema_digest == digest)
+            })
+        }) {
         json!({
             "status": "approved",
             "subject_digest": capability.digest,

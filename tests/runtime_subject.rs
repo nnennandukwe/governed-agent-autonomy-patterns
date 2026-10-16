@@ -22,7 +22,7 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
             "../examples/contracts/v0.1.0/agent-run-request.json"
         ))
         .unwrap();
-        let start = json!({"kind":"start","protocol":"run-invariant.runtime/0.2.0","request":request,"support":{"policies":request["policies"],"capabilities":[request["requested_capability"]],"tool_schema_digests":[],"permission":"allow","executor":{"name":"fixture-executor","version":"1","digest":format!("sha256:{}","9".repeat(64))},"verifier_ids":["fixture-verifier"],"max_effects":4}});
+        let start = json!({"kind":"start","protocol":"run-invariant.runtime/0.2.0","request":request,"support":{"policies":request["policies"],"capabilities":[request["requested_capability"]],"tool_schemas":[],"permission":"allow","executor":{"name":"fixture-executor","version":"1","digest":format!("sha256:{}","9".repeat(64))},"verifier_ids":["fixture-verifier"],"max_effects":4}});
         let start_bytes = frame(&start);
         let mut child = Command::new(env!("CARGO_BIN_EXE_gaap"))
             .arg("runtime-subject")
@@ -43,7 +43,7 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
             let message: Value = serde_json::from_slice(&line).unwrap();
             assert_eq!(frame(&message), line);
             if message["kind"] == "terminal" {
-                assert_eq!(message["request_digest"], digest(&start_bytes));
+                assert_eq!(message["start_digest"], digest(&start_bytes));
                 assert_eq!(message["transcript_digest"], digest(&transcript));
                 let receipt: TerminalRunReceipt =
                     serde_json::from_value(message["receipt"].clone()).unwrap();
@@ -74,6 +74,7 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
                 "verifier.verify" => {
                     json!({"subject_digest":request["subject"]["digest"],"verifier_id":"fixture-verifier","verdict":"PASS","evidence":request["required_verification"]["evidence_types"].as_array().unwrap().iter().map(|kind|json!({"evidence_type":kind,"digest":format!("sha256:{}","c".repeat(64)),"locator":null})).collect::<Vec<_>>()})
                 }
+                "subject.observe" => request["subject"].clone(),
                 "signer.sign" => {
                     json!({"keyid":"test-only","signature":"host-verifies-signature-separately"})
                 }
@@ -93,11 +94,14 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
         assert_eq!(
             ports,
             [
-                "clock.now",
                 "agent.plan",
                 "clock.now",
                 "agent.next",
+                "clock.now",
                 "verifier.verify",
+                "clock.now",
+                "subject.observe",
+                "clock.now",
                 "signer.sign"
             ]
         );

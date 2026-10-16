@@ -16,7 +16,7 @@ use gaap::runtime::{
     AgentAdapter, AgentRunContext, AgentRunEngine, AgentStep, BudgetThresholds, Cancellation,
     ExecutorObservation, ExecutorPort, GateApproval, PermissionPolicy, PlanProposal,
     PolicyDecision, PortObservation, ProtectedEffectProposal, RuntimeConfig, RuntimePortError,
-    RuntimeSupport, VerificationContext, VerificationReport, VerifierPort,
+    RuntimeSupport, TrustedToolSchema, VerificationContext, VerificationReport, VerifierPort,
 };
 
 fn digest(byte: u8) -> String {
@@ -1952,7 +1952,10 @@ fn pinned_tool_schema_change_blocks_before_executor() {
     proposed.tool_schema_digest = Some(digest(b'f'));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut engine = AgentRunEngine::new(
-        runtime_support(vec![capability()]).with_trusted_tool_schemas(vec![digest(b'6')]),
+        runtime_support(vec![capability()]).with_trusted_tool_schemas(vec![TrustedToolSchema {
+            capability: capability(),
+            tool_schema_digest: digest(b'6'),
+        }]),
         config(),
         ScriptedAgent::new(
             plan_for(&run_request),
@@ -1973,5 +1976,36 @@ fn pinned_tool_schema_change_blocks_before_executor() {
     assert_eq!(
         result.protected_effect_results[0].body.execution_status,
         EffectExecutionStatus::Denied
+    );
+}
+
+#[test]
+fn schema_approval_cant_be_borrowed_from_another_capability() {
+    let run_request = request();
+    let proposed = effect_request(&run_request, &support(), 1);
+    let mut other = capability();
+    other.name = "filesystem.read".into();
+    other.digest = digest(b'f');
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability(), other.clone()]).with_trusted_tool_schemas(vec![
+            TrustedToolSchema {
+                capability: other,
+                tool_schema_digest: digest(b'6'),
+            },
+        ]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(proposed))))],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine.run(run_request).unwrap();
+    assert!(calls.borrow().is_empty());
+    assert_eq!(
+        result.receipt.body.terminal_reason,
+        "tool_trust.approval_required"
     );
 }

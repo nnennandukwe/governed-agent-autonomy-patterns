@@ -95,23 +95,23 @@ struct Start {
 struct Support {
     policies: Vec<PolicyIdentity>,
     capabilities: Vec<CapabilityIdentity>,
-    tool_schema_digests: Vec<String>,
+    tool_schemas: Vec<TrustedToolSchema>,
     permission: String,
     executor: ExecutorIdentity,
     verifier_ids: Vec<String>,
     max_effects: u64,
 }
-struct Agent {
+struct Clock {
     wire: Wire,
-    clock: u64,
+    previous: u64,
 }
-impl Agent {
+impl Clock {
     fn tick(&mut self) -> Result<ResourceUsage, RuntimePortError> {
         let now: u64 = decode(call(&self.wire, "clock.now", json!({}))?)?;
         let elapsed = now
-            .checked_sub(self.clock)
+            .checked_sub(self.previous)
             .ok_or_else(|| RuntimePortError::new("clock moved backwards"))?;
-        self.clock = now;
+        self.previous = now;
         Ok(ResourceUsage {
             cost_micros: 0,
             elapsed_ms: elapsed,
@@ -120,23 +120,26 @@ impl Agent {
         })
     }
 }
+type SharedClock = Rc<RefCell<Clock>>;
+struct Agent {
+    wire: Wire,
+    clock: SharedClock,
+}
 impl AgentAdapter for Agent {
     fn plan(
         &mut self,
         request: &AgentRunRequest,
     ) -> Result<PortObservation<PlanProposal>, RuntimePortError> {
-        let usage = self.tick()?;
         let plan_digest: String = decode(call(&self.wire, "agent.plan", json!(request))?)?;
         Ok(PortObservation {
             value: PlanProposal { plan_digest },
-            usage,
+            usage: self.clock.borrow_mut().tick()?,
         })
     }
     fn next_effect(
         &mut self,
         context: AgentRunContext<'_>,
     ) -> Result<PortObservation<AgentStep>, RuntimePortError> {
-        let usage = self.tick()?;
         let value = call(
             &self.wire,
             "agent.next",
@@ -155,7 +158,10 @@ impl AgentAdapter for Agent {
             Some("error") => return Err(RuntimePortError::new("scripted agent failure")),
             _ => return Err(RuntimePortError::new("unsupported agent step")),
         };
-        Ok(PortObservation { value: step, usage })
+        Ok(PortObservation {
+            value: step,
+            usage: self.clock.borrow_mut().tick()?,
+        })
     }
 }
 struct Executor(Wire);
@@ -180,14 +186,34 @@ impl ExecutorPort for Executor {
         })
     }
 }
-struct Verifier(Wire);
+struct Verifier {
+    wire: Wire,
+    clock: SharedClock,
+}
 impl VerifierPort for Verifier {
+    fn completion_check(
+        &mut self,
+        context: VerificationContext<'_>,
+    ) -> Result<PortObservation<()>, RuntimePortError> {
+        let observed: Subject = decode(call(
+            &self.wire,
+            "subject.observe",
+            json!({"subject":context.current_subject}),
+        )?)?;
+        if &observed != context.current_subject {
+            return Err(RuntimePortError::new("subject changed after verification"));
+        }
+        Ok(PortObservation {
+            value: (),
+            usage: self.clock.borrow_mut().tick()?,
+        })
+    }
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
     ) -> Result<PortObservation<VerificationReport>, RuntimePortError> {
         let value = call(
-            &self.0,
+            &self.wire,
             "verifier.verify",
             json!({"subject":context.current_subject,"usage":context.usage}),
         )?;
@@ -201,12 +227,7 @@ impl VerifierPort for Verifier {
                 verdict: decode(value["verdict"].clone())?,
                 evidence: decode(value["evidence"].clone())?,
             },
-            usage: ResourceUsage {
-                cost_micros: 0,
-                elapsed_ms: 0,
-                model_tokens: 0,
-                tool_calls: 0,
-            },
+            usage: self.clock.borrow_mut().tick()?,
         })
     }
 }
@@ -245,7 +266,7 @@ pub fn run() -> Result<(), String> {
         vec![],
         start.support.verifier_ids,
     )
-    .with_trusted_tool_schemas(start.support.tool_schema_digests);
+    .with_trusted_tool_schemas(start.support.tool_schemas);
     let max_cost = start.request.resource_budget.max_cost_micros;
     let config = RuntimeConfig {
         implementer_id: "gaap-runtime".into(),
@@ -258,15 +279,22 @@ pub fn run() -> Result<(), String> {
         },
     };
     let request = start.request.clone();
+    let clock = Rc::new(RefCell::new(Clock {
+        wire: wire.clone(),
+        previous: 0,
+    }));
     let mut engine = AgentRunEngine::new(
         support,
         config,
         Agent {
             wire: wire.clone(),
-            clock: 0,
+            clock: clock.clone(),
         },
         Executor(wire.clone()),
-        Verifier(wire.clone()),
+        Verifier {
+            wire: wire.clone(),
+            clock,
+        },
     );
     let execution = engine
         .run(start.request)
@@ -277,10 +305,10 @@ pub fn run() -> Result<(), String> {
         &execution.receipt,
     )
     .map_err(|error| error.to_string())?;
-    let binding = json!({"request_digest":digest(&start_bytes),"receipt_digest":execution.receipt.receipt_digest});
+    let binding = json!({"start_digest":digest(&start_bytes),"request_digest":execution.receipt.body.request_digest,"receipt_digest":execution.receipt.receipt_digest});
     let signature = wire.borrow_mut().call("signer.sign", binding)?;
     let mut transport = wire.borrow_mut();
-    let response = json!({"kind":"terminal","protocol":VERSION,"request_digest":digest(&start_bytes),"transcript_digest":digest(&transport.transcript),"subject":{"name":"gaap","version":env!("CARGO_PKG_VERSION"),"implementation":"rust"},"receipt":execution.receipt,"effects":execution.protected_effect_results,"signature":signature});
+    let response = json!({"kind":"terminal","protocol":VERSION,"start_digest":digest(&start_bytes),"request_digest":execution.receipt.body.request_digest,"transcript_digest":digest(&transport.transcript),"subject":{"name":"gaap","version":env!("CARGO_PKG_VERSION"),"implementation":"rust"},"receipt":execution.receipt,"effects":execution.protected_effect_results,"signature":signature});
     transport.write(&response)?;
     // After terminal output the only valid host action is EOF. No further work is admitted.
     let mut extra = Vec::new();
