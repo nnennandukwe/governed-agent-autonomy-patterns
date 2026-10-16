@@ -1,6 +1,6 @@
 //! One bounded run owns the real Goose conversation and all mediated proposals.
 #![forbid(unsafe_code)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -330,6 +330,32 @@ impl AgentAdapter for AgentPort {
         }
     }
 }
+fn mark_sandbox_uncertain(effect: &mut ExecutorObservation, reason: String) {
+    effect.execution_status = EffectExecutionStatus::UnknownOutcome;
+    effect.exit = None;
+    effect.reason = Some(reason.chars().take(512).collect());
+    // Preserve lower-layer failure facts as artifacts; they don't establish the
+    // protected workload's outcome under the frozen effect contract.
+    for reference in &mut effect.evidence {
+        if matches!(
+            reference.evidence_type,
+            EffectEvidenceType::Failure
+                | EffectEvidenceType::Interruption
+                | EffectEvidenceType::Exit
+        ) {
+            reference.evidence_type = EffectEvidenceType::Artifact;
+        }
+    }
+    let mut seen = BTreeSet::new();
+    effect.evidence.retain(|reference| {
+        seen.insert((
+            reference.evidence_type,
+            reference.digest.clone(),
+            reference.locator.clone(),
+        ))
+    });
+}
+
 fn sandbox_execution_evidence(
     result: &mut std::result::Result<ExecutorObservation, RuntimePortError>,
     effect_digest: &str,
@@ -364,9 +390,21 @@ fn sandbox_execution_evidence(
         }
         Ok(())
     };
-    if let Ok(blobs) = transport() {
-        for bytes in blobs {
-            retain(bytes, EffectEvidenceType::Artifact)?;
+    match transport() {
+        Ok(blobs) => {
+            for bytes in blobs {
+                retain(bytes, EffectEvidenceType::Artifact)?;
+            }
+        }
+        Err(error) => {
+            let reason: String = format!("reference.sandbox_transport_evidence: {error}")
+                .chars()
+                .take(512)
+                .collect();
+            retain(serde_jcs::to_vec(&json!({"schema_version":"gaap.sandbox-transport-evidence-missing/0.1","effect_request_digest":effect_digest,"reason":reason})).map_err(port_error)?, EffectEvidenceType::UnknownOutcome)?;
+            if let Ok(effect) = result {
+                mark_sandbox_uncertain(effect, reason);
+            }
         }
     }
     match observe() {
@@ -376,11 +414,13 @@ fn sandbox_execution_evidence(
             if !sandbox::succeeded(&observation) {
                 retain(bytes, EffectEvidenceType::UnknownOutcome)?;
                 if let Ok(effect) = result {
-                    effect.execution_status = EffectExecutionStatus::UnknownOutcome;
-                    effect.reason = Some(format!(
-                        "reference.sandbox_{:?}_cleanup_{:?}",
-                        observation.status, observation.cleanup
-                    ));
+                    mark_sandbox_uncertain(
+                        effect,
+                        format!(
+                            "reference.sandbox_{:?}_cleanup_{:?}",
+                            observation.status, observation.cleanup
+                        ),
+                    );
                 }
             }
         }
@@ -388,8 +428,7 @@ fn sandbox_execution_evidence(
             let reason = format!("reference.sandbox_evidence: {error}");
             retain(serde_jcs::to_vec(&json!({"schema_version":"gaap.sandbox-evidence-missing/0.1","effect_request_digest":effect_digest,"reason":reason})).map_err(port_error)?, EffectEvidenceType::UnknownOutcome)?;
             if let Ok(effect) = result {
-                effect.execution_status = EffectExecutionStatus::UnknownOutcome;
-                effect.reason = Some(reason);
+                mark_sandbox_uncertain(effect, reason);
             }
         }
     }
@@ -420,6 +459,7 @@ impl ExecutorPort for Executor {
                 "reference.proposal_binding",
             ));
         }
+        ports.conversation.claim_dispatch(request)?;
         let prepared = if let Some(host) = &self.sandbox {
             Some(
                 host.prepare(
@@ -433,7 +473,6 @@ impl ExecutorPort for Executor {
         } else {
             None
         };
-        ports.conversation.claim_dispatch(request)?;
         let mut pending = ports.pending.take().expect("admitted proposal");
         let mut result = ports.mcp.execute(request);
         let mut retained = if let (Some(host), Some(prepared)) = (&self.sandbox, &prepared) {
@@ -1081,7 +1120,14 @@ mod tests {
         let archive = EvidenceArchive::default();
         let raw = br#"{"stdout":[112,97,114,116,105,97,108],"stderr":[101,114,114],"exit_code":7}"#
             .to_vec();
-        let mut result = Ok(evidence_test_observation(EffectExecutionStatus::Failed));
+        let mut lower = evidence_test_observation(EffectExecutionStatus::Failed);
+        lower.exit = Some(EffectExit::Code { code: 7 });
+        lower.evidence.push(EffectEvidenceReference {
+            evidence_type: EffectEvidenceType::Failure,
+            digest: raw_hash(b"original failed transport"),
+            locator: None,
+        });
+        let mut result = Ok(lower);
         let references = sandbox_execution_evidence(
             &mut result,
             "effect",
@@ -1096,6 +1142,21 @@ mod tests {
             EffectExecutionStatus::UnknownOutcome
         );
         assert_eq!(effect.usage.tool_calls, 1);
+        assert!(effect.exit.is_none());
+        assert!(
+            effect
+                .evidence
+                .iter()
+                .all(|item| item.evidence_type != EffectEvidenceType::Failure
+                    && item.evidence_type != EffectEvidenceType::Interruption)
+        );
+        assert!(
+            effect
+                .evidence
+                .iter()
+                .any(|item| item.evidence_type == EffectEvidenceType::Artifact
+                    && item.digest == raw_hash(b"original failed transport"))
+        );
         assert!(
             effect
                 .evidence
@@ -1105,6 +1166,45 @@ mod tests {
         assert_eq!(archive.lock().unwrap()[&raw_hash(&raw)], raw);
         assert!(
             references
+                .iter()
+                .any(|reference| reference.evidence_type == EffectEvidenceType::UnknownOutcome)
+        );
+    }
+
+    #[test]
+    fn a_successful_observation_cant_hide_missing_transport_evidence() {
+        let archive = EvidenceArchive::default();
+        let empty = raw_hash(b"");
+        let observation = serde_json::from_value(json!({
+            "schema_version":"gaap.sandbox-observation/0.1", "request_digest":empty,
+            "runtime":{"engine":"docker-compatible","engine_version":"test","runtime":"runc","runtime_version":"test","executable_digest":empty},
+            "image_digest":empty,"resolved_image_id":empty,"owned_resource":"owned","intent_path":"/owned/intent",
+            "status":"exited","exit_code":0,"stdout":[],"stderr":[],"stdout_digest":empty,"stderr_digest":empty,
+            "artifacts":[],"elapsed_ms":1,"cleanup":"removed","reason":null,"cleanup_reason":null,"publication_error":null,
+        })).unwrap();
+        let mut result = Ok(evidence_test_observation(EffectExecutionStatus::Executed));
+        sandbox_execution_evidence(
+            &mut result,
+            "effect",
+            &archive,
+            || Err("missing transport record".into()),
+            || Ok(observation),
+        )
+        .unwrap();
+        let effect = result.unwrap();
+        assert_eq!(
+            effect.execution_status,
+            EffectExecutionStatus::UnknownOutcome
+        );
+        assert!(
+            effect
+                .evidence
+                .iter()
+                .any(|reference| reference.evidence_type == EffectEvidenceType::Sandbox)
+        );
+        assert!(
+            effect
+                .evidence
                 .iter()
                 .any(|reference| reference.evidence_type == EffectEvidenceType::UnknownOutcome)
         );
@@ -1240,8 +1340,32 @@ mod tests {
             protected_effect_requests: vec![],
             raw_proposals: vec![],
         }));
+        let host = Arc::new(host);
+        let effect: ProtectedEffectRequest = serde_json::from_str(include_str!(
+            "../../contracts/protected-effect/v0.1.0/protected-effect-request.json"
+        ))
+        .unwrap();
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        {
+            let mut ports = shared.lock().unwrap();
+            ports.pending = Some(Pending {
+                stream,
+                request: effect.clone(),
+            });
+            ports
+                .raw_proposals
+                .push(json!({"operation":"file_write","content":"never dispatched"}));
+        }
+        let mut executor = Executor {
+            shared: shared.clone(),
+            sandbox: Some(host.clone()),
+            archive: archive.clone(),
+        };
+        assert!(executor.execute(&effect).unwrap_err().was_not_dispatched());
+        assert!(!host.context_path().exists());
+        host.ensure_fresh_run().unwrap();
         let mut verifier = Verifier {
-            sandbox: Some(Arc::new(host)),
+            sandbox: Some(host),
             archive: archive.clone(),
             root,
             python,
