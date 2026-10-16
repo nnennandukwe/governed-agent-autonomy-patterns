@@ -73,7 +73,7 @@ within this crate's declared minimum. No runtime dependency was added.
 | --- | --- |
 | Ask/block never dispatch; post-terminal operations stop | Oracle compares executor calls, external-attempt trace, next-step count and close count; explicit permission fixtures |
 | Terminal states stay terminal; one terminal receipt | Exact transitions, one terminal event, no later events; existing separate-process terminal-envelope fixture |
-| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; refusal reasons; agent callback subject/usage contexts |
+| Completion uses independent current verification and latest subject | All eight verifier observations crossed with all ten effect outcomes; subject and verifier callback assertions; every terminal reason; agent callback subject/usage contexts |
 | Usage never disappears | All four cumulative axes, event monotonicity, reservation refusal, actual overage and exhaustion fixtures |
 | Identity binds canonical content | Independent JCS hashes for request/result/receipt; changed input under reused identity is refused |
 | Unknown effects don't retry; denied/unverified work can't complete | Unknown, lost-reply, denial and verification-failure histories with later work left pending |
@@ -101,10 +101,10 @@ unfinished mutants as detected. The POSIX runner stops the whole owned process
 group before collecting output on timeout; its Python regression leaves a child
 holding pipes after its launcher exits and confirms bounded cleanup.
 
-The twelve runtime mutants violate permission admission, terminal immutability,
+The thirteen runtime mutants violate permission admission, terminal immutability,
 terminal-event cardinality, verifier freshness, verifier actor independence,
-verification verdict, retained usage, content digests, unknown-effect termination and stale subject/usage supplied to the agent, and incorrect verification refusal reasons.
-Every runtime mutant must produce a generated, shrunk failing history. A thirteenth
+verification verdict, retained usage, content digests, unknown-effect termination and stale subject/usage supplied to the agent, and incorrect verification/effect refusal reasons.
+Every runtime mutant must produce a generated, shrunk failing history. A fourteenth
 mutant duplicates the terminal wire envelope; its deterministic existing process
 fixture must fail and supplies a named test command for replay. The guard isn't a
 claim about all possible mutants or mutation score across the repository.

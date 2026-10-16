@@ -36,6 +36,9 @@ MUTANTS = {
     "verification_refusal_records_wrong_reason": (
         ".finish(ledger, AgentRunStatus::Blocked, verification_decision.code)",
         '.finish(ledger, AgentRunStatus::Blocked, "verification.untrusted_verifier")'),
+    "effect_refusal_records_wrong_reason": (
+        "let mut reason = reason.into();",
+        'let mut reason = reason.into(); if terminal_status != AgentRunStatus::Completed { reason = "runtime.unexpected_refusal".into(); }'),
     "usage_disappears": ("self.usage = next_usage;", "self.usage = zero_resource_usage();"),
     "changed_content_keeps_digest": ("Ok(digest) => digest,", 'Ok(_) => format!("sha256:{}", "0".repeat(64)),'),
     "unknown_effect_silently_continues": (

@@ -31,12 +31,10 @@ fn check(history: &History) -> Result<(), String> {
     let (actual, trace) = sut::execute(history)?;
     macro_rules! require { ($condition:expr, $label:expr) => { if !$condition { return Err(format!("{}: expected {expected:?}; actual status {:?}, usage {:?}, subject {}, executor calls {:?}", $label, actual.receipt.body.terminal_status, actual.receipt.body.usage, actual.receipt.body.resulting_subject_digest, trace.executor_calls)); } }; }
     let body = &actual.receipt.body;
-    if let Some(reason) = expected.verification_reason {
-        require!(
-            body.terminal_reason == reason,
-            "verification refusal or completion reason"
-        );
-    }
+    require!(
+        Some(body.terminal_reason.as_str()) == expected.terminal_reason,
+        "terminal refusal or completion reason"
+    );
     require!(
         body.request_digest == sut::hash(&sut::request(history)),
         "canonical run identity"
@@ -486,5 +484,22 @@ fn verification_refusals_preserve_the_selected_failure_reason() {
         Verification::Error,
     ] {
         check(&fixture(Outcome::Success, verification)).unwrap();
+    }
+}
+
+#[test]
+fn effect_refusal_reasons_stay_bound_to_the_triggering_observation() {
+    for permission in [Permission::Allow, Permission::Ask, Permission::Block] {
+        for outcome in [
+            Outcome::BeforeDispatch,
+            Outcome::Denied,
+            Outcome::FailedPreserved,
+            Outcome::UnknownChanged,
+            Outcome::Interrupted,
+        ] {
+            let mut history = fixture(outcome, Verification::Pass);
+            history.permission = permission;
+            check(&history).unwrap();
+        }
     }
 }

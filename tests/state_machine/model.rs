@@ -115,7 +115,7 @@ pub struct Expected {
     pub proposals: usize,
     pub contexts: Vec<(u64, Meter)>,
     pub verified: bool,
-    pub verification_reason: Option<&'static str>,
+    pub terminal_reason: Option<&'static str>,
     pub completion_checked: bool,
     pub effect_statuses: Vec<&'static str>,
 }
@@ -134,12 +134,16 @@ impl Expected {
             .zip(budget)
             .any(|(total, limit)| *total > limit)
     }
-    fn blocked(&mut self, ask: bool, status: &'static str) {
+    fn finish(&mut self, state: State, reason: &'static str) {
+        self.terminal_reason = Some(reason);
+        self.transition(state);
+    }
+    fn blocked(&mut self, ask: bool, status: &'static str, reason: &'static str) {
         self.effect_statuses.push(status);
         if ask {
             self.transition(State::AwaitingAuthority);
         }
-        self.transition(State::Blocked);
+        self.finish(State::Blocked, reason);
     }
 }
 /// Predict a whole bounded run. Unconsumed operations are attempted work after termination.
@@ -153,17 +157,17 @@ pub fn predict(history: &History) -> Expected {
         proposals: 0,
         contexts: vec![],
         verified: false,
-        verification_reason: None,
+        terminal_reason: None,
         completion_checked: false,
         effect_statuses: vec![],
     };
     result.transition(State::Planning);
     if result.charge(history.plan_usage, history.budget) {
-        result.transition(State::Blocked);
+        result.finish(State::Blocked, "runtime.budget_exceeded");
         return result;
     }
     if !history.approved_plan {
-        result.transition(State::Blocked);
+        result.finish(State::Blocked, "plan.approval_required");
         return result;
     }
     result.transition(State::Executing);
@@ -175,10 +179,10 @@ pub fn predict(history: &History) -> Expected {
         result.contexts.push((result.subject, result.usage));
         result.proposals += 1;
         match operation {
-            Operation::Cancel => result.transition(State::Interrupted),
+            Operation::Cancel => result.finish(State::Interrupted, "runtime.interrupted"),
             Operation::AdapterError { usage } => {
                 result.charge(*usage, history.budget);
-                result.transition(State::Failed);
+                result.finish(State::Failed, "adapter.next_effect_failed: agent failed");
             }
             Operation::Finish {
                 verification,
@@ -187,7 +191,7 @@ pub fn predict(history: &History) -> Expected {
                 result.transition(State::Verifying);
                 result.verified = true;
                 let over = result.charge(*usage, history.budget);
-                result.verification_reason = Some(if *verification == Verification::Error {
+                result.terminal_reason = Some(if *verification == Verification::Error {
                     "verifier.failed: verifier failed"
                 } else if over {
                     "runtime.budget_exceeded"
@@ -237,45 +241,58 @@ pub fn predict(history: &History) -> Expected {
                 ..
             } => {
                 if *defect == Defect::Descriptor {
-                    result.transition(State::Failed);
+                    result.finish(State::Failed, "protected_effect.invalid_request: Protected Effect Request does not match the validated Agent Run Request");
                     continue;
                 }
-                if identities.len() >= history.max_effects
-                    || identities.contains(identity)
-                    || *defect == Defect::StaleSubject
-                {
-                    result.blocked(false, "denied");
+                if *defect == Defect::StaleSubject {
+                    result.blocked(false, "denied", "protected_effect.stale_subject");
+                    continue;
+                }
+                if identities.len() >= history.max_effects {
+                    result.blocked(false, "denied", "runtime.max_effects_exhausted");
+                    continue;
+                }
+                if identities.contains(identity) {
+                    result.blocked(false, "denied", "runtime.duplicate_effect");
                     continue;
                 }
                 // Trusted reservations must fit before dispatch. Cost's hard stop is inclusive.
                 let projected: Meter =
                     std::array::from_fn(|axis| result.usage[axis] + history.estimate[axis]);
                 if (1..4).any(|axis| projected[axis] > history.budget[axis]) {
-                    result.blocked(false, "denied");
+                    result.blocked(false, "denied", "runtime.budget_exceeded");
                     continue;
                 }
                 if history.permission != Permission::Allow {
                     let ask = history.permission == Permission::Ask;
-                    result.blocked(ask, if ask { "awaiting_authority" } else { "denied" });
+                    result.blocked(
+                        ask,
+                        if ask { "awaiting_authority" } else { "denied" },
+                        if ask {
+                            "permission.policy_requires_approval"
+                        } else {
+                            "permission.denied"
+                        },
+                    );
                     continue;
                 }
                 if *defect != Defect::None {
-                    result.blocked(false, "denied");
+                    result.blocked(false, "denied", "tool_trust.approval_required");
                     continue;
                 }
                 if projected[0] >= history.budget[0] {
-                    result.blocked(false, "denied");
+                    result.blocked(false, "denied", "runtime.hard_stop");
                     continue;
                 }
                 result.dispatched.push(index);
                 if *outcome == Outcome::BeforeDispatch {
                     result.charge(*usage, history.budget);
-                    result.blocked(false, "denied");
+                    result.blocked(false, "denied", "executor.not_dispatched");
                     continue;
                 }
                 if *outcome == Outcome::Denied {
                     result.charge(*usage, history.budget);
-                    result.blocked(false, "denied");
+                    result.blocked(false, "denied", "executor.denied");
                     continue;
                 }
                 identities.insert(*identity);
@@ -304,12 +321,17 @@ pub fn predict(history: &History) -> Expected {
                 result.effect_statuses.push(status);
                 match outcome {
                     Outcome::Success if !over => (),
-                    Outcome::Success => result.transition(State::Blocked),
+                    Outcome::Success => result.finish(State::Blocked, "runtime.budget_exceeded"),
                     Outcome::Interrupted | Outcome::Timeout => {
-                        result.transition(State::Interrupted)
+                        result.finish(State::Interrupted, "protected_effect.interrupted")
                     }
-                    Outcome::LostReply if over => result.transition(State::Blocked),
-                    _ => result.transition(State::Failed),
+                    Outcome::LostReply if over => {
+                        result.finish(State::Blocked, "runtime.budget_exceeded")
+                    }
+                    Outcome::FailedPreserved | Outcome::FailedChanged => {
+                        result.finish(State::Failed, "protected_effect.failed")
+                    }
+                    _ => result.finish(State::Failed, "protected_effect.unknown_outcome"),
                 }
             }
         }
