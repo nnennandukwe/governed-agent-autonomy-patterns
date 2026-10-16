@@ -232,3 +232,5 @@ provider fixtures, per-effect gates and independent shipping-code verification.
 ## Signed run evidence
 
 The [attestation adapter](adapters/attestation/README.md) carries full run/effect ledgers in a versioned in-toto Statement and DSSE envelope. Offline consumers use explicit signer and policy trust, frozen contract validation and retained content bytes. The Goose reference emits public-key fixtures for controller integration tests; signing alone doesn't authorize a lifecycle transition.
+
+The [Linux gVisor profile](adapters/sandbox/README.md#linux-gvisor-profile) selects pinned runsc through the same neutral SandboxAdapter. Its required Linux CI lane exercises actual isolation, failure paths and signed Goose evidence; host configuration and runtime trust remain security-critical.

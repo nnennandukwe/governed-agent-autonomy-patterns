@@ -260,15 +260,15 @@ def run_case(case, goose, binary, output, attestor=None, bind_controller=False, 
     if sandbox is not None:
         decoded = sandbox_observations(record)
         expected_count = 0 if case in ('ask', 'block', 'report_only', 'cancel_before_dispatch') else 4
-        if len(decoded) != expected_count or any(entry['cleanup'] != 'removed' or (entry.get('runtime') or {}).get('runtime') != 'runc' for entry in decoded):
+        if len(decoded) != expected_count or any(entry['cleanup'] != 'removed' or (entry.get('runtime') or {}).get('runtime') != ('runsc' if sandbox.get('gvisor') else 'runc') for entry in decoded):
             raise AssertionError('OCI runtime or cleanup mismatch: ' + json.dumps([{'status': entry.get('status'), 'reason': entry.get('reason'), 'cleanup': entry.get('cleanup'), 'runtime': entry.get('runtime')} for entry in decoded]))
-        if any(result['body']['sandbox_profile']['name'] != 'governed-goose-local-oci' for result in effects if result['body']['executor'] is not None):
+        if any(result['body']['sandbox_profile']['name'] != ('governed-goose-gvisor' if sandbox.get('gvisor') else 'governed-goose-local-oci') for result in effects if result['body']['executor'] is not None):
             raise AssertionError('A protected effect reported the wrong selected profile')
     record["fixture"] = {"goose_version": "1.54.0", "binary_digest": file_hash(goose),
                          "host_binary_digest": host_binary_digest,
                          "host_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(HERE), text=True).strip(),
                          "controller_request_bound": bind_controller,
-                         "sandbox_profile": 'local-oci/0.1' if sandbox is not None else 'local-stdio-unisolated',
+                         "sandbox_profile": ('gvisor/0.1' if sandbox.get('gvisor') else 'local-oci/0.1') if sandbox is not None else 'local-stdio-unisolated',
                          "host_tree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=str(HERE), text=True).strip()),
                          "provider": "local deterministic fixture; no inference or external billing",
                          "repository": str(workspace), "case": case, "provider_requests": transcript,
@@ -293,7 +293,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--goose", required=True, type=pathlib.Path, help="Checksum-pinned Goose 1.54.0 executable")
     parser.add_argument("--output", required=True, type=pathlib.Path, help="New directory for the nine-case evidence")
-    parser.add_argument('--oci', action='store_true', help='Run the same matrix through the pinned local OCI profile')
+    profiles = parser.add_mutually_exclusive_group()
+    profiles.add_argument('--gvisor', action='store_true', help='Run the same matrix through the fixed Linux gVisor profile')
+    profiles.add_argument('--oci', action='store_true', help='Run the same matrix through the pinned local OCI profile')
     args = parser.parse_args()
     goose = args.goose.resolve(strict=True)
     expected = PINS.get((platform.system(), platform.machine()))
@@ -307,7 +309,7 @@ def main():
     subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(attestation_manifest)], check=True)
     attestor = attestation_manifest.parent / "target" / "debug" / "gaap-attestation"
     sandbox = None
-    if args.oci:
+    if args.oci or args.gvisor:
         sandbox_manifest = HERE.parent.parent / 'adapters' / 'sandbox' / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(sandbox_manifest)], check=True)
         docker_name = shutil.which('docker')
@@ -324,6 +326,13 @@ def main():
                    'engine_version': version['Version'], 'runtime_version': next(component['Version'] for component in version['Components'] if component['Name'] == 'runc'),
                    'image': {'reference': image, 'digest': image_digest},
                    'user': str(os.getuid() or 1000) + ':' + str(os.getgid() or 1000)}
+        if args.gvisor:
+            if platform.system() != 'Linux':
+                raise ValueError('Select a supported Linux host for --gvisor')
+            runsc = pathlib.Path(os.environ['GAAP_RUNSC_EXECUTABLE']).resolve(strict=True)
+            sandbox['gvisor'] = {'executable': str(runsc), 'executable_digest': file_hash(runsc)}
+            sandbox['runtime_version'] = subprocess.check_output([str(runsc), '--version'], text=True).strip()
+
     results = [run_case(case, goose, binary, output, attestor, sandbox=sandbox) for case in ("allow", "ask", "block", "bad_patch", "report_only", "unreported", "unreported_directory", "unreported_mode", "cancel_before_dispatch")]
     bound_output = output / "controller-bound"
     bound_output.mkdir()

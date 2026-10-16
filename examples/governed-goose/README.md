@@ -159,3 +159,5 @@ reason before parsing. Each raw stream and its digest metadata enter the signed
 archive, including transport failures. Confirmed pre-dispatch refusals keep
 zero attempts. Failed OCI verification returns a failed verification report
 with its original sandbox observation linked as evidence.
+
+On a supported Linux host, select `--gvisor` instead of `--oci` and set `GAAP_RUNSC_EXECUTABLE=/usr/local/bin/runsc`. The same Agent Run, protected effects and signed receipt contracts apply. Follow the [gVisor setup and threat model](../../adapters/sandbox/README.md#linux-gvisor-profile); the host adopts fixed runtime flags and exact binary/version identity before execution.

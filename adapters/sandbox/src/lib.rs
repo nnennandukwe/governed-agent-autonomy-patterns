@@ -1,4 +1,4 @@
-//! Explicit local OCI reproducibility profile; ordinary containers aren't a hostile-code sandbox.
+//! Host-owned local OCI and Linux gVisor execution profiles.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -27,6 +27,17 @@ use sha2::{Digest, Sha256};
 
 type Checked<T> = Result<T, String>;
 
+pub const GVISOR_PROFILE: &str = "gvisor/0.1";
+pub const GVISOR_FLAGS: [&str; 3] = ["--platform=systrap", "--network=none", "--directfs=false"];
+
+/// Trusted Linux host adoption. Flags come from this adapter version, never the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GvisorConfig {
+    pub executable: PathBuf,
+    pub executable_digest: String,
+}
+
 /// Trusted host selection. The adapter never changes context or selects another runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,10 +49,13 @@ pub struct OciConfig {
     pub engine_version: String,
     pub runtime: String,
     pub runtime_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gvisor: Option<GvisorConfig>,
 }
 
 pub struct LocalOciAdapter {
     config: OciConfig,
+    runtime_evidence: Option<Value>,
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -108,8 +122,13 @@ fn validate(request: &SandboxRequest) -> Checked<()> {
     if !valid_digest(&request.invocation_digest) || !valid_digest(&request.input_subject.digest) {
         return Err("sandbox.binding: require exact protected-effect and subject digests".into());
     }
-    if request.schema_version != "gaap.sandbox/0.1" || request.profile_id != "local-oci/0.1" {
-        return Err("sandbox.version: unsupported local OCI profile".into());
+    if request.schema_version != "gaap.sandbox/0.1"
+        || !matches!(
+            request.profile_id.as_str(),
+            "local-oci/0.1" | GVISOR_PROFILE
+        )
+    {
+        return Err("sandbox.version: unsupported sandbox profile".into());
     }
     if request.image.digest.len() != 71
         || !request.image.digest.starts_with("sha256:")
@@ -258,7 +277,10 @@ fn bounded_read(
 
 impl LocalOciAdapter {
     pub fn new(config: OciConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            runtime_evidence: None,
+        }
     }
 
     fn process(
@@ -272,7 +294,27 @@ impl LocalOciAdapter {
         if Instant::now() >= deadline {
             return Err("sandbox.control_timeout: deadline elapsed before dispatch".into());
         }
-        let mut child = Command::new(&self.config.executable)
+        self.process_executable(
+            &self.config.executable,
+            arguments,
+            deadline,
+            output_limit,
+            error_limit,
+            cancelled,
+        )
+    }
+
+    fn process_executable(
+        &self,
+        executable: &Path,
+        arguments: &[String],
+        deadline: Instant,
+        output_limit: usize,
+        error_limit: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Checked<ProcessOutput> {
+        check_budget(deadline, cancelled)?;
+        let mut child = Command::new(executable)
             .args(arguments)
             .env_clear()
             .envs(&self.config.environment)
@@ -516,13 +558,17 @@ impl LocalOciAdapter {
         {
             return Err("sandbox.state: select a private canonical host directory outside all workload mounts".into());
         }
-        if !self.config.executable.is_absolute()
-            || self.config.runtime != "runc"
+        let gvisor = self.config.gvisor.is_some();
+        if (gvisor && request.profile_id != GVISOR_PROFILE)
+            || (!gvisor && request.profile_id != "local-oci/0.1")
+            || !self.config.executable.is_absolute()
+            || self.config.runtime != if gvisor { "runsc" } else { "runc" }
             || self.config.engine_version.is_empty()
             || self.config.runtime_version.is_empty()
         {
             return Err(
-                "sandbox.runtime: explicitly select the local runc engine and versions".into(),
+                "sandbox.runtime: explicitly select the adopted profile, runtime and versions"
+                    .into(),
             );
         }
         self.config.executable =
@@ -534,29 +580,42 @@ impl LocalOciAdapter {
             cancelled,
         )?)
         .map_err(|error| error.to_string())?;
-        let runtime_version = version["Components"]
-            .as_array()
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|item| item["Name"] == self.config.runtime)
-            })
-            .and_then(|item| item["Version"].as_str())
-            .ok_or("sandbox.runtime: selected runtime version wasn't observed")?;
-        if version["Version"] != self.config.engine_version
-            || runtime_version != self.config.runtime_version
-            || version["Os"] != "linux"
-        {
-            return Err(
-                "sandbox.runtime: actual engine/runtime version differs from host adoption".into(),
-            );
+        if version["Version"] != self.config.engine_version || version["Os"] != "linux" {
+            return Err("sandbox.runtime: actual engine version differs from host adoption".into());
         }
-        let runtime = SandboxRuntimeIdentity {
-            engine: "docker-compatible".into(),
-            engine_version: self.config.engine_version.clone(),
-            runtime: self.config.runtime.clone(),
-            runtime_version: runtime_version.into(),
-            executable_digest,
+        let runtime = if gvisor {
+            let evidence = self.verify_gvisor(deadline, cancelled)?;
+            let identity = SandboxRuntimeIdentity {
+                engine: "docker-compatible".into(),
+                engine_version: self.config.engine_version.clone(),
+                runtime: "runsc".into(),
+                runtime_version: self.config.runtime_version.clone(),
+                executable_digest: evidence["executable_digest"].as_str().unwrap().into(),
+            };
+            self.runtime_evidence = Some(evidence);
+            identity
+        } else {
+            let runtime_version = version["Components"]
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|item| item["Name"] == self.config.runtime)
+                })
+                .and_then(|item| item["Version"].as_str())
+                .ok_or("sandbox.runtime: selected runtime version wasn't observed")?;
+            if runtime_version != self.config.runtime_version {
+                return Err(
+                    "sandbox.runtime: actual runtime version differs from host adoption".into(),
+                );
+            }
+            SandboxRuntimeIdentity {
+                engine: "docker-compatible".into(),
+                engine_version: self.config.engine_version.clone(),
+                runtime: self.config.runtime.clone(),
+                runtime_version: runtime_version.into(),
+                executable_digest,
+            }
         };
         let images: Vec<Value> = serde_json::from_slice(&self.control(
             &["image", "inspect", &request.image.reference],
@@ -589,6 +648,66 @@ impl LocalOciAdapter {
             .ok_or("sandbox.image: missing image configuration identity")?
             .to_owned();
         Ok((runtime, image_id))
+    }
+
+    fn verify_gvisor(&self, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Checked<Value> {
+        let config = self
+            .config
+            .gvisor
+            .as_ref()
+            .ok_or("sandbox.runsc: missing host adoption")?;
+        if !cfg!(target_os = "linux") || !matches!(std::env::consts::ARCH, "x86_64" | "aarch64") {
+            return Err(
+                "sandbox.runsc_platform: use a supported Linux host; macOS isn't gVisor evidence"
+                    .into(),
+            );
+        }
+        if !config.executable.is_absolute()
+            || fs::canonicalize(&config.executable).map_err(|error| error.to_string())?
+                != config.executable
+            || !valid_digest(&config.executable_digest)
+            || hash_executable(&config.executable, deadline, cancelled)? != config.executable_digest
+        {
+            return Err(
+                "sandbox.runsc_identity: installed runsc bytes differ from host adoption".into(),
+            );
+        }
+        let version = self.process_executable(
+            &config.executable,
+            &["--version".into()],
+            deadline,
+            8192,
+            8192,
+            cancelled,
+        )?;
+        if version.code != Some(0)
+            || version.stopped.is_some()
+            || String::from_utf8_lossy(&version.stdout).trim() != self.config.runtime_version
+            || !self.config.runtime_version.starts_with("runsc version ")
+            || !version.stderr.is_empty()
+        {
+            return Err(
+                "sandbox.runsc_version: actual runtime version differs from host adoption".into(),
+            );
+        }
+        let registration: Value = serde_json::from_slice(&self.control(
+            &["info", "--format", "{{json .}}"],
+            deadline,
+            cancelled,
+        )?)
+        .map_err(|error| error.to_string())?;
+        let selected = &registration["Runtimes"]["runsc"];
+        if registration["OSType"] != "linux"
+            || selected["path"].as_str() != config.executable.to_str()
+            || selected["runtimeArgs"] != serde_json::json!(GVISOR_FLAGS)
+        {
+            return Err("sandbox.runsc_registration: register the exact runsc path and gvisor/0.1 flags; no fallback".into());
+        }
+        Ok(serde_json::json!({
+            "profile":GVISOR_PROFILE, "executable":config.executable,
+            "executable_digest":config.executable_digest, "version_stdout":version.stdout,
+            "registration":selected, "flags":GVISOR_FLAGS,
+        }))
     }
 
     fn create_arguments(&self, request: &SandboxRequest, name: &str, owner: &str) -> Vec<String> {
@@ -955,6 +1074,7 @@ impl SandboxAdapter for LocalOciAdapter {
             cleanup_reason: None,
             publication_error: None,
         };
+        self.runtime_evidence = None;
         let result = (|| -> Checked<()> {
             // Clamp before reading untrusted bounds; validation rejects out-of-range requests.
             let deadline =
@@ -981,6 +1101,8 @@ impl SandboxAdapter for LocalOciAdapter {
                 "schema_version":"gaap.sandbox-intent/0.1", "owned_resource":name, "owner":owner,
                 "request_digest":observation.request_digest, "invocation_kind":request.invocation_kind,"invocation_digest":request.invocation_digest,
                 "runtime":observation.runtime, "image_digest":request.image.digest,
+                "runtime_evidence":self.runtime_evidence,
+                "docker_executable_digest":hash_executable(&self.config.executable, deadline, cancelled)?,
             }))?;
             let intent_path = self
                 .config
@@ -1007,10 +1129,22 @@ impl SandboxAdapter for LocalOciAdapter {
                     return Ok(());
                 }
                 let created = self.inspect(&name, deadline, cancelled)?;
+                if self.config.gvisor.is_some() {
+                    write_record(
+                        &self.config.state_directory,
+                        &format!("{name}.container.json"),
+                        &canonical(
+                            &serde_json::json!({"request_digest":observation.request_digest,"container":created}),
+                        )?,
+                    )?;
+                }
                 self.validate_container(&created, request, &owner, &image_id)?;
                 if cancelled() {
                     observation.status = SandboxStatus::Cancelled;
                     return Ok(());
+                }
+                if self.config.gvisor.is_some() {
+                    self.verify_gvisor(deadline, cancelled)?;
                 }
                 // A lost start response is an uncertain effect, even if the CLI itself failed.
                 observation.status = SandboxStatus::UnknownOutcome;
@@ -1091,17 +1225,61 @@ impl SandboxAdapter for LocalOciAdapter {
                 observation.artifacts = artifacts(request, deadline, cancelled)?;
                 let current_executable =
                     hash_executable(&self.config.executable, deadline, cancelled)?;
-                if observation
-                    .runtime
-                    .as_ref()
-                    .is_some_and(|runtime| current_executable != runtime.executable_digest)
-                {
+                let expected_executable = if self.config.gvisor.is_some() {
+                    // The intent retains the client hash independently of runsc identity.
+                    serde_json::from_slice::<Value>(
+                        &fs::read(&intent_path).map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?["docker_executable_digest"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned()
+                } else {
+                    observation
+                        .runtime
+                        .as_ref()
+                        .map(|runtime| runtime.executable_digest.clone())
+                        .unwrap_or_default()
+                };
+                if current_executable != expected_executable {
                     observation.status = SandboxStatus::UnknownOutcome;
                     return Err("sandbox.runtime: executable changed during execution".into());
                 }
                 check_budget(deadline, cancelled)?;
                 Ok(())
             })();
+            let cleanup_deadline =
+                Instant::now() + Duration::from_millis(request.limits.cleanup_ms.min(10000));
+            if self.config.gvisor.is_some() {
+                let after = self.verify_gvisor(cleanup_deadline, &|| false);
+                let record = serde_json::json!({
+                    "schema_version":"gaap.runsc-evidence/0.1", "request_digest":observation.request_digest,
+                    "before":self.runtime_evidence, "after":after.as_ref().ok(), "after_error":after.as_ref().err(),
+                });
+                if let Err(error) = canonical(&record).and_then(|bytes| {
+                    write_record(
+                        &self.config.state_directory,
+                        &format!("{name}.runtime.json"),
+                        &bytes,
+                    )
+                }) {
+                    observation.reason = Some(error);
+                    if observation.status == SandboxStatus::Exited
+                        && observation.exit_code == Some(0)
+                    {
+                        observation.status = SandboxStatus::UnknownOutcome;
+                    }
+                }
+                if let Err(error) = after {
+                    observation.reason = Some(error);
+                    if observation.status == SandboxStatus::Exited
+                        && observation.exit_code == Some(0)
+                    {
+                        observation.status = SandboxStatus::UnknownOutcome;
+                    }
+                }
+            }
+            // Evidence probes can't consume the owned resource's cleanup allowance.
             let cleanup_deadline =
                 Instant::now() + Duration::from_millis(request.limits.cleanup_ms.min(10000));
             match self.cleanup(&name, &owner, cleanup_deadline) {
@@ -1152,6 +1330,7 @@ mod tests {
             engine_version: String::new(),
             runtime: "runc".into(),
             runtime_version: String::new(),
+            gvisor: None,
         })
     }
 
