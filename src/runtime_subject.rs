@@ -187,7 +187,8 @@ impl ExecutorPort for Executor {
     ) -> Result<ExecutorObservation, RuntimePortError> {
         let value = call(&self.0, "executor.execute", json!(request))?;
         if value.get("error").is_some() {
-            return Err(RuntimePortError::new("scripted executor response lost"));
+            return Err(RuntimePortError::new("scripted executor response lost")
+                .with_evidence(decode(value["evidence"].clone())?));
         }
         Ok(ExecutorObservation {
             execution_status: decode(value["execution_status"].clone())?,

@@ -2037,3 +2037,43 @@ fn failed_adapter_usage_is_retained_in_terminal_receipt() {
     assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
     assert_eq!(result.receipt.body.usage, failed_usage);
 }
+
+#[test]
+fn lost_executor_reply_preserves_host_evidence_without_synthetic_duplicates() {
+    let run_request = request();
+    let effect = effect_request(&run_request, &support(), 1);
+    let host_evidence = vec![
+        effect_evidence(EffectEvidenceType::Executor, b'a'),
+        effect_evidence(EffectEvidenceType::Sandbox, b'b'),
+        effect_evidence(EffectEvidenceType::Usage, b'c'),
+        effect_evidence(EffectEvidenceType::UnknownOutcome, b'd'),
+    ];
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let execution = run_with(
+        run_request.clone(),
+        runtime_support(vec![capability()]),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Ok(AgentStep::ProtectedEffect(Box::new(proposal(effect))))],
+        ),
+        RecordingExecutor::new(
+            calls,
+            [Err(
+                RuntimePortError::new("response lost").with_evidence(host_evidence.clone())
+            )],
+        ),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.evidence,
+        host_evidence
+    );
+    assert_eq!(
+        execution.protected_effect_results[0].body.execution_status,
+        EffectExecutionStatus::UnknownOutcome
+    );
+    assert_eq!(
+        execution.receipt.body.terminal_status,
+        AgentRunStatus::Failed
+    );
+}

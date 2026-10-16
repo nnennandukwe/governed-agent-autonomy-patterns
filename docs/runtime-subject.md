@@ -50,3 +50,7 @@ is refused with exit 1 without further stdout. Consumers must wait for the proce
 a packet, including when a valid receipt precedes a rejected follow-up input. There's no persistence, resume,
 sandbox-strength or production-safety claim. Passing proves only the named scripted
 cases against the recorded subject binary and bytes.
+
+A lost executor reply retains host-provided evidence in its original order. The
+engine adds references only for required categories the host didn't supply; it
+retains the known one-call usage lower bound without inventing an external result.

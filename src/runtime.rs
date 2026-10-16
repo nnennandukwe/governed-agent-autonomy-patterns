@@ -999,6 +999,17 @@ where
         decision: ProtectedEffectDecision,
         error: RuntimePortError,
     ) -> Result<ProtectedEffectResult, RuntimeError> {
+        let reason = format!("executor.failed: {}", error.message());
+        let mut evidence = error.evidence;
+        // Trusted host observations take precedence; synthesize only missing categories.
+        for (kind, label) in [
+            (EffectEvidenceType::Executor, "executor"),
+            (EffectEvidenceType::Sandbox, "sandbox"),
+            (EffectEvidenceType::Usage, "usage"),
+            (EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
+        ] {
+            ensure_effect_evidence(&mut evidence, kind, label);
+        }
         let body = ProtectedEffectResultBody {
             schema_version: PROTECTED_EFFECT_RESULT_SCHEMA.to_owned(),
             effect_id: request.effect_id.clone(),
@@ -1021,17 +1032,8 @@ where
             },
             executor: Some(self.config.executor_identity.clone()),
             sandbox_profile: Some(request.sandbox_profile.clone()),
-            reason: Some(format!("executor.failed: {}", error.message())),
-            evidence: [
-                vec![
-                    runtime_effect_evidence(EffectEvidenceType::Executor, "executor"),
-                    runtime_effect_evidence(EffectEvidenceType::Sandbox, "sandbox"),
-                    runtime_effect_evidence(EffectEvidenceType::Usage, "usage"),
-                    runtime_effect_evidence(EffectEvidenceType::UnknownOutcome, "unknown-outcome"),
-                ],
-                error.evidence,
-            ]
-            .concat(),
+            reason: Some(reason),
+            evidence,
         };
         seal_protected_effect_result(
             &ledger.request,
