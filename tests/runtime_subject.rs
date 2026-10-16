@@ -22,7 +22,7 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
             "../examples/contracts/v0.1.0/agent-run-request.json"
         ))
         .unwrap();
-        let start = json!({"kind":"start","protocol":"run-invariant.runtime/0.2.0","request":request,"support":{"policies":request["policies"],"capabilities":[request["requested_capability"]],"tool_schemas":[],"permission":"allow","executor":{"name":"fixture-executor","version":"1","digest":format!("sha256:{}","9".repeat(64))},"verifier_ids":["fixture-verifier"],"max_effects":4}});
+        let start = json!({"kind":"start","protocol":"run-invariant.runtime/0.2.0","request":request,"support":{"policies":request["policies"],"capabilities":[request["requested_capability"]],"tool_schemas":[],"effect_usage_estimate":{"cost_micros":0,"elapsed_ms":0,"model_tokens":0,"tool_calls":1},"permission":"allow","executor":{"name":"fixture-executor","version":"1","digest":format!("sha256:{}","9".repeat(64))},"verifier_ids":["fixture-verifier"],"max_effects":4}});
         let start_bytes = frame(&start);
         let mut child = Command::new(env!("CARGO_BIN_EXE_gaap"))
             .arg("runtime-subject")
@@ -65,7 +65,7 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
             let port = message["port"].as_str().unwrap();
             ports.push(port.to_owned());
             let reply = match port {
-                "clock.now" => json!(0),
+                "clock.adapter_elapsed_ms" => json!(0),
                 "agent.plan" => {
                     assert_eq!(message["input"], request);
                     json!(format!("sha256:{}", "6".repeat(64)))
@@ -95,13 +95,13 @@ fn runtime_subject_binds_real_port_calls_and_refuses_post_terminal_input() {
             ports,
             [
                 "agent.plan",
-                "clock.now",
+                "clock.adapter_elapsed_ms",
                 "agent.next",
-                "clock.now",
+                "clock.adapter_elapsed_ms",
                 "verifier.verify",
-                "clock.now",
+                "clock.adapter_elapsed_ms",
                 "subject.observe",
-                "clock.now",
+                "clock.adapter_elapsed_ms",
                 "signer.sign"
             ]
         );

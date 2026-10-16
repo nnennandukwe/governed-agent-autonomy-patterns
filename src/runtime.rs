@@ -307,6 +307,7 @@ pub struct RuntimePortError {
     message: String,
     not_dispatched: bool,
     evidence: Vec<EffectEvidenceReference>,
+    observed_usage: Option<ResourceUsage>,
 }
 
 impl RuntimePortError {
@@ -315,6 +316,7 @@ impl RuntimePortError {
             message: message.into(),
             not_dispatched: false,
             evidence: Vec::new(),
+            observed_usage: None,
         }
     }
 
@@ -324,12 +326,19 @@ impl RuntimePortError {
             message: message.into(),
             not_dispatched: true,
             evidence: Vec::new(),
+            observed_usage: None,
         }
     }
 
     /// Host-owned evidence retained when an attempted effect loses its response.
     pub fn with_evidence(mut self, evidence: Vec<EffectEvidenceReference>) -> Self {
         self.evidence = evidence;
+        self
+    }
+
+    /// Retain host-observed adapter usage even when the operation failed.
+    pub fn with_usage(mut self, usage: ResourceUsage) -> Self {
+        self.observed_usage = Some(usage);
         self
     }
 
@@ -445,6 +454,9 @@ where
         let plan_observation = match self.agent.plan(&request) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -482,6 +494,9 @@ where
             }) {
                 Ok(observation) => observation,
                 Err(error) => {
+                    if let Some(usage) = &error.observed_usage {
+                        let _ = ledger.record_usage(usage);
+                    }
                     return self.finish(
                         ledger,
                         AgentRunStatus::Failed,
@@ -1036,6 +1051,9 @@ where
         }) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,
@@ -1084,6 +1102,9 @@ where
         });
         match completion_check {
             Err(error) => {
+                if let Some(usage) = &error.observed_usage {
+                    let _ = ledger.record_usage(usage);
+                }
                 return self.finish(
                     ledger,
                     AgentRunStatus::Failed,

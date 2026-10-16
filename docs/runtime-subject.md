@@ -16,16 +16,17 @@ The host owns the total process deadline and output limits. Diagnostics use stde
 The start frame has `kind`, `protocol`, `request` and `support` fields. Protocol
 `run-invariant.runtime/0.2.0` uses the frozen GAAP request/effect/receipt contracts.
 Support supplies trusted policies, capabilities, tool-schema approvals bound to capability identities, permission,
-executor identity, verifier IDs and the maximum effect count. These are host-owned
+executor identity, verifier IDs, the maximum effect count and a host-owned effect usage estimate. These are host-owned
 runtime configuration. Tool-schema pins are optional for existing Rust callers;
 this subject requires them. A changed or absent schema can't borrow trust from a
 same-name capability. The existing coordinator makes the tool-trust decision.
 
-Ports are `clock.now`, `agent.plan`, `agent.next`, `executor.execute`,
+Ports are `clock.adapter_elapsed_ms`, `agent.plan`, `agent.next`, `executor.execute`,
 `verifier.verify`, `subject.observe` and `signer.sign`. Calls carry an increasing sequence, port name
 and input. Replies carry that sequence and a value. Clock observations follow each adapter operation and account for
-elapsed adapter time, including verification and the final subject observation; executor usage is accounted separately. Time moving backwards
-fails the port. The executor never performs file, network or shell operations here;
+elapsed adapter time from run start zero, excluding executor time, including verification and the final subject observation; executor usage is accounted separately. It isn't an absolute monotonic timestamp or wall-clock reading. Time moving backwards
+fails the port. Failed operations retain sampled adapter usage through typed
+RuntimePortError metadata; without an observation, usage remains a lower bound. The executor never performs file, network or shell operations here;
 its host-supplied observations exercise the real engine's effect admission and
 receipt path. Cancellation is a scripted agent step. Lost executor responses remain
 unknown outcomes, while process death produces no successful conformance receipt.

@@ -2009,3 +2009,31 @@ fn schema_approval_cant_be_borrowed_from_another_capability() {
         "tool_trust.approval_required"
     );
 }
+
+#[test]
+fn failed_adapter_usage_is_retained_in_terminal_receipt() {
+    let run_request = request();
+    let failed_usage = ResourceUsage {
+        cost_micros: 7,
+        elapsed_ms: 23,
+        model_tokens: 0,
+        tool_calls: 0,
+    };
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = AgentRunEngine::new(
+        runtime_support(vec![capability()]),
+        config(),
+        ScriptedAgent::new(
+            plan_for(&run_request),
+            [Err(
+                RuntimePortError::new("adapter failed").with_usage(failed_usage.clone())
+            )],
+        ),
+        RecordingExecutor::new(calls.clone(), []),
+        ScriptedVerifier::new(passing_verification(&digest(b'1'))),
+    );
+    let result = engine.run(run_request).unwrap();
+    assert!(calls.borrow().is_empty());
+    assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Failed);
+    assert_eq!(result.receipt.body.usage, failed_usage);
+}

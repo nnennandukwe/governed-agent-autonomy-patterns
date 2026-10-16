@@ -96,6 +96,7 @@ struct Support {
     policies: Vec<PolicyIdentity>,
     capabilities: Vec<CapabilityIdentity>,
     tool_schemas: Vec<TrustedToolSchema>,
+    effect_usage_estimate: EffectUsage,
     permission: String,
     executor: ExecutorIdentity,
     verifier_ids: Vec<String>,
@@ -107,7 +108,7 @@ struct Clock {
 }
 impl Clock {
     fn tick(&mut self) -> Result<ResourceUsage, RuntimePortError> {
-        let now: u64 = decode(call(&self.wire, "clock.now", json!({}))?)?;
+        let now: u64 = decode(call(&self.wire, "clock.adapter_elapsed_ms", json!({}))?)?;
         let elapsed = now
             .checked_sub(self.previous)
             .ok_or_else(|| RuntimePortError::new("clock moved backwards"))?;
@@ -125,43 +126,57 @@ struct Agent {
     wire: Wire,
     clock: SharedClock,
 }
+fn timed_call(
+    wire: &Wire,
+    clock: &SharedClock,
+    port: &str,
+    input: Value,
+) -> Result<(Value, ResourceUsage), RuntimePortError> {
+    let result = call(wire, port, input);
+    let usage = clock.borrow_mut().tick()?;
+    result
+        .map(|value| (value, usage.clone()))
+        .map_err(|error| error.with_usage(usage))
+}
 impl AgentAdapter for Agent {
     fn plan(
         &mut self,
         request: &AgentRunRequest,
     ) -> Result<PortObservation<PlanProposal>, RuntimePortError> {
-        let plan_digest: String = decode(call(&self.wire, "agent.plan", json!(request))?)?;
+        let (value, usage) = timed_call(&self.wire, &self.clock, "agent.plan", json!(request))?;
+        let plan_digest = decode(value).map_err(|error| error.with_usage(usage.clone()))?;
         Ok(PortObservation {
             value: PlanProposal { plan_digest },
-            usage: self.clock.borrow_mut().tick()?,
+            usage,
         })
     }
     fn next_effect(
         &mut self,
         context: AgentRunContext<'_>,
     ) -> Result<PortObservation<AgentStep>, RuntimePortError> {
-        let value = call(
+        let (value, usage) = timed_call(
             &self.wire,
+            &self.clock,
             "agent.next",
             json!({"subject":context.current_subject,"usage":context.usage,"effects_seen":context.effects_seen}),
         )?;
-        let step = match value.get("step").and_then(Value::as_str) {
-            Some("effect") => AgentStep::ProtectedEffect(Box::new(ProtectedEffectProposal {
-                request: decode(value["request"].clone())?,
-            })),
-            Some("finish") => AgentStep::Finish,
-            Some("cancel") => AgentStep::Cancel(Cancellation {
+        let step = (|| match value.get("step").and_then(Value::as_str) {
+            Some("effect") => Ok(AgentStep::ProtectedEffect(Box::new(
+                ProtectedEffectProposal {
+                    request: decode(value["request"].clone())?,
+                },
+            ))),
+            Some("finish") => Ok(AgentStep::Finish),
+            Some("cancel") => Ok(AgentStep::Cancel(Cancellation {
                 actor_id: Some("fixture-host".into()),
                 reason: "cancelled".into(),
                 evidence: decode(value["evidence"].clone())?,
-            }),
-            Some("error") => return Err(RuntimePortError::new("scripted agent failure")),
-            _ => return Err(RuntimePortError::new("unsupported agent step")),
-        };
-        Ok(PortObservation {
-            value: step,
-            usage: self.clock.borrow_mut().tick()?,
-        })
+            })),
+            Some("error") => Err(RuntimePortError::new("scripted agent failure")),
+            _ => Err(RuntimePortError::new("unsupported agent step")),
+        })()
+        .map_err(|error| error.with_usage(usage.clone()))?;
+        Ok(PortObservation { value: step, usage })
     }
 }
 struct Executor(Wire);
@@ -195,39 +210,45 @@ impl VerifierPort for Verifier {
         &mut self,
         context: VerificationContext<'_>,
     ) -> Result<PortObservation<()>, RuntimePortError> {
-        let observed: Subject = decode(call(
+        let (value, usage) = timed_call(
             &self.wire,
+            &self.clock,
             "subject.observe",
             json!({"subject":context.current_subject}),
-        )?)?;
+        )?;
+        let observed: Subject = decode(value).map_err(|error| error.with_usage(usage.clone()))?;
         if &observed != context.current_subject {
-            return Err(RuntimePortError::new("subject changed after verification"));
+            return Err(
+                RuntimePortError::new("subject changed after verification").with_usage(usage)
+            );
         }
-        Ok(PortObservation {
-            value: (),
-            usage: self.clock.borrow_mut().tick()?,
-        })
+        Ok(PortObservation { value: (), usage })
     }
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
     ) -> Result<PortObservation<VerificationReport>, RuntimePortError> {
-        let value = call(
+        let (value, usage) = timed_call(
             &self.wire,
+            &self.clock,
             "verifier.verify",
             json!({"subject":context.current_subject,"usage":context.usage}),
         )?;
         if value.get("error").is_some() {
-            return Err(RuntimePortError::new("scripted verifier failure"));
+            return Err(RuntimePortError::new("scripted verifier failure").with_usage(usage));
         }
-        Ok(PortObservation {
-            value: VerificationReport {
+        let report = (|| -> Result<VerificationReport, RuntimePortError> {
+            Ok(VerificationReport {
                 subject_digest: decode(value["subject_digest"].clone())?,
                 verifier_id: decode(value["verifier_id"].clone())?,
                 verdict: decode(value["verdict"].clone())?,
                 evidence: decode(value["evidence"].clone())?,
-            },
-            usage: self.clock.borrow_mut().tick()?,
+            })
+        })()
+        .map_err(|error| error.with_usage(usage.clone()))?;
+        Ok(PortObservation {
+            value: report,
+            usage,
         })
     }
 }
@@ -257,12 +278,7 @@ pub fn run() -> Result<(), String> {
             wrapper_chain: vec![],
             approvals: vec![],
         },
-        EffectUsage {
-            cost_micros: 10,
-            elapsed_ms: 1,
-            model_tokens: 0,
-            tool_calls: 1,
-        },
+        start.support.effect_usage_estimate,
         vec![],
         start.support.verifier_ids,
     )
