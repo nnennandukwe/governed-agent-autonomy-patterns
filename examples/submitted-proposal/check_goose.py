@@ -12,6 +12,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import traceback
 
 HERE = Path(__file__).resolve().parent
 BINARY = HERE / 'target/debug/gaap-submitted-proposal-reference'
@@ -26,11 +27,30 @@ GOOD = """def shipping_quote(quantity, unit_price):
     return round(subtotal, 2)
 """
 
-def command(*args):
-    """Run one isolated reference CLI command and decode its JSON result."""
-    result = subprocess.run([str(BINARY), *map(str, args)], check=True,
-        capture_output=True, text=True, timeout=20, env={})
-    return json.loads(result.stdout)
+def command(*args, output):
+    """Retain CLI diagnostics before propagating launch, timeout, exit or parse errors."""
+    result = None
+    stdout, stderr = b'', b''
+    timed_out = False
+    failure = None
+    try:
+        result = subprocess.run([str(BINARY), *map(str, args)],
+            capture_output=True, timeout=20, env={})
+        stdout, stderr = result.stdout, result.stderr
+        result.check_returncode()
+        return json.loads(stdout)
+    except Exception as error:
+        failure = f'{type(error).__name__}: {error}'
+        if isinstance(error, subprocess.TimeoutExpired):
+            timed_out = True
+            stdout, stderr = error.output or b'', error.stderr or b''
+        raise
+    finally:
+        (output / f'{args[0]}-stdout.txt').write_bytes(stdout)
+        (output / f'{args[0]}-stderr.txt').write_bytes(stderr)
+        (output / f'{args[0]}-execution.json').write_text(json.dumps({
+            'returncode': None if result is None else result.returncode,
+            'timed_out': timed_out, 'timeout_seconds': 20, 'error': failure}, indent=2) + '\n')
 
 def provider(transcript):
     """Serve deterministic tool-call responses without external inference."""
@@ -153,50 +173,55 @@ def capture_goose(invocation, workspace, environment, output, transcript, timeou
 
 
 def run(goose, output):
-    # Reuse the repository's current pin, independently of the caller's PATH.
-    """Verify pinned Goose and retain the observed MCP acceptance evidence."""
-    installer_path = HERE.parent / 'governed-goose/install_goose.py'
-    spec = importlib.util.spec_from_file_location('goose_pins', installer_path)
-    installer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(installer)
-    pin = installer.PINS[(platform.system(), platform.machine())][2]
-    if installer.digest(goose) != pin:
-        raise ValueError('Goose executable differs from the pinned 1.54.0 artifact')
+    """Verify pinned Goose and retain setup, client and acceptance diagnostics."""
     output.mkdir(parents=True, exist_ok=False)
-    transcript = []
-    with tempfile.TemporaryDirectory(prefix='gaap-submission-') as temporary:
-        parent = Path(temporary).resolve()
-        root = parent / 'session'
-        initial = command('coding-init', root)
-        state = parent / 'goose'
-        (state / 'config').mkdir(parents=True)
-        (state / 'config/config.yaml').write_text('extensions:\n  developer:\n    enabled: false\n    type: builtin\n    name: developer\n')
-        server = provider(transcript)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        environment = {'HOME': str(state), 'PATH': os.defpath, 'GOOSE_PATH_ROOT': str(state),
-            'GOOSE_PROVIDER': 'openai', 'GOOSE_MODEL': 'gaap-fixture', 'GOOSE_MODE': 'auto',
-            'GOOSE_DISABLE_KEYRING': '1', 'OPENAI_API_KEY': 'local-fixture-only',
-            'OPENAI_BASE_URL': f'http://127.0.0.1:{server.server_port}/v1'}
-        invocation = [str(goose), 'run', '--no-profile', '--no-session', '--provider', 'openai',
-            '--model', 'gaap-fixture', '--with-extension', 'gaap:' + shlex.join([str(BINARY), 'coding-serve', str(root)]),
-            '--max-turns', '8', '--output-format', 'text', '--text', 'Complete the shipping task using the supplied tools.']
-        try:
-            returncode = capture_goose(invocation, root / 'workspace', environment, output, transcript)
-            if returncode:
-                raise AssertionError(f'Goose failed with {returncode}; inspect {output}')
-            final = command('coding-inspect', root)
-            (output / 'outcomes.json').write_text(json.dumps(final, indent=2) + '\n')
-            runs = validate_outcomes(final, initial)
-            (output / 'verification.json').write_text(json.dumps({'client': 'Goose 1.54.0',
-                'goose_sha256': pin, 'provider': 'deterministic local protocol fixture',
-                'live_model': False, 'external_model_usage': None, 'runs': 2,
-                'terminal_statuses': [run['receipt']['body']['terminal_status'] for run in runs]}, indent=2) + '\n')
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-    print(f'Deterministic Goose acceptance passed; evidence: {output}')
+    try:
+        installer_path = HERE.parent / 'governed-goose/install_goose.py'
+        spec = importlib.util.spec_from_file_location('goose_pins', installer_path)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        pin = installer.PINS[(platform.system(), platform.machine())][2]
+        if installer.digest(goose) != pin:
+            raise ValueError('Goose executable differs from the pinned 1.54.0 artifact')
+        transcript = []
+        with tempfile.TemporaryDirectory(prefix='gaap-submission-') as temporary:
+            parent = Path(temporary).resolve()
+            root = parent / 'session'
+            initial = command('coding-init', root, output=output)
+            state = parent / 'goose'
+            (state / 'config').mkdir(parents=True)
+            (state / 'config/config.yaml').write_text('extensions:\n  developer:\n    enabled: false\n    type: builtin\n    name: developer\n')
+            server = provider(transcript)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            environment = {'HOME': str(state), 'PATH': os.defpath, 'GOOSE_PATH_ROOT': str(state),
+                'GOOSE_PROVIDER': 'openai', 'GOOSE_MODEL': 'gaap-fixture', 'GOOSE_MODE': 'auto',
+                'GOOSE_DISABLE_KEYRING': '1', 'OPENAI_API_KEY': 'local-fixture-only',
+                'OPENAI_BASE_URL': f'http://127.0.0.1:{server.server_port}/v1'}
+            invocation = [str(goose), 'run', '--no-profile', '--no-session', '--provider', 'openai',
+                '--model', 'gaap-fixture', '--with-extension', 'gaap:' + shlex.join([str(BINARY), 'coding-serve', str(root)]),
+                '--max-turns', '8', '--output-format', 'text', '--text', 'Complete the shipping task using the supplied tools.']
+            try:
+                returncode = capture_goose(invocation, root / 'workspace', environment, output, transcript)
+                if returncode:
+                    raise AssertionError(f'Goose failed with {returncode}; inspect {output}')
+                final = command('coding-inspect', root, output=output)
+                (output / 'outcomes.json').write_text(json.dumps(final, indent=2) + '\n')
+                runs = validate_outcomes(final, initial)
+                (output / 'verification.json').write_text(json.dumps({'client': 'Goose 1.54.0',
+                    'goose_sha256': pin, 'provider': 'deterministic local protocol fixture',
+                    'live_model': False, 'external_model_usage': None, 'runs': 2,
+                    'terminal_statuses': [run['receipt']['body']['terminal_status'] for run in runs]}, indent=2) + '\n')
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+        print(f'Deterministic Goose acceptance passed; evidence: {output}')
+    except Exception as error:
+        (output / 'runner-error.json').write_text(json.dumps({
+            'error_type': type(error).__name__, 'message': str(error),
+            'traceback': traceback.format_exc()}, indent=2) + '\n')
+        raise
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

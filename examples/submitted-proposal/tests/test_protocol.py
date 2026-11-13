@@ -273,6 +273,47 @@ class ProtocolTests(unittest.TestCase):
             self.assertIn('receipt effect', result['error'])
         self.assertEqual(state_path.read_bytes(), corrupt)
         self.assertEqual((self.root / 'workspace/shipping.py').read_text(), GOOD)
+    def test_cooperating_operator_edits_preserve_files_and_historical_receipts(self):
+        """Use the documented lock order for external edits before and after a run."""
+        lock = self.lock()
+        identifier = self.client.start('tools/call', {'name': 'submit_change',
+            'arguments': self.change()})
+        self.client.active()
+        snapshot = os.open(self.root / 'operator', os.O_RDONLY)
+        try:
+            fcntl.flock(snapshot, fcntl.LOCK_EX)
+            (self.root / 'workspace/shipping.py').write_text('coordinated operator edit\n')
+        finally:
+            fcntl.flock(snapshot, fcntl.LOCK_UN)
+            os.close(snapshot)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        response = self.client.finish(identifier)
+        self.assertTrue(response['isError'], response)
+        self.assertIn('proposal binding', response['content'][0]['text'])
+        state = self.stored()
+        self.assertEqual(state['runs'], [])
+        self.assertIsNone(state['inflight'])
+        self.assertEqual(state['files']['shipping.py'], 'coordinated operator edit\n')
+        proposal = self.change(base_digest=state['subject_digest'])
+        completed, error = self.client.tool('submit_change', proposal)
+        self.assertFalse(error, completed)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        snapshot = os.open(self.root / 'operator', os.O_RDONLY)
+        try:
+            fcntl.flock(snapshot, fcntl.LOCK_EX)
+            (self.root / 'workspace/shipping.py').write_text('later coordinated edit\n')
+        finally:
+            fcntl.flock(snapshot, fcntl.LOCK_UN)
+            os.close(snapshot)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        duplicate, error = self.client.tool('submit_change', proposal)
+        self.assertFalse(error, duplicate)
+        self.assertTrue(duplicate['duplicate'])
+        self.assertEqual(duplicate['receipt'], completed['receipt'])
+        state = self.stored()
+        self.assertEqual(state['files']['shipping.py'], 'later coordinated edit\n')
+        self.assertEqual(len(state['runs']), 1)
+
     def test_authority_forgery_and_stale_input_fail_before_admission(self):
         """Reject forged authority and preserve a manual edit before admission."""
         for field in ['approved', 'approval_context', 'verifier_id', 'policy_decision',

@@ -548,6 +548,8 @@ impl FileExecutor {
                 )
                 .map_err(|e| e.to_string())?;
             }
+            // External writers must use the same admission/snapshot locks.
+            // An ordinary editor can race this check and the rename; see TRANSACTION.md.
             if self.store.snapshot()? != self.before {
                 return Err("workspace changed before commit; concurrent work preserved".into());
             }
