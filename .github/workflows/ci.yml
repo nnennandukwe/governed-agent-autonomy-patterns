@@ -328,7 +328,8 @@ jobs:
         run: cargo audit --file examples/governed-goose/Cargo.lock
 
   sandbox:
-    runs-on: ubuntu-latest
+    # Match the OS used by the required gVisor/native acceptance lane.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Check out GAAP
@@ -347,7 +348,10 @@ jobs:
         run: cargo +1.88.0 test --manifest-path adapters/sandbox/Cargo.toml --locked
 
       - name: Install immutable test image
-        run: docker pull python@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+        run: |
+          uname -r
+          docker info --format 'engine={{.ServerVersion}} cgroup_driver={{.CgroupDriver}} cgroup_version={{.CgroupVersion}}'
+          docker pull python@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
 
       - name: Prove real OCI limits, denied access and cleanup
         env:

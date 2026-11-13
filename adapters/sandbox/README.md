@@ -216,3 +216,5 @@ Primary references: [gVisor Docker registration and identity warning](https://gv
 [systrap platform support](https://gvisor.dev/docs/user_guide/platforms/),
 [gVisor security model](https://gvisor.dev/docs/architecture_guide/security/),
 [filesystem configuration](https://gvisor.dev/docs/user_guide/filesystem/).
+
+Required native OCI and gVisor CI use Ubuntu 24.04. The OCI lane records its kernel, engine and cgroup configuration before running every native assertion. Failure diagnostics retain bounded daemon OOM events; exit 137 alone still leaves the cause unconfirmed.
