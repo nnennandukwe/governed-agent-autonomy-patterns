@@ -185,6 +185,53 @@ jobs:
           cargo audit --file Cargo.lock
           cargo audit --file adapters/mcp/Cargo.lock
 
+  submitted_proposal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check proposal adapter and reference
+        run: |
+          cargo fmt --manifest-path adapters/submitted-proposal/Cargo.toml --check
+          cargo clippy --manifest-path adapters/submitted-proposal/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path adapters/submitted-proposal/Cargo.toml --locked
+          cargo build --manifest-path adapters/submitted-proposal/Cargo.toml --locked
+          cargo fmt --manifest-path examples/submitted-proposal/Cargo.toml --check
+          cargo clippy --manifest-path examples/submitted-proposal/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path examples/submitted-proposal/Cargo.toml --locked
+          cargo build --manifest-path examples/submitted-proposal/Cargo.toml --locked
+
+      - name: Exercise independent MCP client and retained history
+        run: python3 -B -m unittest discover -s examples/submitted-proposal/tests -p 'test_*.py'
+
+      - name: Install checksum-pinned Goose locally
+        run: python3 examples/governed-goose/install_goose.py /tmp/gaap-submitted-goose-1.54.0
+
+      - name: Exercise real Goose with deterministic local provider
+        run: |
+          python3 -B examples/submitted-proposal/check_goose.py \
+            --goose /tmp/gaap-submitted-goose-1.54.0/goose \
+            --output /tmp/gaap-submitted-goose-evidence
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit proposal dependency lockfiles
+        run: |
+          cargo audit --file adapters/submitted-proposal/Cargo.lock
+          cargo audit --file examples/submitted-proposal/Cargo.lock
+
+      - name: Retain submitted-proposal client evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: submitted-proposal-evidence-${{ github.sha }}
+          path: /tmp/gaap-submitted-goose-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   acp:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -377,6 +424,7 @@ jobs:
       - coordinator
       - runtime
       - mcp
+      - submitted_proposal
       - acp
       - goose
       - attestation
@@ -396,6 +444,7 @@ jobs:
           RUNTIME_SELECTED: ${{ needs.classify.outputs.runtime }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
           MCP_RESULT: ${{ needs.mcp.result }}
+          SUBMITTED_PROPOSAL_RESULT: ${{ needs.submitted_proposal.result }}
           ACP_RESULT: ${{ needs.acp.result }}
           ATTESTATION_RESULT: ${{ needs.attestation.result }}
           GOOSE_RESULT: ${{ needs.goose.result }}
@@ -406,6 +455,7 @@ jobs:
           [[ "$CLASSIFY_RESULT" == "success" ]]
           [[ "$BASELINE_RESULT" == "success" ]]
           [[ "$MCP_RESULT" == "success" ]]
+          [[ "$SUBMITTED_PROPOSAL_RESULT" == "success" ]]
           [[ "$ACP_RESULT" == "success" ]]
           [[ "$GOOSE_RESULT" == "success" ]]
           [[ "$ATTESTATION_RESULT" == "success" ]]

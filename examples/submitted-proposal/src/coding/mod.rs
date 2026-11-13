@@ -659,7 +659,7 @@ mod tests {
             let (_parent, mut store) = prepared();
             let change = input(&store);
             store.fault = Some(point);
-            let result = store.submit(change).unwrap();
+            let result = store.submit(change.clone()).unwrap();
             assert_eq!(
                 fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
                 GOOD
@@ -668,6 +668,21 @@ mod tests {
                 assert_eq!(
                     result["protected_effect_results"][0]["body"]["execution_status"],
                     "unknown_outcome"
+                );
+                assert!(!store.inspect().unwrap()["inflight"].is_null());
+                let reopened = CodingStore::open(&store.root).unwrap();
+                assert!(
+                    reopened
+                        .submit(input(&reopened))
+                        .unwrap_err()
+                        .contains("uncertain outcome")
+                );
+                assert_eq!(
+                    reopened.inspect().unwrap()["runs"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    1
                 );
             } else {
                 assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");

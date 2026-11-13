@@ -140,3 +140,23 @@ not placeholder CI jobs.
 The retired Node/TypeScript implementation is preserved at the
 `legacy-ts-boundarybench-v0.1.0` tag. New changes should target the Rust harness
 rather than restore the legacy workspace to `main`.
+
+## Submitted-proposal checks
+
+The provider-neutral adapter and its inbound MCP reference use separate locked crates. Run both matrices on the repository's pinned toolchain:
+
+```bash
+cargo fmt --manifest-path adapters/submitted-proposal/Cargo.toml --check
+cargo clippy --manifest-path adapters/submitted-proposal/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/submitted-proposal/Cargo.toml --locked
+cargo build --manifest-path adapters/submitted-proposal/Cargo.toml --locked
+cargo fmt --manifest-path examples/submitted-proposal/Cargo.toml --check
+cargo clippy --manifest-path examples/submitted-proposal/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path examples/submitted-proposal/Cargo.toml --locked
+cargo build --manifest-path examples/submitted-proposal/Cargo.toml --locked
+python3 -B -m unittest discover -s examples/submitted-proposal/tests -p 'test_*.py'
+cargo audit --file adapters/submitted-proposal/Cargo.lock
+cargo audit --file examples/submitted-proposal/Cargo.lock
+```
+
+The required `submitted_proposal` CI lane also runs [real Goose against a local deterministic provider](examples/submitted-proposal/README.md#deterministic-goose-acceptance). Keep that acceptance separate from live-model validation. Existing conference sessions stay in their original checkout; use a fresh root for the new reference.
