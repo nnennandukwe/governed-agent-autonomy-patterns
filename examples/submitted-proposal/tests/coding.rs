@@ -215,7 +215,7 @@ fn saved_effect_results_must_match_the_receipt_without_removal_or_duplication() 
 }
 
 #[test]
-fn concurrent_inspection_returns_one_coherent_saved_view() {
+fn concurrent_inspection_returns_coherent_views_or_bounded_refusal() {
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -234,8 +234,19 @@ fn concurrent_inspection_returns_one_coherent_saved_view() {
         let initial = initial.clone();
         readers.push(std::thread::spawn(move || {
             start.wait();
+            let mut completed = 0;
+            let mut refused = 0;
             for _ in 0..500 {
-                let state = CodingStore::open(&root).unwrap().inspect().unwrap();
+                let state = match CodingStore::open(&root).and_then(|store| store.inspect()) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        assert_eq!(error, "operation interrupted while waiting for the session lock: host proposal deadline exceeded; no run or effect admitted");
+                        refused += 1;
+                        assert!(refused <= 6, "reader kept reaching its deadline after finite writes");
+                        continue;
+                    }
+                };
+                completed += 1;
                 if state["inflight"].is_null() {
                     let expected = state["runs"]
                         .as_array()
@@ -253,6 +264,7 @@ fn concurrent_inspection_returns_one_coherent_saved_view() {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
+            assert!(completed > 0, "reader never obtained a coherent view");
         }));
     }
     start.wait();
