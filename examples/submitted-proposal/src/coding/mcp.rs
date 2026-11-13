@@ -76,7 +76,7 @@ impl CodingServer {
             "submit_change" => self.store.submit_control(input, control),
             "read_project" | "run_status" => {
                 let _: Empty = serde_json::from_value(input).map_err(|e| e.to_string())?;
-                let mut state = self.store.inspect()?;
+                let mut state = self.store.inspect_control(&control)?;
                 if name == "run_status" {
                     return Ok(
                         json!({"latest_run":state["runs"].as_array().and_then(|r|r.last()),"inflight":state["inflight"],"subject_digest":state["subject_digest"],"active_submissions":self.active.lock().unwrap_or_else(|e| e.into_inner()).controls.len()}),

@@ -275,3 +275,65 @@ fn concurrent_inspection_returns_one_coherent_saved_view() {
         12
     );
 }
+
+#[test]
+fn cancellation_and_deadline_interrupt_both_locks_before_admission() {
+    use gaap_submitted_proposal::RunControl;
+    use std::{
+        fs::OpenOptions,
+        time::{Duration, Instant},
+    };
+    for path in ["operator/lock", "operator"] {
+        for cancel in [false, true] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("coding");
+            let store = CodingStore::initialize(&root).unwrap();
+            let before = store.inspect().unwrap();
+            let change = json!({"path":"shipping.py", "content":GOOD,
+                "plan":"Implement shipping after admission.","base_digest":before["subject_digest"]});
+            let ledger = std::fs::read(root.join("operator/state.json")).unwrap();
+            let held = OpenOptions::new()
+                .read(true)
+                .write(path.ends_with("lock"))
+                .open(root.join(path))
+                .unwrap();
+            held.lock().unwrap();
+            let control = RunControl::new(Duration::from_millis(if cancel { 1000 } else { 30 }));
+            let signal = cancel.then(|| {
+                let control = control.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(10));
+                    control.cancel();
+                })
+            });
+            let started = Instant::now();
+            let error = store.submit_control(change.clone(), control).unwrap_err();
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "{path}: {error}"
+            );
+            assert!(
+                error.contains("no run or effect admitted"),
+                "{path}: {error}"
+            );
+            assert!(error.contains(if cancel {
+                "caller cancelled"
+            } else {
+                "deadline exceeded"
+            }));
+            if let Some(signal) = signal {
+                signal.join().unwrap();
+            }
+            assert_eq!(
+                std::fs::read(root.join("operator/state.json")).unwrap(),
+                ledger
+            );
+            drop(held);
+            assert_eq!(store.inspect().unwrap(), before);
+            let fresh = store.submit(change.clone()).unwrap();
+            assert_eq!(fresh["duplicate"], false);
+            assert_eq!(fresh["receipt"]["body"]["terminal_status"], "completed");
+            assert_eq!(store.submit(change).unwrap()["duplicate"], true);
+        }
+    }
+}

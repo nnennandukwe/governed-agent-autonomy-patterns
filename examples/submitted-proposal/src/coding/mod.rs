@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    fs::{self, File},
+    fs::{self, File, TryLockError},
     io::Write,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -76,6 +76,25 @@ fn session_root(root: &Path) -> Result<PathBuf> {
         .map_err(|e| e.to_string())?;
     trusted_parent(&parent)?;
     Ok(parent.join(root.file_name().ok_or("session needs a name")?))
+}
+fn acquire_lock(file: &File, control: &RunControl) -> Result<()> {
+    let check_interruption = || match control.cancellation() {
+        Some(cancelled) => Err(format!(
+            "operation interrupted while waiting for the session lock: {}; no run or effect admitted",
+            cancelled.reason
+        )),
+        None => Ok(()),
+    };
+    loop {
+        check_interruption()?;
+        match file.try_lock() {
+            Ok(()) => return check_interruption(),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(TryLockError::Error(error)) => return Err(error.to_string()),
+        }
+    }
 }
 
 fn validate_record(run: &Value) -> Result<()> {
@@ -257,11 +276,12 @@ impl CodingStore {
             #[cfg(test)]
             fault: None,
         };
-        let _snapshot = store.lock_snapshot()?;
+        let _snapshot =
+            store.lock_snapshot(&RunControl::new(std::time::Duration::from_secs(10)))?;
         store.load()?;
         Ok(store)
     }
-    fn lock_snapshot(&self) -> Result<File> {
+    fn lock_snapshot(&self, control: &RunControl) -> Result<File> {
         let operator = self.operator();
         directory(&operator)?;
         let descriptor = rustix::fs::open(
@@ -274,7 +294,7 @@ impl CodingStore {
         )
         .map_err(|e| e.to_string())?;
         let lock = File::from(descriptor);
-        lock.lock().map_err(|e| e.to_string())?;
+        acquire_lock(&lock, control)?;
         Ok(lock)
     }
     fn hit(&self, point: &str) -> Result<()> {
@@ -349,7 +369,10 @@ impl CodingStore {
             .collect()
     }
     pub fn inspect(&self) -> Result<Value> {
-        let _snapshot = self.lock_snapshot()?;
+        self.inspect_control(&RunControl::new(std::time::Duration::from_secs(10)))
+    }
+    fn inspect_control(&self, control: &RunControl) -> Result<Value> {
+        let _snapshot = self.lock_snapshot(control)?;
         let mut state = self.load()?;
         for run in &mut state.runs {
             // A saved snapshot can't attest to its own later directory sync.
@@ -375,10 +398,10 @@ impl CodingStore {
             );
         }
         let lock = open_regular(&self.operator().join("lock"), true)?;
-        lock.lock().map_err(|e| e.to_string())?;
+        acquire_lock(&lock, &control)?;
         // Admission can wait while status remains readable. Once admitted, the
         // separate directory lock keeps readers outside the effect/save span.
-        let _snapshot = self.lock_snapshot()?;
+        let _snapshot = self.lock_snapshot(&control)?;
         let mut state = self.load()?;
         if state.inflight.is_some() {
             return Err("previous run has an uncertain outcome; inspect the files and use a fresh session; no replay dispatched".into());

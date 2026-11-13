@@ -1,6 +1,7 @@
 """Independent MCP JSON-RPC client and real CLI history checks; no model calls."""
 import fcntl
 import json
+import os
 from pathlib import Path
 import queue
 import select
@@ -159,6 +160,17 @@ class Client:
                 return
             time.sleep(.01)
         raise AssertionError('Submission never entered the transport')
+    def idle(self):
+        """Wait for every submitted handler to drain without accepting an error."""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result, error = self.tool('run_status')
+            if error:
+                raise AssertionError(result)
+            if result['active_submissions'] == 0:
+                return result
+            time.sleep(.01)
+        raise AssertionError('Submitted worker failed to drain')
     def close(self):
         """Close the connection, drain the process and release its streams once."""
         if getattr(self, "closed", False):
@@ -292,80 +304,114 @@ class ProtocolTests(unittest.TestCase):
         results = [self.client.finish(identifier) for identifier in identifiers]
         self.assertEqual(sum(result.get('isError', False) for result in results), 1)
         self.assertEqual(len(self.stored()['runs']), 1)
-    def test_cancellation_while_waiting_for_lock_drains_without_dispatch(self):
-        """Cancel a queued request and retain an interruption without an effect."""
+    def test_cancellation_drains_before_the_admission_lock_is_released(self):
+        """Release a cancelled worker and its slot while another process keeps the lock."""
         lock = self.lock()
+        before = (self.root / 'operator/state.json').read_bytes()
+        identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
+        self.client.active()
+        self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+            'params': {'requestId': identifier}})
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            status, error = self.client.tool('run_status')
+            self.assertFalse(error, status)
+            if status['active_submissions'] == 0:
+                break
+            time.sleep(.01)
+        else:
+            self.fail('Cancellation left the worker waiting for the admission lock')
+        self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        self.assertEqual(self.stored(), self.initial)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def test_cancellation_while_waiting_for_lock_drains_without_dispatch(self):
+        """Leave a queued cancellation unadmitted, then accept an explicit fresh retry."""
+        lock = self.lock()
+        before = (self.root / 'operator/state.json').read_bytes()
         identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()
         self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': identifier}})
-        # A subsequent status response bounds delivery of the cancellation notification.
-        self.client.tool('run_status')
+        self.client.idle()
+        self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        self.assertEqual(self.stored(), self.initial)
         fcntl.flock(lock, fcntl.LOCK_UN)
-        state = self.wait_stored()
-        self.assertEqual(state['runs'][0]['receipt']['body']['terminal_status'], 'interrupted')
-        self.assertEqual(state['runs'][0]['protected_effect_results'], [])
-        self.assertEqual(state['files']['shipping.py'], self.initial['files']['shipping.py'])
+        first = cli('coding-submit', self.root, self.change())
+        self.assertFalse(first['duplicate'])
+        self.assertEqual(first['receipt']['body']['terminal_status'], 'completed')
         self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
+        self.assertEqual(len(self.stored()['runs']), 1)
     def test_repeated_cancellations_release_slots_after_worker_drain(self):
-        """Keep a valid connection usable across more than eight cancelled requests."""
+        """Keep a valid connection usable across more than eight queued cancellations."""
+        lock = self.lock()
+        before = (self.root / 'operator/state.json').read_bytes()
         for index in range(9):
-            lock = self.lock()
             identifier = self.client.start('tools/call', {'name': 'submit_change',
-                'arguments': self.change(plan=f'Cancel proposal {index} before dispatch.')})
+                'arguments': self.change(plan=f'Cancel proposal {index} before admission.')})
             self.client.active()
             self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
                 'params': {'requestId': identifier}})
-            self.client.tool('run_status')
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                status, error = self.client.tool('run_status')
-                self.assertFalse(error, status)
-                if status['active_submissions'] == 0:
-                    state = self.stored()
-                    if len(state['runs']) == index + 1:
-                        break
-                time.sleep(.01)
-            else:
-                self.fail('Cancelled worker failed to drain')
-            self.assertEqual(state['runs'][-1]['receipt']['body']['terminal_status'], 'interrupted')
-            self.assertEqual(state['runs'][-1]['protected_effect_results'], [])
+            self.client.idle()
+        self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        self.assertEqual(self.stored(), self.initial)
+        fcntl.flock(lock, fcntl.LOCK_UN)
         result, error = self.client.tool('submit_change', self.change())
         self.assertFalse(error, result)
+        self.assertFalse(result['duplicate'])
         self.assertEqual(result['receipt']['body']['terminal_status'], 'completed')
-    def test_cancellation_cant_free_a_slot_while_its_worker_is_pending(self):
-        """Keep cancelled lock-blocked work within the same outstanding-request cap."""
-        lock = self.lock()
-        for index in range(8):
+    def test_cancellation_drains_the_snapshot_wait_without_unlocking_it(self):
+        """Release admission after cancellation while a reader keeps the snapshot lock."""
+        snapshot = os.open(self.root / 'operator', os.O_RDONLY)
+        admission = (self.root / 'operator/lock').open('r+')
+        self.addCleanup(admission.close)
+        before = (self.root / 'operator/state.json').read_bytes()
+        fcntl.flock(snapshot, fcntl.LOCK_EX)
+        try:
             identifier = self.client.start('tools/call', {'name': 'submit_change',
-                'arguments': self.change(plan=f'Pending cancellation {index}.')})
+                'arguments': self.change()})
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(admission, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    break
+                fcntl.flock(admission, fcntl.LOCK_UN)
+                time.sleep(.01)
+            else:
+                self.fail('Worker never reached the held snapshot lock')
             self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
                 'params': {'requestId': identifier}})
-        self.client.start('tools/call', {'name': 'run_status', 'arguments': {}})
-        ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
-        self.assertTrue(ready, 'Cancellation freed slots before workers drained')
-        self.assertIn('MCP outstanding request limit', self.client.process.stderr.readline())
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        self.client.process.stdin.close()
-        self.client.process.wait(timeout=5)
-        state = self.stored()
-        self.assertEqual(state['files']['shipping.py'], self.initial['files']['shipping.py'])
-        self.assertTrue(all(not run['protected_effect_results'] for run in state['runs']))
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(admission, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(.01)
+            else:
+                self.fail('Cancelled snapshot waiter retained its admission lock')
+            fcntl.flock(admission, fcntl.LOCK_UN)
+            self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        finally:
+            fcntl.flock(snapshot, fcntl.LOCK_UN)
+            os.close(snapshot)
+        self.client.idle()
+        self.assertEqual(self.stored(), self.initial)
     def test_disconnect_while_queued_drains_without_replay(self):
-        """Disconnect during admission wait and inspect the drained interruption."""
+        """Exit a disconnected worker while the external admission lock stays held."""
         lock = self.lock()
+        before = (self.root / 'operator/state.json').read_bytes()
         self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()
         self.client.process.stdin.close()
-        # The host reports this after observing EOF and requesting cancellation.
         ready, _, _ = select.select([self.client.process.stderr], [], [], 5)
         self.assertTrue(ready, 'Host never observed transport closure')
         self.assertIn('MCP connection closed', self.client.process.stderr.readline())
+        self.client.process.wait(timeout=5)
+        self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        self.assertEqual(self.stored(), self.initial)
         fcntl.flock(lock, fcntl.LOCK_UN)
-        state = self.wait_stored()
-        self.assertEqual(state['runs'][0]['receipt']['body']['terminal_status'], 'interrupted')
-        self.assertEqual(state['runs'][0]['protected_effect_results'], [])
-        self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
+        self.assertFalse(cli('coding-submit', self.root, self.change())['duplicate'])
     def test_oversized_frame_is_refused_before_proposal_parsing(self):
         """Reject a large wire frame and resynchronize without admitting a run."""
         oversized = self.client.start('tools/call', {'name': 'submit_change',
@@ -406,17 +452,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(self.stored()['files'], self.initial['files'])
 
     def test_host_deadline_while_queued_cant_dispatch_later(self):
-        """Expire a queued proposal and refuse a later write or duplicate replay."""
+        """Return deadline refusal before the lock is released and preserve the ledger."""
         lock = self.lock()
+        before = (self.root / 'operator/state.json').read_bytes()
         identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()
-        time.sleep(10.05)
+        response = self.client.finish(identifier)
+        self.assertTrue(response['isError'], response)
+        result = json.loads(response['content'][0]['text'])
+        self.assertIn('host proposal deadline exceeded', result['error'])
+        self.assertIn('no run or effect admitted', result['error'])
+        self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+        self.assertEqual(self.stored(), self.initial)
         fcntl.flock(lock, fcntl.LOCK_UN)
-        result = json.loads(self.client.finish(identifier)['content'][0]['text'])
-        self.assertEqual(result['receipt']['body']['terminal_status'], 'interrupted')
-        self.assertIn('host proposal deadline exceeded', json.dumps(result['receipt']['body']['events']))
-        self.assertEqual(result['protected_effect_results'], [])
-        self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
+        fresh = cli('coding-submit', self.root, self.change())
+        self.assertFalse(fresh['duplicate'])
+        self.assertEqual(fresh['receipt']['body']['terminal_status'], 'completed')
 
 if __name__ == '__main__':
     unittest.main()
