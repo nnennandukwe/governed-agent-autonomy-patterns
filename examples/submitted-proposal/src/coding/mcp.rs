@@ -39,8 +39,13 @@ pub fn capability_digest() -> String {
 #[derive(Clone)]
 pub struct CodingServer {
     store: CodingStore,
-    active: Arc<Mutex<BTreeMap<u64, RunControl>>>,
+    active: Arc<Mutex<ConnectionState>>,
     next_correlation: Arc<AtomicU64>,
+}
+#[derive(Default)]
+struct ConnectionState {
+    closed: bool,
+    controls: BTreeMap<u64, RunControl>,
 }
 impl CodingServer {
     pub fn new(store: CodingStore) -> Self {
@@ -50,15 +55,14 @@ impl CodingServer {
             next_correlation: Arc::default(),
         }
     }
-    pub fn cancel_all(&self) {
-        for control in self
-            .active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-        {
+    pub fn shutdown(&self) -> bool {
+        let mut state = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let first_close = !state.closed;
+        state.closed = true;
+        for control in state.controls.values() {
             control.cancel();
         }
+        first_close
     }
     pub fn dispatch(&self, name: &str, input: Value) -> Result<Value> {
         self.dispatch_control(
@@ -75,7 +79,7 @@ impl CodingServer {
                 let mut state = self.store.inspect()?;
                 if name == "run_status" {
                     return Ok(
-                        json!({"latest_run":state["runs"].as_array().and_then(|r|r.last()),"inflight":state["inflight"],"subject_digest":state["subject_digest"],"active_submissions":self.active.lock().unwrap_or_else(|e| e.into_inner()).len()}),
+                        json!({"latest_run":state["runs"].as_array().and_then(|r|r.last()),"inflight":state["inflight"],"subject_digest":state["subject_digest"],"active_submissions":self.active.lock().unwrap_or_else(|e| e.into_inner()).controls.len()}),
                     );
                 }
                 state.as_object_mut().unwrap().remove("runs");
@@ -99,6 +103,7 @@ impl Drop for ActiveSubmission {
             .active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .controls
             .remove(&self.id);
     }
 }
@@ -127,10 +132,13 @@ impl ServerHandler for CodingServer {
         let control = RunControl::new(std::time::Duration::from_secs(10));
         let _active = if request.name == "submit_change" {
             let id = self.next_correlation.fetch_add(1, Ordering::Relaxed);
-            self.active
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(id, control.clone());
+            let mut state = self.active.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Connection closed before admission; no effect dispatched. Inspect saved outcomes with a new connection."
+                )]).into());
+            }
+            state.controls.insert(id, control.clone());
             Some(ActiveSubmission {
                 id,
                 server: self.clone(),

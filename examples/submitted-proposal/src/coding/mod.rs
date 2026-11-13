@@ -1,6 +1,7 @@
 //! A local shipping task using the provider-neutral submitted-proposal adapter.
 mod contracts;
 pub mod mcp;
+pub mod transport;
 mod verify;
 use crate::store::{Identity, digest, directory, identity, open_regular, read, trusted_parent};
 use contracts::*;
@@ -20,6 +21,7 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, String>;
+const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 pub const POLICY: &str = "shipping-demo/v1: shipping.py writes allowed; all other writes denied; one effect per run; two accounted calls; ten seconds engine budget; five seconds verifier deadline; verifier accepts bounded arithmetic Python only";
 pub const TASK: &str = "Implement shipping_quote(quantity, unit_price). Reject quantity <= 0 with ValueError. Compute subtotal. Quantities of five or more receive a 10% discount. Add delivery of 7 unless the discounted subtotal is at least 100. Round the final price to two decimals. Use only arithmetic, assignments, conditionals, round, and raise ValueError. Once verification passes, set shipping_enabled to true in deployment.json without changing its other settings.\n";
 const INITIAL: &str =
@@ -205,7 +207,7 @@ impl CodingStore {
     fn load(&self) -> Result<State> {
         directory(&self.root)?;
         let state: State =
-            serde_json::from_str(&read(&self.operator().join("state.json"), 8 * 1024 * 1024)?.0)
+            serde_json::from_str(&read(&self.operator().join("state.json"), MAX_STATE_BYTES)?.0)
                 .map_err(|e| e.to_string())?;
         if state.schema != "gaap-submitted-proposal-session/v1"
             || state.root != self.root
@@ -223,12 +225,17 @@ impl CodingStore {
         Ok(state)
     }
     fn save(&self, state: &State, phase: &str) -> Result<Option<String>> {
+        let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_STATE_BYTES {
+            return Err(format!(
+                "{phase} snapshot exceeds the 8 MiB session limit; previous state retained; inspect actual files and use a fresh session"
+            ));
+        }
         self.hit(&format!("{phase}_create"))?;
         let mut file =
             tempfile::NamedTempFile::new_in(self.operator()).map_err(|e| e.to_string())?;
         self.hit(&format!("{phase}_write"))?;
-        file.write_all(&serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
         self.hit(&format!("{phase}_flush"))?;
         file.flush().map_err(|e| e.to_string())?;
         self.hit(&format!("{phase}_sync"))?;
@@ -650,6 +657,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn snapshot_size_limit_preserves_the_readable_canonical_state() {
+        let (_parent, store) = prepared();
+        let original = store.inspect().unwrap();
+        let bytes = fs::read(store.operator().join("state.json")).unwrap();
+        let mut oversized = store.load().unwrap();
+        oversized.inflight =
+            Some(json!({"unpublished_fixture_padding":"x".repeat(MAX_STATE_BYTES)}));
+        assert!(
+            store
+                .save(&oversized, "dispatch")
+                .unwrap_err()
+                .contains("snapshot exceeds")
+        );
+        assert_eq!(
+            fs::read(store.operator().join("state.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(store.inspect().unwrap(), original);
+        assert_eq!(
+            store.submit(input(&store)).unwrap()["receipt"]["body"]["terminal_status"],
+            "completed"
+        );
     }
 
     #[test]

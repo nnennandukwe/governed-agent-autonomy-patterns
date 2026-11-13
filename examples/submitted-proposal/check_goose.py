@@ -27,20 +27,25 @@ GOOD = """def shipping_quote(quantity, unit_price):
 """
 
 def command(*args):
+    """Run one isolated reference CLI command and decode its JSON result."""
     result = subprocess.run([str(BINARY), *map(str, args)], check=True,
         capture_output=True, text=True, timeout=20, env={})
     return json.loads(result.stdout)
 
 def provider(transcript):
+    """Serve deterministic tool-call responses without external inference."""
     class Provider(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
+            """Keep HTTP access logs out of the acceptance evidence."""
             pass
         def do_GET(self):
+            """Advertise the single local fixture model."""
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'object': 'list', 'data': [{'id': 'gaap-fixture', 'object': 'model', 'owned_by': 'fixture'}]}).encode())
         def do_POST(self):
+            """Emit the next bounded proposal using the prior MCP observation."""
             length = int(self.headers['Content-Length'])
             if length > 1024 * 1024:
                 self.send_error(413)
@@ -113,6 +118,7 @@ def validate_outcomes(final, initial):
 
 def run(goose, output):
     # Reuse the repository's current pin, independently of the caller's PATH.
+    """Verify pinned Goose and retain the observed MCP acceptance evidence."""
     installer_path = HERE.parent / 'governed-goose/install_goose.py'
     spec = importlib.util.spec_from_file_location('goose_pins', installer_path)
     installer = importlib.util.module_from_spec(spec)

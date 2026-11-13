@@ -14,6 +14,7 @@ spec.loader.exec_module(acceptance)
 
 class AcceptanceEvidenceTests(unittest.TestCase):
     def fixtures(self):
+        """Supply explicit test-only acceptance outcomes and unchanged deployment data."""
         initial = {'files': {'deployment.json': 'disabled'}}
         final = {'files': {'shipping.py': acceptance.GOOD, 'deployment.json': 'disabled'}, 'runs': [
             {'receipt': {'body': {'terminal_status': 'completed'}}, 'verification': {'passed': True, 'cases': [None] * 8}, 'model_usage': None, 'terminal_receipt_verified': True},
@@ -21,6 +22,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         ]}
         return final, initial
     def test_invalid_outcomes_cant_emit_a_pass_with_optimization(self):
+        """Run optimized Python and require invalid completion evidence to fail."""
         final, initial = self.fixtures()
         self.assertEqual(len(acceptance.validate_outcomes(final, initial)), 2)
         invalid = copy.deepcopy(final)
@@ -34,6 +36,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Code run failed completion', result.stderr)
     def test_changed_files_usage_and_receipt_validation_are_rejected(self):
+        """Reject changed deployment data, invented usage and invalid receipt status."""
         for mutate in [lambda final: final['files'].__setitem__('deployment.json', 'enabled'),
                        lambda final: final['runs'][0].__setitem__('model_usage', {'tokens': 0}),
                        lambda final: final['runs'][0].__setitem__('terminal_receipt_verified', False)]:

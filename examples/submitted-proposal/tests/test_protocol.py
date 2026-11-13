@@ -23,6 +23,7 @@ GOOD = """def shipping_quote(quantity, unit_price):
 """
 
 def cli(command, root, value=None, success=True):
+    """Invoke the production CLI with a bounded wait and explicit exit checking."""
     result = subprocess.run([str(BINARY), command, str(root)],
         input=None if value is None else json.dumps(value), capture_output=True,
         text=True, timeout=20, env={})
@@ -33,11 +34,13 @@ def cli(command, root, value=None, success=True):
 class Client:
     """Use only the public MCP wire format, independently of the Rust SDK."""
     def __init__(self, root):
+        """Launch the independent protocol client and complete MCP initialization."""
         self.process = subprocess.Popen([str(BINARY), 'coding-serve', str(root)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env={})
         self.responses = queue.Queue()
         self.pending = {}
+        self.messages = []
         self.sequence = 0
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -46,16 +49,22 @@ class Client:
         assert 'protocolVersion' in result, result
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
     def read(self):
+        """Collect newline-delimited server messages on a separate reader thread."""
         for line in self.process.stdout:
-            self.responses.put(json.loads(line))
+            message = json.loads(line)
+            self.messages.append(message)
+            self.responses.put(message)
     def send(self, value):
+        """Write and flush one JSON-RPC message to the server."""
         self.process.stdin.write(json.dumps(value) + '\n')
         self.process.stdin.flush()
     def start(self, method, params):
+        """Allocate a client correlation ID and send a request without waiting."""
         self.sequence += 1
         self.send({'jsonrpc': '2.0', 'id': self.sequence, 'method': method, 'params': params})
         return self.sequence
     def finish(self, identifier):
+        """Collect the matching response within the client deadline."""
         deadline = time.monotonic() + 20
         while identifier not in self.pending:
             result = self.responses.get(timeout=max(.01, deadline - time.monotonic()))
@@ -66,11 +75,14 @@ class Client:
             raise AssertionError(result)
         return result['result']
     def request(self, method, params):
+        """Send a protocol request and return its matching response."""
         return self.finish(self.start(method, params))
     def tool(self, name, arguments=None):
+        """Call one public tool and decode its result and error flag."""
         result = self.request('tools/call', {'name': name, 'arguments': arguments or {}})
         return json.loads(result['content'][0]['text']), result.get('isError', False)
     def active(self):
+        """Wait until a submitted request reaches the transport handler."""
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             result, error = self.tool('run_status')
@@ -80,6 +92,7 @@ class Client:
             time.sleep(.01)
         raise AssertionError('Submission never entered the transport')
     def close(self):
+        """Close the connection, drain the process and release its streams once."""
         if getattr(self, "closed", False):
             return
         self.closed = True
@@ -99,6 +112,7 @@ class Client:
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
+        """Create a fresh fixture and independent client for each integration test."""
         self.parent = tempfile.TemporaryDirectory()
         self.addCleanup(self.parent.cleanup)
         self.root = Path(self.parent.name).resolve() / 'session'
@@ -106,13 +120,16 @@ class ProtocolTests(unittest.TestCase):
         self.client = Client(self.root)
         self.addCleanup(self.client.close)
     def change(self, **overrides):
+        """Build a proposal from the observed subject with optional test overrides."""
         value = {'path': 'shipping.py', 'content': GOOD,
             'plan': 'Implement the shipping acceptance cases.',
             'base_digest': self.initial['subject_digest']}
         return dict(value, **overrides)
     def stored(self):
+        """Read the saved ledger through the production inspector."""
         return cli('coding-inspect', self.root)
     def wait_stored(self):
+        """Wait for a drained worker to publish its actual outcome."""
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             state = self.stored()
@@ -121,11 +138,13 @@ class ProtocolTests(unittest.TestCase):
             time.sleep(.01)
         raise AssertionError('Worker never stored its outcome')
     def lock(self):
+        """Hold the real admission lock while exercising queued requests."""
         handle = (self.root / 'operator/lock').open('r+')
         fcntl.flock(handle, fcntl.LOCK_EX)
         self.addCleanup(handle.close)
         return handle
     def test_discovery_completion_denial_restart_and_historical_duplicate(self):
+        """Verify discovery, both outcomes and historical duplicate readback after restart."""
         tools = self.client.request('tools/list', {})['tools']
         self.assertEqual([tool['name'] for tool in tools], ['read_project', 'submit_change', 'run_status'])
         self.assertFalse(tools[1]['inputSchema']['additionalProperties'])
@@ -154,6 +173,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotEqual(failed_init.returncode, 0)
         self.assertEqual(self.stored(), before)
     def test_authority_forgery_and_stale_input_fail_before_admission(self):
+        """Reject forged authority and preserve a manual edit before admission."""
         for field in ['approved', 'approval_context', 'verifier_id', 'policy_decision',
                       'terminal_status', 'threadloop_claim', 'run_id', 'request_id']:
             result, error = self.client.tool('submit_change', self.change(**{field: True}))
@@ -169,6 +189,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIsNone(self.stored()['inflight'])
         self.assertEqual((self.root / 'workspace/shipping.py').read_text(), 'manual change\n')
     def test_concurrent_duplicate_delivery_dispatches_once(self):
+        """Submit concurrent copies and require exactly one saved execution."""
         first = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         second = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         results = [json.loads(self.client.finish(identifier)['content'][0]['text']) for identifier in (first, second)]
@@ -176,12 +197,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(results[0]['receipt'], results[1]['receipt'])
         self.assertEqual(len(self.stored()['runs']), 1)
     def test_concurrent_different_proposals_dont_overwrite_the_winner(self):
+        """Reject the stale concurrent proposal without replacing the first result."""
         identifiers = [self.client.start('tools/call', {'name': 'submit_change', 'arguments': value})
             for value in [self.change(), self.change(content=GOOD.replace('positive', 'greater than zero'))]]
         results = [self.client.finish(identifier) for identifier in identifiers]
         self.assertEqual(sum(result.get('isError', False) for result in results), 1)
         self.assertEqual(len(self.stored()['runs']), 1)
     def test_cancellation_while_waiting_for_lock_drains_without_dispatch(self):
+        """Cancel a queued request and retain an interruption without an effect."""
         lock = self.lock()
         identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()
@@ -195,6 +218,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state['files']['shipping.py'], self.initial['files']['shipping.py'])
         self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
     def test_disconnect_while_queued_drains_without_replay(self):
+        """Disconnect during admission wait and inspect the drained interruption."""
         lock = self.lock()
         self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()
@@ -208,7 +232,47 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state['runs'][0]['receipt']['body']['terminal_status'], 'interrupted')
         self.assertEqual(state['runs'][0]['protected_effect_results'], [])
         self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
+    def test_oversized_frame_is_refused_before_proposal_parsing(self):
+        """Reject a large wire frame and resynchronize without admitting a run."""
+        oversized = self.client.start('tools/call', {'name': 'submit_change',
+            'arguments': self.change(content='x' * (300 * 1024))})
+        state, error = self.client.tool('run_status')
+        self.assertFalse(error, state)
+        self.assertFalse(any(message.get('id') == oversized for message in self.client.messages),
+                         'Oversized input reached proposal parsing')
+        self.assertEqual(self.stored()['runs'], [])
+        result, error = self.client.tool('submit_change', self.change())
+        self.assertFalse(error, result)
+        self.assertEqual(result['receipt']['body']['terminal_status'], 'completed')
+    def test_request_flood_closes_before_extra_work_can_be_admitted(self):
+        """Bound outstanding requests while a real session lock holds execution."""
+        lock = self.lock()
+        for _ in range(9):
+            self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
+        ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
+        self.assertTrue(ready, 'Transport accepted more than eight outstanding requests')
+        self.assertIn('MCP outstanding request limit', self.client.process.stderr.readline())
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        self.client.close()
+        state = self.stored()
+        self.assertEqual(state['files'], self.initial['files'])
+        self.assertTrue(all(not run['protected_effect_results'] for run in state['runs']))
+    def test_duplicate_active_rpc_identity_cant_mix_two_proposals(self):
+        """Close ambiguous active RPC IDs without executing either proposal."""
+        lock = self.lock()
+        identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
+        self.client.active()
+        self.client.send({'jsonrpc': '2.0', 'id': identifier, 'method': 'tools/call',
+            'params': {'name': 'submit_change', 'arguments': self.change(content='different')}})
+        ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
+        self.assertTrue(ready, 'Transport accepted an ambiguous active request ID')
+        self.assertIn('MCP duplicate active request ID', self.client.process.stderr.readline())
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        self.client.close()
+        self.assertEqual(self.stored()['files'], self.initial['files'])
+
     def test_host_deadline_while_queued_cant_dispatch_later(self):
+        """Expire a queued proposal and refuse a later write or duplicate replay."""
         lock = self.lock()
         identifier = self.client.start('tools/call', {'name': 'submit_change', 'arguments': self.change()})
         self.client.active()

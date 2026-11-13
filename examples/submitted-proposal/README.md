@@ -16,6 +16,8 @@ examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference codin
 
 The last command serves MCP JSON-RPC on stdin/stdout. Attach an MCP client instead of typing into that stream. `coding-inspect ROOT` prints the validated saved history; `coding-submit ROOT` accepts one JSON object on stdin and prints its result. `--help` lists these commands. Initialization refuses an existing root.
 
+The transport caps each incoming frame at 256 KiB before JSON deserialization and permits eight outstanding RPC requests per connection. Oversized lines are discarded through their next newline; they produce no run or receipt. A request flood or a duplicate active RPC ID closes the connection, cancels registered work and prevents later admissions on that connection. Open a new connection and inspect saved outcomes before resubmitting.
+
 The server exposes `read_project`, `submit_change` and `run_status`. Read the project first, then supply its exact subject digest:
 
 ```json
@@ -45,7 +47,7 @@ The capability identity hashes the advertised descriptors, including schemas and
 | Admission marker directory sync fails | Clear the marker only while execution is known never to have started. Failed abort publication preserves the visible state for inspection. |
 | Lost effect visibility or an interrupted result publication | Keep the in-flight marker and refuse further dispatch; inspect the files and retain the session. |
 
-The current lock wait drains on acquisition; cancellation and deadline checks stop work after that wait. The verifier has its own five-second child-process deadline. The run allows one effect and two accounted calls. Twelve saved runs bound a session. These limits describe host operations and verification. `model_usage: null` marks external model tokens and cost as unavailable.
+The current lock wait drains on acquisition; cancellation and deadline checks stop work after that wait. The verifier has its own five-second child-process deadline. The run allows one effect and two accounted calls. Twelve saved runs and an 8 MiB serialized ledger bound a session. The writer checks the same byte limit as the inspector before publishing a snapshot. If a result would exceed that limit after execution, the prior in-flight marker stays inspectable and further dispatch is refused. These limits describe host operations and verification. `model_usage: null` marks external model tokens and cost as unavailable.
 
 The subject binds the three fixture files and their local filesystem identities. The writer stages a replacement, rechecks the snapshot and replaces the target. This assumes controlled local writers; it doesn't isolate arbitrary agent system calls. The bounded Python verifier accepts restricted arithmetic syntax. See [the commit-point and fault checks](TRANSACTION.md).
 

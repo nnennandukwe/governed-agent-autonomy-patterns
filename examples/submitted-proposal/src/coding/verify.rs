@@ -178,7 +178,13 @@ mod tests {
         ] {
             assert!(evaluate(source).unwrap()["validation_error"].is_string());
         }
-        let report=evaluate("def shipping_quote(quantity, unit_price):\n    if quantity <= 0:\n        raise ValueError\n    return quantity * unit_price\n").unwrap();
+        let source = concat!(
+            "def shipping_quote(quantity, unit_price):\n",
+            "    if quantity <= 0:\n",
+            "        raise ValueError\n",
+            "    return quantity * unit_price\n",
+        );
+        let report = evaluate(source).unwrap();
         assert!(report["validation_error"].is_null());
     }
 }

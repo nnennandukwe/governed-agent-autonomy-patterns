@@ -1,4 +1,4 @@
-use gaap_submitted_proposal_reference::coding::{CodingStore, mcp::CodingServer};
+use gaap_submitted_proposal_reference::coding::{CodingStore, mcp::CodingServer, transport};
 use rmcp::ServiceExt;
 use std::{io, path::Path};
 fn print(value: impl serde::Serialize) -> Result<(), String> {
@@ -35,14 +35,11 @@ async fn run() -> Result<(), String> {
             let server = CodingServer::new(CodingStore::open(Path::new(root))?);
             let service = server
                 .clone()
-                .serve(rmcp::transport::stdio())
+                .serve(transport::stdio(server.clone()))
                 .await
                 .map_err(|e| e.to_string())?;
             let result = service.waiting().await.map_err(|e| e.to_string());
-            server.cancel_all();
-            eprintln!(
-                "MCP connection closed; draining pending work and retaining actual outcomes."
-            );
+            server.shutdown();
             result?;
             Ok(())
         }
