@@ -166,7 +166,7 @@ impl ServerHandler for CodingServer {
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(match result {
             Ok(value) => CallToolResult::success(vec![ContentBlock::text(value.to_string())]),
-            Err(error) => CallToolResult::error(vec![ContentBlock::text(json!({"error":error,"next_action":"Inspect run_status and actual files before resubmitting. An unresolved outcome requires a fresh session after inspection."}).to_string())]),
+            Err(error) => CallToolResult::error(vec![ContentBlock::text(json!({"error":error,"next_action":"Inspect run_status and actual files before resubmitting. Preserve unresolved sessions; this version can't reconcile or retry an uncertain effect."}).to_string())]),
         }.into())
     }
 }

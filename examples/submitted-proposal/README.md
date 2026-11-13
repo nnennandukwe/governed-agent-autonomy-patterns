@@ -16,7 +16,7 @@ examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference codin
 
 The last command serves MCP JSON-RPC on stdin/stdout. Attach an MCP client instead of typing into that stream. `coding-inspect ROOT` prints the validated saved history; `coding-submit ROOT` accepts one JSON object on stdin and prints its result. `--help` lists these commands. Initialization refuses an existing root. CLI submissions have the same 256 KiB input limit: the host reads at most that limit plus one byte and rejects oversized input before JSON parsing or session admission.
 
-The transport caps each incoming frame at 256 KiB before JSON deserialization and permits eight outstanding RPC requests per connection. Oversized lines are discarded through their next newline; they produce no run or receipt. A request flood or a duplicate active RPC ID closes the connection, cancels registered work and prevents later admissions on that connection. Open a new connection and inspect saved outcomes before resubmitting.
+The transport caps each incoming frame at 256 KiB before JSON deserialization and permits eight outstanding RPC requests per connection. A cancelled request keeps its slot until the handler finishes draining, then releases it even when the SDK suppresses its response. Oversized lines are discarded through their next newline; they produce no run or receipt. A request flood or a duplicate active RPC ID closes the connection, cancels registered work and prevents later admissions on that connection. Open a new connection and inspect saved outcomes before resubmitting.
 
 The server exposes `read_project`, `submit_change` and `run_status`. Read the project first, then supply its exact subject digest:
 

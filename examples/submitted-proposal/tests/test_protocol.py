@@ -83,6 +83,7 @@ class Client:
             message = json.loads(line)
             self.messages.append(message)
             self.responses.put(message)
+        self.responses.put(None)
     def send(self, value):
         """Write and flush one JSON-RPC message to the server."""
         self.process.stdin.write(json.dumps(value) + '\n')
@@ -97,6 +98,8 @@ class Client:
         deadline = time.monotonic() + 20
         while identifier not in self.pending:
             result = self.responses.get(timeout=max(.01, deadline - time.monotonic()))
+            if result is None:
+                raise AssertionError('MCP connection closed before the response')
             if 'id' in result:
                 self.pending[result['id']] = result
         result = self.pending.pop(identifier)
@@ -248,6 +251,50 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state['runs'][0]['protected_effect_results'], [])
         self.assertEqual(state['files']['shipping.py'], self.initial['files']['shipping.py'])
         self.assertTrue(cli('coding-submit', self.root, self.change())['duplicate'])
+    def test_repeated_cancellations_release_slots_after_worker_drain(self):
+        """Keep a valid connection usable across more than eight cancelled requests."""
+        for index in range(9):
+            lock = self.lock()
+            identifier = self.client.start('tools/call', {'name': 'submit_change',
+                'arguments': self.change(plan=f'Cancel proposal {index} before dispatch.')})
+            self.client.active()
+            self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                'params': {'requestId': identifier}})
+            self.client.tool('run_status')
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                state = self.stored()
+                status, error = self.client.tool('run_status')
+                self.assertFalse(error, status)
+                if len(state['runs']) == index + 1 and status['active_submissions'] == 0:
+                    break
+                time.sleep(.01)
+            else:
+                self.fail('Cancelled worker failed to drain')
+            self.assertEqual(state['runs'][-1]['receipt']['body']['terminal_status'], 'interrupted')
+            self.assertEqual(state['runs'][-1]['protected_effect_results'], [])
+        result, error = self.client.tool('submit_change', self.change())
+        self.assertFalse(error, result)
+        self.assertEqual(result['receipt']['body']['terminal_status'], 'completed')
+    def test_cancellation_cant_free_a_slot_while_its_worker_is_pending(self):
+        """Keep cancelled lock-blocked work within the same outstanding-request cap."""
+        lock = self.lock()
+        for index in range(8):
+            identifier = self.client.start('tools/call', {'name': 'submit_change',
+                'arguments': self.change(plan=f'Pending cancellation {index}.')})
+            self.client.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                'params': {'requestId': identifier}})
+        self.client.start('tools/call', {'name': 'run_status', 'arguments': {}})
+        ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
+        self.assertTrue(ready, 'Cancellation freed slots before workers drained')
+        self.assertIn('MCP outstanding request limit', self.client.process.stderr.readline())
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        self.client.process.stdin.close()
+        self.client.process.wait(timeout=5)
+        state = self.stored()
+        self.assertEqual(state['files']['shipping.py'], self.initial['files']['shipping.py'])
+        self.assertTrue(all(not run['protected_effect_results'] for run in state['runs']))
     def test_disconnect_while_queued_drains_without_replay(self):
         """Disconnect during admission wait and inspect the drained interruption."""
         lock = self.lock()

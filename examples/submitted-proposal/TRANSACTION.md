@@ -1,6 +1,6 @@
 # Local proposal commit and recovery checks
 
-The canonical local record is `operator/state.json`. Its replacement publishes one full ledger snapshot. File mutation and ledger publication have separate commit points, so the host records an in-flight marker before effect dispatch.
+The canonical local record is `operator/state.json`. Its replacement publishes one full ledger snapshot. Filesystem mutation and ledger or receipt publication aren't one atomic transaction, and this profile has no exactly-once recovery guarantee. The host records an in-flight marker before effect dispatch so interruption preserves an explicit uncertainty window.
 
 | State | Commit or transition | Observable state and recovery |
 | --- | --- | --- |
@@ -15,6 +15,10 @@ The canonical local record is `operator/state.json`. Its replacement publishes o
 | Published with warning | Directory sync fails after the result rename. | Return the visible result with a durability warning; don't report rollback. |
 
 The writer always rechecks observed ownership and subject before replacement. It never rolls back over later operator edits. Unrecognized schema, changed capability trust, changed policy, relocated directories, symlinks, hardlinks and tampered evidence are rejected without repairing or deleting the stored state. The reference assumes a controlled trusted process and local filesystem; hostile concurrent path replacement and power-loss continuation need separate designs.
+
+The persistence profile uses a single local JSON snapshot and one lock for cooperating writers. That keeps history inspectable and publication simple, at the cost of rewriting the bounded ledger and serializing admission. Twelve saved runs and an 8 MiB snapshot limit bound storage; result-publication refusal retains the previous snapshot and its in-flight marker. The versioned session schema rejects incompatible records. Changed policy or capability trust requires a fresh, separately initialized root rather than migration or automatic trust refresh.
+
+Session subjects bind local device, inode and mode alongside file content, so those subject identities belong to this filesystem instance. A hash of file bytes can identify equal content across copies, but it doesn't authenticate a writer or make the session portable. Ownership, link and mode checks protect the trusted local process's path handling; a same-user process that edits the files can bypass that process's contract. Durable portable evidence and reconciliation need the separately accepted design.
 
 The migrated Rust fault matrix exercises dispatch/abort/result create, write, flush, file sync, rename and directory sync; target create, write, mode change, flush, file sync and rename; post-commit uncertainty; concurrent edits; and verifier drift. Identity, open/read, parse and validation refusal paths use actual links, moved roots, malformed proposals and edited records. Each case inspects actual files and the production ledger consumer. A byte-limit regression checks that oversized snapshot publication leaves the previous state readable and permits a fresh admission when no effect ran. Initial directory-creation failures preserve an incomplete root for operator inspection; no auto-cleanup or uninstall operation is provided.
 
