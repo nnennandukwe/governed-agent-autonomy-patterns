@@ -42,6 +42,7 @@ The capability identity hashes the advertised descriptors, including schemas and
 | Extra fields or stale subject | Reject before the in-flight marker or any effect. |
 | Caller cancellation, disconnect or ten-second deadline | Request cooperative interruption; retain any actual executed effect and drain the blocking worker into the saved ledger. |
 | Verification failure | Keep the actual file and executed effect; block completion. |
+| Admission marker directory sync fails | Clear the marker only while execution is known never to have started. Failed abort publication preserves the visible state for inspection. |
 | Lost effect visibility or an interrupted result publication | Keep the in-flight marker and refuse further dispatch; inspect the files and retain the session. |
 
 The current lock wait drains on acquisition; cancellation and deadline checks stop work after that wait. The verifier has its own five-second child-process deadline. The run allows one effect and two accounted calls. Twelve saved runs bound a session. These limits describe host operations and verification. `model_usage: null` marks external model tokens and cost as unavailable.

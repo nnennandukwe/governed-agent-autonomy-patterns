@@ -193,7 +193,10 @@ impl CodingStore {
     }
     fn hit(&self, point: &str) -> Result<()> {
         #[cfg(test)]
-        if self.fault == Some(point) {
+        if self
+            .fault
+            .is_some_and(|faults| faults.split(",").any(|fault| fault == point))
+        {
             return Err(format!("injected failure: {point}"));
         }
         let _ = point;
@@ -315,9 +318,18 @@ impl CodingStore {
             json!({"run_id":request.run_id,"path":change.path,"plan":change.plan,"input_digest":input_digest,"subject_digest":request.subject.digest,"status":"running_or_uncertain_after_restart"}),
         );
         if let Some(warning) = self.save(&state, "dispatch")? {
-            return Err(format!(
-                "{warning}; no effect dispatched; inspect before continuing"
-            ));
+            // The engine hasn't started, so clearing this marker can't replay an
+            // effect. If abort publication fails, preserve the visible state.
+            state.inflight = None;
+            return match self.save(&state, "abort") {
+                Ok(abort_warning) => Err(format!(
+                    "{warning}; admission aborted; no effect dispatched; inspect the session before retrying{}",
+                    abort_warning.map_or(String::new(), |warning| format!("; {warning}")),
+                )),
+                Err(error) => Err(format!(
+                    "{warning}; no effect dispatched; abort publication failed: {error}; inspect the retained session before retrying",
+                )),
+            };
         }
         let start = Instant::now();
         let report = Rc::new(RefCell::new(Value::Null));
@@ -593,13 +605,53 @@ mod tests {
                 "{point}"
             );
             let state = store.inspect().unwrap();
-            assert_eq!(
-                state["inflight"].is_null(),
-                point != "dispatch_dir_sync",
-                "{point}"
-            );
+            assert!(state["inflight"].is_null(), "{point}");
+            store.fault = None;
+            let retried = store.submit(input(&store)).unwrap();
+            assert_eq!(retried["receipt"]["body"]["terminal_status"], "completed");
         }
     }
+    #[test]
+    fn abort_publication_failures_preserve_known_no_dispatch_and_never_write() {
+        for (point, faults) in [
+            ("abort_create", "dispatch_dir_sync,abort_create"),
+            ("abort_write", "dispatch_dir_sync,abort_write"),
+            ("abort_flush", "dispatch_dir_sync,abort_flush"),
+            ("abort_sync", "dispatch_dir_sync,abort_sync"),
+            ("abort_rename", "dispatch_dir_sync,abort_rename"),
+            ("abort_dir_sync", "dispatch_dir_sync,abort_dir_sync"),
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(faults);
+            let error = store.submit(change).unwrap_err();
+            assert!(error.contains("no effect dispatched"), "{point}: {error}");
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                INITIAL
+            );
+            store.fault = None;
+            let reopened = CodingStore::open(&store.root).unwrap();
+            let state = reopened.inspect().unwrap();
+            assert!(state["runs"].as_array().unwrap().is_empty());
+            if point == "abort_dir_sync" {
+                assert!(state["inflight"].is_null());
+                assert_eq!(
+                    reopened.submit(input(&reopened)).unwrap()["receipt"]["body"]["terminal_status"],
+                    "completed"
+                );
+            } else {
+                assert!(!state["inflight"].is_null());
+                assert!(
+                    reopened
+                        .submit(input(&reopened))
+                        .unwrap_err()
+                        .contains("uncertain outcome")
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_precommit_fault_preserves_original_and_records_failure() {
         for point in [

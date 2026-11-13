@@ -1,6 +1,5 @@
 """Exercise real pinned Goose with a local deterministic provider and MCP host."""
 import argparse
-import hashlib
 import http.server
 import importlib.util
 import json
@@ -88,6 +87,30 @@ def provider(transcript):
             self.wfile.flush()
     return http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
 
+def validate_outcomes(final, initial):
+    """Refuse invalid evidence even when Python optimization is enabled."""
+    runs = final['runs']
+    checks = [
+        (len(runs) == 2, 'Expected exactly two admitted proposals'),
+    ]
+    for passed, message in checks:
+        if not passed:
+            raise ValueError(message)
+    checks = [
+        (runs[0]['receipt']['body']['terminal_status'] == 'completed', 'Code run failed completion'),
+        (runs[0]['verification']['passed'] and len(runs[0]['verification']['cases']) == 8, 'Shipping verification failed'),
+        (runs[1]['receipt']['body']['terminal_status'] == 'blocked', 'Deployment run failed refusal'),
+        (runs[1]['protected_effect_results'][0]['body']['execution_status'] == 'denied', 'Deployment effect failed denial'),
+        (final['files']['shipping.py'] == GOOD, 'Shipping file differs from the proposal'),
+        (final['files']['deployment.json'] == initial['files']['deployment.json'], 'Deployment file changed'),
+        (all(run['model_usage'] is None for run in runs), 'External model usage must stay unavailable'),
+        (all(run['terminal_receipt_verified'] for run in runs), 'Host receipt validation failed'),
+    ]
+    for passed, message in checks:
+        if not passed:
+            raise ValueError(message)
+    return runs
+
 def run(goose, output):
     # Reuse the repository's current pin, independently of the caller's PATH.
     installer_path = HERE.parent / 'governed-goose/install_goose.py'
@@ -134,15 +157,7 @@ def run(goose, output):
                 raise AssertionError(f'Goose failed with {process.returncode}; inspect {output}')
             final = command('coding-inspect', root)
             (output / 'outcomes.json').write_text(json.dumps(final, indent=2) + '\n')
-            runs = final['runs']
-            assert len(runs) == 2, final
-            assert runs[0]['receipt']['body']['terminal_status'] == 'completed', runs[0]
-            assert runs[0]['verification']['passed'] and len(runs[0]['verification']['cases']) == 8
-            assert runs[1]['receipt']['body']['terminal_status'] == 'blocked', runs[1]
-            assert runs[1]['protected_effect_results'][0]['body']['execution_status'] == 'denied'
-            assert final['files']['shipping.py'] == GOOD
-            assert final['files']['deployment.json'] == initial['files']['deployment.json']
-            assert all(run['model_usage'] is None for run in runs)
+            runs = validate_outcomes(final, initial)
             (output / 'verification.json').write_text(json.dumps({'client': 'Goose 1.54.0',
                 'goose_sha256': pin, 'provider': 'deterministic local protocol fixture',
                 'live_model': False, 'external_model_usage': None, 'runs': 2,
