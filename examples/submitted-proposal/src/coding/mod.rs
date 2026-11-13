@@ -1,10 +1,11 @@
-//! Real Goose proposals through the full engine; one bounded run per proposed change.
+//! A local shipping task using the provider-neutral submitted-proposal adapter.
 mod contracts;
 pub mod mcp;
 mod verify;
 use crate::store::{Identity, digest, directory, identity, open_regular, read, trusted_parent};
 use contracts::*;
 use gaap::{contracts::*, runtime::*};
+use gaap_submitted_proposal::{RunControl, SubmittedProposal, SubmittedProposalAdapter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -167,7 +168,7 @@ impl CodingStore {
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
         let state = State {
-            schema: "gaap-coding-session/v1".into(),
+            schema: "gaap-submitted-proposal-session/v1".into(),
             root: store.root.clone(),
             root_identity: identity(&store.root, true)?,
             workspace_identity: identity(&store.workspace(), true)?,
@@ -203,8 +204,9 @@ impl CodingStore {
         let state: State =
             serde_json::from_str(&read(&self.operator().join("state.json"), 8 * 1024 * 1024)?.0)
                 .map_err(|e| e.to_string())?;
-        if state.schema != "gaap-coding-session/v1"
+        if state.schema != "gaap-submitted-proposal-session/v1"
             || state.root != self.root
+            || state.trusted_schema != mcp::capability_digest()
             || state.policy != POLICY
             || state.root_identity != identity(&self.root, true)?
             || state.workspace_identity != identity(&self.workspace(), true)?
@@ -260,6 +262,9 @@ impl CodingStore {
         )
     }
     pub fn submit(&self, input: Value) -> Result<Value> {
+        self.submit_control(input, RunControl::new(std::time::Duration::from_secs(10)))
+    }
+    pub fn submit_control(&self, input: Value, control: RunControl) -> Result<Value> {
         let change: Change = serde_json::from_value(input).map_err(|e| e.to_string())?;
         if change.plan.trim().is_empty()
             || change.plan.len() > 4096
@@ -297,6 +302,15 @@ impl CodingStore {
         // Validate before the durable running marker; malformed input cannot strand a session.
         validate_protected_effect_request(&request, &support(), &effect)
             .map_err(|e| e.to_string())?;
+        let adapter = SubmittedProposalAdapter::new(
+            SubmittedProposal::new(&change, &change.plan, &change.base_digest)
+                .map_err(|e| e.to_string())?,
+            &request,
+            effect.clone(),
+            &support(),
+            control.clone(),
+        )
+        .map_err(|e| e.to_string())?;
         state.inflight = Some(
             json!({"run_id":request.run_id,"path":change.path,"plan":change.plan,"input_digest":input_digest,"subject_digest":request.subject.digest,"status":"running_or_uncertain_after_restart"}),
         );
@@ -311,15 +325,13 @@ impl CodingStore {
         let mut engine = AgentRunEngine::new(
             runtime_support(&change, &state.trusted_schema),
             config(),
-            GooseProposal {
-                change: change.clone(),
-                effect: Some(effect.clone()),
-            },
+            adapter,
             FileExecutor {
                 store: self.clone(),
                 before: before.clone(),
                 change: change.clone(),
                 evidence: evidence.clone(),
+                control: control.clone(),
             },
             verify::ShippingVerifier {
                 store: self.clone(),
@@ -337,7 +349,13 @@ impl CodingStore {
         }
         let after = self.snapshot()?;
         let mut result = json!({"input_digest":input_digest,"path":change.path,"plan":change.plan,"before":before.get(&change.path).map(|v|&v.content),"proposed":change.content,"after":after.get(&change.path).map(|v|&v.content),"request":request,"effect_request":effect,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"verification":report.borrow().clone(),"execution_evidence":evidence.borrow().clone(),"terminal_receipt_verified":true,"elapsed_ms":start.elapsed().as_millis() as u64,"model_usage":null,"duplicate":false});
-        state.inflight = None;
+        if !execution
+            .protected_effect_results
+            .iter()
+            .any(|result| result.body.execution_status == EffectExecutionStatus::UnknownOutcome)
+        {
+            state.inflight = None;
+        }
         state.runs.push(result.clone());
         if let Some(warning) = self.save(&state, "result")? {
             result["durability_warning"] = json!(warning);
@@ -351,6 +369,7 @@ struct FileExecutor {
     before: Snapshot,
     change: Change,
     evidence: Rc<RefCell<Value>>,
+    control: RunControl,
 }
 impl FileExecutor {
     fn commit(&self) -> std::result::Result<Snapshot, (bool, String)> {
@@ -388,6 +407,9 @@ impl FileExecutor {
             if self.store.snapshot()? != self.before {
                 return Err("workspace changed before commit; concurrent work preserved".into());
             }
+            if self.control.cancellation().is_some() {
+                return Err("proposal cancelled before file commit; no write dispatched".into());
+            }
             self.store.hit("target_rename")?;
             staged
                 .persist(self.store.workspace().join("shipping.py"))
@@ -407,6 +429,9 @@ impl FileExecutor {
     }
 }
 impl ExecutorPort for FileExecutor {
+    fn cancellation(&self) -> Option<Cancellation> {
+        self.control.cancellation()
+    }
     fn execute(
         &mut self,
         request: &ProtectedEffectRequest,
@@ -499,15 +524,20 @@ mod tests {
         let mut engine = AgentRunEngine::new(
             runtime_support(&change, &mcp::capability_digest()),
             config(),
-            GooseProposal {
-                change: change.clone(),
-                effect: Some(effect),
-            },
+            SubmittedProposalAdapter::new(
+                SubmittedProposal::new(&change, &change.plan, &change.base_digest).unwrap(),
+                &request,
+                effect,
+                &support(),
+                RunControl::new(std::time::Duration::from_secs(10)),
+            )
+            .unwrap(),
             FileExecutor {
                 store: store.clone(),
                 before,
                 change,
                 evidence: Rc::new(RefCell::new(Value::Null)),
+                control: RunControl::new(std::time::Duration::from_secs(10)),
             },
             verify::ShippingVerifier {
                 store: store.clone(),
@@ -650,10 +680,11 @@ mod tests {
         let (_parent, store) = prepared();
         let change = input(&store);
         fs::write(store.workspace().join("shipping.py"), "operator edit\n").unwrap();
-        let result = store.submit(change).unwrap();
-        assert_eq!(
-            result["receipt"]["body"]["terminal_reason"],
-            "protected_effect.stale_subject"
+        assert!(
+            store
+                .submit(change)
+                .unwrap_err()
+                .contains("proposal binding")
         );
         assert_eq!(
             fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
@@ -696,13 +727,11 @@ mod tests {
         let mut state = store.load().unwrap();
         state.trusted_schema = digest(b"different schema");
         store.save(&state, "test").unwrap();
-        let result = store.submit(change).unwrap();
-        assert_eq!(result["receipt"]["body"]["terminal_status"], "blocked");
         assert!(
-            result["receipt"]["body"]["terminal_reason"]
-                .as_str()
-                .unwrap()
-                .starts_with("tool_trust.")
+            store
+                .submit(change)
+                .unwrap_err()
+                .contains("session identity or policy changed")
         );
         assert_eq!(
             fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),

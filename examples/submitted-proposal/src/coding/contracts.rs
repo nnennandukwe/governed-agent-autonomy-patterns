@@ -57,15 +57,25 @@ pub fn subject(store: &CodingStore, snapshot: &Snapshot) -> Result<Subject> {
 
 pub fn request(
     store: &CodingStore,
-    number: usize,
+    _number: usize,
     change: &Change,
     before: &Snapshot,
 ) -> Result<AgentRunRequest> {
     let subject = subject(store, before)?;
+    let mut random = [0u8; 32];
+    std::io::Read::read_exact(
+        &mut File::open("/dev/urandom").map_err(|e| e.to_string())?,
+        &mut random,
+    )
+    .map_err(|e| e.to_string())?;
+    let nonce = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(AgentRunRequest {
         schema_version: AGENT_RUN_REQUEST_SCHEMA.into(),
-        request_id: format!("coding-{number}"),
-        run_id: format!("coding-{number}"),
+        request_id: format!("proposal-request-{nonce}"),
+        run_id: format!("proposal-run-{nonce}"),
         subject: subject.clone(),
         requested_capability: capability(&mcp::capability_digest()),
         task: TaskSpec {
@@ -80,7 +90,7 @@ pub fn request(
             max_tool_calls: 2,
         },
         approval_context: vec![ApprovalReference {
-            approval_id: format!("preauthorized-local-policy-{number}"),
+            approval_id: format!("host-policy-{nonce}"),
             actor_id: "local-demo-policy".into(),
             scope: "bounded workspace task under shipping-demo-policy; production writes denied"
                 .into(),
@@ -153,7 +163,7 @@ pub fn runtime_support(change: &Change, trusted_schema: &str) -> RuntimeSupport 
 }
 pub fn config() -> RuntimeConfig {
     RuntimeConfig {
-        implementer_id: "goose-proposal-adapter".into(),
+        implementer_id: "submitted-proposal-reference".into(),
         executor_identity: executor_identity(),
         max_effects: 1,
         budget_thresholds: BudgetThresholds {
@@ -161,33 +171,5 @@ pub fn config() -> RuntimeConfig {
             approval_micros: 900_000,
             hard_stop_micros: 1_000_000,
         },
-    }
-}
-pub struct GooseProposal {
-    pub change: Change,
-    pub effect: Option<ProtectedEffectRequest>,
-}
-impl AgentAdapter for GooseProposal {
-    fn plan(
-        &mut self,
-        _: &AgentRunRequest,
-    ) -> std::result::Result<PortObservation<PlanProposal>, RuntimePortError> {
-        Ok(PortObservation {
-            value: PlanProposal {
-                plan_digest: hash_json(&self.change).map_err(RuntimePortError::new)?,
-            },
-            usage: resources(0, 0),
-        })
-    }
-    fn next_effect(
-        &mut self,
-        _: AgentRunContext<'_>,
-    ) -> std::result::Result<PortObservation<AgentStep>, RuntimePortError> {
-        Ok(PortObservation {
-            value: self.effect.take().map_or(AgentStep::Finish, |request| {
-                AgentStep::ProtectedEffect(Box::new(ProtectedEffectProposal { request }))
-            }),
-            usage: resources(0, 0),
-        })
     }
 }

@@ -287,10 +287,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gaap-submitted-proposal"
+version = "0.1.0"
+dependencies = [
+ "gaap",
+ "serde",
+ "serde_jcs",
+ "sha2",
+]
+
+[[package]]
 name = "gaap-submitted-proposal-reference"
 version = "0.1.0"
 dependencies = [
  "gaap",
+ "gaap-submitted-proposal",
  "rmcp",
  "rustix",
  "schemars",

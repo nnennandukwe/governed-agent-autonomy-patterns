@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 gaap = { path = "../..", version = "=0.1.0" }
+gaap-submitted-proposal = { path = "../../adapters/submitted-proposal", version = "=0.1.0" }
 rmcp = { version = "=3.5.1", features = ["server", "transport-io"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 schemars = "=1.2.2"

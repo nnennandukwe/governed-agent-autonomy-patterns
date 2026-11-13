@@ -1,7 +1,12 @@
 use rustix::fs::{Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File}, io::Read, os::unix::fs::MetadataExt, path::{Path, PathBuf}};
+use std::{
+    fs::{self, File},
+    io::Read,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
 type Result<T> = std::result::Result<T, String>;
 pub fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
@@ -99,4 +104,3 @@ pub(crate) fn read(path: &Path, limit: usize) -> Result<(String, Identity)> {
         },
     ))
 }
-
