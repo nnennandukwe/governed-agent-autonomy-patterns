@@ -118,6 +118,39 @@ def validate_outcomes(final, initial):
             raise ValueError(message)
     return runs
 
+def capture_goose(invocation, workspace, environment, output, transcript, timeout=60):
+    """Retain client diagnostics after completion, failure or process-group timeout."""
+    stdout, stderr = b'', b''
+    timed_out = False
+    process = None
+    try:
+        with subprocess.Popen(invocation, cwd=workspace, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                timed_out = True
+                stdout, stderr = error.output or b'', error.stderr or b''
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=3)
+                if timed_out:
+                    stdout, stderr = process.communicate(timeout=3)
+    finally:
+        (output / 'goose-stdout.txt').write_bytes(stdout)
+        (output / 'goose-stderr.txt').write_bytes(stderr)
+        (output / 'provider-transcript.json').write_text(json.dumps(transcript, indent=2) + '\n')
+        (output / 'client-execution.json').write_text(json.dumps({
+            'timed_out': timed_out, 'timeout_seconds': timeout,
+            'returncode': None if process is None else process.returncode}, indent=2) + '\n')
+    if timed_out:
+        raise TimeoutError(f'Goose exceeded {timeout} seconds; inspect {output}')
+    return process.returncode
+
+
 def run(goose, output):
     # Reuse the repository's current pin, independently of the caller's PATH.
     """Verify pinned Goose and retain the observed MCP acceptance evidence."""
@@ -148,21 +181,9 @@ def run(goose, output):
             '--model', 'gaap-fixture', '--with-extension', 'gaap:' + shlex.join([str(BINARY), 'coding-serve', str(root)]),
             '--max-turns', '8', '--output-format', 'text', '--text', 'Complete the shipping task using the supplied tools.']
         try:
-            with subprocess.Popen(invocation, cwd=root / 'workspace', env=environment,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as process:
-                try:
-                    stdout, stderr = process.communicate(timeout=60)
-                finally:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait(timeout=3)
-            (output / 'goose-stdout.txt').write_bytes(stdout)
-            (output / 'goose-stderr.txt').write_bytes(stderr)
-            (output / 'provider-transcript.json').write_text(json.dumps(transcript, indent=2) + '\n')
-            if process.returncode:
-                raise AssertionError(f'Goose failed with {process.returncode}; inspect {output}')
+            returncode = capture_goose(invocation, root / 'workspace', environment, output, transcript)
+            if returncode:
+                raise AssertionError(f'Goose failed with {returncode}; inspect {output}')
             final = command('coding-inspect', root)
             (output / 'outcomes.json').write_text(json.dumps(final, indent=2) + '\n')
             runs = validate_outcomes(final, initial)

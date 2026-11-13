@@ -22,20 +22,20 @@ pub(crate) struct Identity {
     mode: u32,
 }
 pub(crate) fn identity(path: &Path, directory: bool) -> Result<Identity> {
-    let m = fs::symlink_metadata(path).map_err(err)?;
-    if m.file_type().is_symlink()
+    let metadata = fs::symlink_metadata(path).map_err(err)?;
+    if metadata.file_type().is_symlink()
         || if directory {
-            !m.is_dir()
+            !metadata.is_dir()
         } else {
-            !m.is_file() || m.nlink() != 1
+            !metadata.is_file() || metadata.nlink() != 1
         }
     {
         return Err("symlinks, hardlinks and unexpected file types are not allowed".into());
     }
     Ok(Identity {
-        device: m.dev(),
-        inode: m.ino(),
-        mode: m.mode() & 0o777,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode() & 0o777,
     })
 }
 pub(crate) fn directory(path: &Path) -> Result<()> {
@@ -71,14 +71,14 @@ pub(crate) fn open_regular(path: &Path, write: bool) -> Result<File> {
     )
     .map_err(err)?;
     let file = File::from(fd);
-    let m = file.metadata().map_err(err)?;
-    if !m.is_file()
-        || m.nlink() != 1
+    let metadata = file.metadata().map_err(err)?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
         || identity(path, false)?
             != (Identity {
-                device: m.dev(),
-                inode: m.ino(),
-                mode: m.mode() & 0o777,
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                mode: metadata.mode() & 0o777,
             })
     {
         return Err("file identity changed while opening".into());
@@ -86,10 +86,10 @@ pub(crate) fn open_regular(path: &Path, write: bool) -> Result<File> {
     Ok(file)
 }
 pub(crate) fn read(path: &Path, limit: usize) -> Result<(String, Identity)> {
-    let f = open_regular(path, false)?;
-    let m = f.metadata().map_err(err)?;
+    let file = open_regular(path, false)?;
+    let metadata = file.metadata().map_err(err)?;
     let mut content = String::new();
-    f.take((limit + 1) as u64)
+    file.take((limit + 1) as u64)
         .read_to_string(&mut content)
         .map_err(err)?;
     if content.len() > limit {
@@ -98,9 +98,9 @@ pub(crate) fn read(path: &Path, limit: usize) -> Result<(String, Identity)> {
     Ok((
         content,
         Identity {
-            device: m.dev(),
-            inode: m.ino(),
-            mode: m.mode() & 0o777,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode() & 0o777,
         },
     ))
 }

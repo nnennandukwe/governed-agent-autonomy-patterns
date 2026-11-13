@@ -43,12 +43,16 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
     let output = thread::spawn(move || {
-        let mut b = Vec::new();
-        out.take(32769).read_to_end(&mut b).map(|_| b)
+        let mut output_bytes = Vec::new();
+        out.take(32769)
+            .read_to_end(&mut output_bytes)
+            .map(|_| output_bytes)
     });
     let errors = thread::spawn(move || {
-        let mut b = Vec::new();
-        err.take(8193).read_to_end(&mut b).map(|_| b)
+        let mut error_bytes = Vec::new();
+        err.take(8193)
+            .read_to_end(&mut error_bytes)
+            .map(|_| error_bytes)
     });
     let mut timed_out = false;
     let status = loop {

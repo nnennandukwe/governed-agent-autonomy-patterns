@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ENTRY = Path(__file__).resolve().parents[1] / 'check_goose.py'
@@ -44,6 +45,34 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             mutate(final)
             with self.assertRaises(ValueError):
                 acceptance.validate_outcomes(final, initial)
+
+class ClientCaptureTests(unittest.TestCase):
+    def test_timeout_retains_output_transcript_and_failure_metadata(self):
+        """Exercise a real hanging child and keep diagnostics without a pass record."""
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve()
+            transcript = [{'fixture': 'timeout evidence'}]
+            invocation = [sys.executable, '-u', '-c',
+                "import sys,time;print('partial stdout');print('partial stderr',file=sys.stderr);time.sleep(60)"]
+            with self.assertRaises(TimeoutError):
+                acceptance.capture_goose(invocation, output, {}, output, transcript, timeout=0.2)
+            self.assertIn('partial stdout', (output / 'goose-stdout.txt').read_text())
+            self.assertIn('partial stderr', (output / 'goose-stderr.txt').read_text())
+            self.assertEqual(json.loads((output / 'provider-transcript.json').read_text()), transcript)
+            metadata = json.loads((output / 'client-execution.json').read_text())
+            self.assertTrue(metadata['timed_out'])
+            self.assertNotEqual(metadata['returncode'], 0)
+            self.assertFalse((output / 'verification.json').exists())
+    def test_failed_client_retains_diagnostics_and_its_actual_exit_status(self):
+        """Keep non-timeout failures inspectable without replacing their exit code."""
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve()
+            invocation = [sys.executable, '-u', '-c', "print('failed client');raise SystemExit(7)"]
+            returncode = acceptance.capture_goose(invocation, output, {}, output, [], timeout=2)
+            self.assertEqual(returncode, 7)
+            self.assertIn('failed client', (output / 'goose-stdout.txt').read_text())
+            self.assertFalse(json.loads((output / 'client-execution.json').read_text())['timed_out'])
+
 
 if __name__ == '__main__':
     unittest.main()

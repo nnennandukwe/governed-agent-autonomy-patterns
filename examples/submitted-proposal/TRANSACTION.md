@@ -29,4 +29,4 @@ cargo test --manifest-path examples/submitted-proposal/Cargo.toml --locked
 python3 -B -m unittest discover -s examples/submitted-proposal/tests -p 'test_*.py'
 ```
 
-An unknown outcome is an inspection requirement. The host won't continue, reconcile or replay that effect automatically. Issue #32 owns the durable continuation design.
+An uncertain effect stays uncertain for the lifetime of this session. File snapshots, saved requests, effect records, receipts and external observations can support operator diagnosis; inspection grants no authority to clear the marker, reclassify the effect or admit a retry. This version admits no human attestation, provider response or independent observation as reconciliation evidence. Editing the ledger or deleting its marker would bypass the admission contract. A separately accepted #32 design must define the evidence, its admission authority and fresh run/attempt rules before recovery can be implemented. GAAP retains authority over its bounded run and effects; ThreadLoop retains authority over its outer lifecycle.
