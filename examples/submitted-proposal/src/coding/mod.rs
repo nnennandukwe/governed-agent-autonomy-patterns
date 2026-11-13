@@ -250,6 +250,29 @@ impl CodingStore {
         File::create_new(store.operator().join("lock"))
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
+        for (point, path) in [
+            ("init_workspace_dir_sync", store.workspace()),
+            ("init_root_dir_sync", store.root.clone()),
+            (
+                "init_parent_dir_sync",
+                store
+                    .root
+                    .parent()
+                    .expect("the parent was validated")
+                    .to_owned(),
+            ),
+        ] {
+            store
+                .hit(point)
+                .and_then(|()| {
+                    File::open(path)
+                        .and_then(|directory| directory.sync_all())
+                        .map_err(|error| error.to_string())
+                })
+                .map_err(|error| format!(
+                    "initialization incomplete: {point}: {error}; preserve the existing root for inspection"
+                ))?;
+        }
         let state = State {
             schema: "gaap-submitted-proposal-session/v1".into(),
             root: store.root.clone(),
@@ -437,6 +460,16 @@ impl CodingStore {
             control.clone(),
         )
         .map_err(|e| e.to_string())?;
+        #[cfg(test)]
+        if self.fault == Some("admission_delay") {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        if let Some(cancelled) = control.cancellation() {
+            return Err(format!(
+                "proposal interrupted before admission: {}; no run or effect admitted",
+                cancelled.reason
+            ));
+        }
         state.inflight = Some(
             json!({"run_id":request.run_id,"path":change.path,"plan":change.plan,"input_digest":input_digest,"subject_digest":request.subject.digest,"status":"running_or_uncertain_after_restart"}),
         );
@@ -453,6 +486,10 @@ impl CodingStore {
                     "{warning}; no effect dispatched; abort publication failed: {error}; inspect the retained session before retrying",
                 )),
             };
+        }
+        #[cfg(test)]
+        if self.fault == Some("cancel_after_admission") {
+            control.cancel();
         }
         let start = Instant::now();
         let report = Rc::new(RefCell::new(Value::Null));
@@ -658,6 +695,105 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let store = CodingStore::initialize(&parent.path().join("coding")).unwrap();
         (parent, store)
+    }
+    #[test]
+    fn initial_namespace_sync_failure_preserves_an_incomplete_root() {
+        for point in [
+            "init_workspace_dir_sync",
+            "init_root_dir_sync",
+            "init_parent_dir_sync",
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("initialization");
+            let result = CodingStore::initialize_inner(&root, Some(point));
+            assert!(result.is_err(), "{point}: initialization reported success");
+            assert_eq!(
+                fs::read_to_string(root.join("workspace/shipping.py")).unwrap(),
+                INITIAL
+            );
+            assert!(!root.join("operator/state.json").exists());
+            assert!(CodingStore::open(&root).is_err());
+            assert!(CodingStore::initialize(&root).is_err());
+            assert_eq!(
+                fs::read_to_string(root.join("workspace/shipping.py")).unwrap(),
+                INITIAL
+            );
+        }
+    }
+    #[test]
+    fn deadline_during_preparation_refuses_before_a_marker_or_run() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        let before = fs::read(store.operator().join("state.json")).unwrap();
+        store.fault = Some("admission_delay");
+        let result = store.submit_control(
+            change.clone(),
+            RunControl::new(std::time::Duration::from_millis(100)),
+        );
+        let error = match result {
+            Ok(result) => panic!(
+                "late preparation admitted {:?} with {} effect results",
+                result["receipt"]["body"]["terminal_status"],
+                result["protected_effect_results"].as_array().unwrap().len()
+            ),
+            Err(error) => error,
+        };
+        assert!(error.contains("deadline exceeded") && error.contains("no run or effect admitted"));
+        assert_eq!(
+            fs::read(store.operator().join("state.json")).unwrap(),
+            before
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+        store.fault = None;
+        let fresh = store.submit(change.clone()).unwrap();
+        assert_eq!(fresh["duplicate"], false);
+        assert_eq!(fresh["receipt"]["body"]["terminal_status"], "completed");
+        assert_eq!(store.submit(change).unwrap()["duplicate"], true);
+    }
+    #[test]
+    fn admitted_interruption_is_historical_and_a_fresh_proposal_can_run() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("cancel_after_admission");
+        let interrupted = store.submit(change.clone()).unwrap();
+        assert_eq!(
+            interrupted["receipt"]["body"]["terminal_status"],
+            "interrupted"
+        );
+        assert!(
+            interrupted["protected_effect_results"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+        store.fault = None;
+        let duplicate = store.submit(change.clone()).unwrap();
+        assert_eq!(duplicate["duplicate"], true);
+        assert_eq!(duplicate["receipt"], interrupted["receipt"]);
+        assert_eq!(
+            store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+            1
+        );
+        let mut fresh = change;
+        fresh["plan"] = json!("Make a fresh proposal after the interrupted terminal run.");
+        let completed = store.submit(fresh).unwrap();
+        assert_eq!(completed["duplicate"], false);
+        assert_eq!(completed["receipt"]["body"]["terminal_status"], "completed");
+        assert_ne!(
+            completed["request"]["run_id"],
+            interrupted["request"]["run_id"]
+        );
+        assert_eq!(
+            store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+            2
+        );
     }
     #[test]
     fn initialization_refuses_an_unconfirmed_directory_sync_without_resetting() {
