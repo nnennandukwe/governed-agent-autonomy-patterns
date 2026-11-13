@@ -18,8 +18,8 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         """Supply explicit test-only acceptance outcomes and unchanged deployment data."""
         initial = {'files': {'deployment.json': 'disabled'}}
         final = {'files': {'shipping.py': acceptance.GOOD, 'deployment.json': 'disabled'}, 'runs': [
-            {'receipt': {'body': {'terminal_status': 'completed'}}, 'verification': {'passed': True, 'cases': [None] * 41, 'fixed_case_count': 9, 'sample_count': 32}, 'model_usage': None, 'terminal_receipt_verified': True},
-            {'receipt': {'body': {'terminal_status': 'blocked'}}, 'protected_effect_results': [{'body': {'execution_status': 'denied'}}], 'model_usage': None, 'terminal_receipt_verified': True},
+            {'receipt': {'body': {'terminal_status': 'completed'}}, 'verification': {'passed': True, 'cases': [None] * 41, 'fixed_case_count': 9, 'sample_count': 32}, 'model_usage': None, 'publication_durability': None, 'terminal_receipt_verified': True},
+            {'receipt': {'body': {'terminal_status': 'blocked'}}, 'protected_effect_results': [{'body': {'execution_status': 'denied'}}], 'model_usage': None, 'publication_durability': None, 'terminal_receipt_verified': True},
         ]}
         return final, initial
     def test_invalid_outcomes_cant_emit_a_pass_with_optimization(self):
@@ -40,6 +40,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         """Reject changed deployment data, invented usage and invalid receipt status."""
         for mutate in [lambda final: final['files'].__setitem__('deployment.json', 'enabled'),
                        lambda final: final['runs'][0].__setitem__('model_usage', {'tokens': 0}),
+                       lambda final: final['runs'][0].__setitem__('publication_durability', 'confirmed'),
                        lambda final: final['runs'][0].__setitem__('terminal_receipt_verified', False)]:
             final, initial = self.fixtures()
             mutate(final)

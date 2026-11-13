@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import sys
+import warnings
 
 
 def validate(source):
@@ -93,11 +94,17 @@ def bounded_round(value, precision=0):
     return float(round(float(value), precision))
 
 
-def compile_candidate(source):
+def compile_candidate(source, diagnostics=None):
     """Compile validated source with host-owned bounded arithmetic bindings."""
     namespace = {'__builtins__': {}, 'round': bounded_round,
                  'ValueError': ValueError, '_gaap_float': float}
-    exec(compile(validate(source), '<governed-shipping-function>', 'exec'), namespace)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter('always')
+        exec(compile(validate(source), '<governed-shipping-function>', 'exec'), namespace)
+    if diagnostics is not None:
+        diagnostics.extend({'category': warning.category.__name__[:64],
+            'message': str(warning.message)[:200], 'line': warning.lineno}
+            for warning in captured[:8])
     return namespace['shipping_quote']
 
 
@@ -135,14 +142,15 @@ def challenge_inputs(seed):
 
 def evaluate(source, inputs, seed):
     """Check published fixtures and recorded host-seeded samples independently."""
-    candidate = compile_candidate(source)
+    diagnostics = []
+    candidate = compile_candidate(source, diagnostics)
     observations = [observe(candidate, quantity, price) for quantity, price in inputs]
     probes = []
     for quantity, price in challenge_inputs(seed):
         expected = reference_quote(quantity, price)
         probes.append({'quantity': quantity, 'unit_price': price,
                        'expected': expected, 'observed': observe(candidate, quantity, price)})
-    return {'observations': observations, 'probes': probes}
+    return {'observations': observations, 'probes': probes, 'compiler_warnings': diagnostics}
 
 
 def main():

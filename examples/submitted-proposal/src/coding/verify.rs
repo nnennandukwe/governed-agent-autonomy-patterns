@@ -114,7 +114,7 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
         }
     }
     Ok(
-        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":"independent-shipping-oracle","execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
+        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":"independent-shipping-oracle","execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
     )
 }
 
@@ -215,5 +215,30 @@ mod tests {
         );
         let report = evaluate(source).unwrap();
         assert!(report["validation_error"].is_null());
+    }
+    #[test]
+    fn compiler_warnings_are_reported_without_failing_valid_code() {
+        let source = r"def shipping_quote(quantity, unit_price):
+    if quantity <= 0:
+        raise ValueError('bad\d')
+    subtotal = quantity * unit_price
+    if quantity >= 5:
+        subtotal *= 0.9
+    if subtotal < 100:
+        subtotal += 7
+    return round(subtotal, 2)
+";
+        // Expose older Python's normally hidden invalid-escape warning too.
+        let program = format!("import warnings\nwarnings.simplefilter('always')\n{PROGRAM}");
+        let report = evaluate_program(
+            source,
+            &program,
+            Duration::from_secs(5),
+            "compiler-warning-fixture",
+        )
+        .unwrap();
+        assert_eq!(report["passed"], true, "{report}");
+        assert!(!report["compiler_warnings"].as_array().unwrap().is_empty());
+        assert_eq!(report["cases"].as_array().unwrap().len(), 41);
     }
 }

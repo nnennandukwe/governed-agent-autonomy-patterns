@@ -111,6 +111,7 @@ def validate_outcomes(final, initial):
         (final['files']['shipping.py'] == GOOD, 'Shipping file differs from the proposal'),
         (final['files']['deployment.json'] == initial['files']['deployment.json'], 'Deployment file changed'),
         (all(run['model_usage'] is None for run in runs), 'External model usage must stay unavailable'),
+        (all(run.get('publication_durability', 'missing') is None for run in runs), 'Historical publication durability must stay unavailable'),
         (all(run['terminal_receipt_verified'] for run in runs), 'Host receipt validation failed'),
     ]
     for passed, message in checks:

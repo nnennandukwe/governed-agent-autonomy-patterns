@@ -1,6 +1,8 @@
 """Check bounded numeric execution and replayable independent verifier samples."""
 import importlib.util
 import math
+import contextlib
+import io
 from pathlib import Path
 import unittest
 
@@ -84,6 +86,20 @@ class VerifierTests(unittest.TestCase):
         """Keep ordinary task code valid across the recorded host challenge inputs."""
         result = verifier.evaluate(GOOD, [(2, 20)], 'host-request-A')
         self.assertEqual(result['observations'][0]['value'], 47)
+        self.assertTrue(all(probe['observed'].get('value') == probe['expected'] for probe in result['probes']))
+
+    def test_compiler_warnings_are_bounded_diagnostics_without_stderr_failure(self):
+        """Keep valid arithmetic accepted while retaining actual compiler warnings."""
+        source = GOOD.replace('quantity must be positive', r'bad\d')
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = verifier.evaluate(source, [(1, 20), (0, 20)], 'host-warning-fixture')
+        self.assertEqual(stderr.getvalue(), '')
+        self.assertEqual(result['observations'][0]['value'], 27)
+        self.assertEqual(result['observations'][1]['error'], 'ValueError')
+        self.assertTrue(result['compiler_warnings'])
+        self.assertLessEqual(len(result['compiler_warnings']), 8)
+        self.assertIn('invalid escape', result['compiler_warnings'][0]['message'])
         self.assertTrue(all(probe['observed'].get('value') == probe['expected'] for probe in result['probes']))
 
 if __name__ == '__main__':

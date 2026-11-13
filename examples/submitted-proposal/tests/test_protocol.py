@@ -184,6 +184,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(error, completed)
         self.assertEqual(completed['receipt']['body']['terminal_status'], 'completed')
         self.assertIsNone(completed['model_usage'])
+        self.assertIsNone(completed['publication_durability'])
         self.assertEqual(len(completed['verification']['cases']), 41)
         self.assertEqual(completed['verification']['fixed_case_count'], 9)
         self.assertEqual(completed['verification']['sample_count'], 32)

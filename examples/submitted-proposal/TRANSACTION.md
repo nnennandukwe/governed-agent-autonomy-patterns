@@ -12,7 +12,9 @@ The canonical local record is `operator/state.json`. Its replacement publishes o
 | Effect committed | Rename the staged file over the allowed target. | The write exists even if verification or later publication fails. |
 | Result published | Sync and rename the full ledger with the result. | Inspection revalidates canonical receipts and evidence; duplicates return that receipt. |
 | Uncertain | A post-effect observation or result-publication operation fails. | Preserve the target and marker; refuse another dispatch. Retain this root and inspect it. |
-| Published with warning | Directory sync fails after the result rename. | Return the visible result with a durability warning; don't report rollback. |
+| Published with warning | Directory sync fails after the result rename. | Save the observed warning in a follow-up snapshot so inspection and duplicates retain it. If warning publication fails, return an error and retain the visible receipt and actual effect. |
+
+The initializer reports a directory-sync warning as an error and preserves the visible root. Each response exposes `publication_durability: null`: a snapshot can't record the outcome of its own later directory sync. An observed result-publication warning gets a separate save attempt. If storage also refuses that warning, the caller receives an error and historical durability remains unavailable; a visible completed receipt still describes its known effect.
 
 The writer always rechecks observed ownership and subject before replacement. It never rolls back over later operator edits. Unrecognized schema, changed capability trust, changed policy, relocated directories, symlinks, hardlinks and tampered evidence are rejected without repairing or deleting the stored state. The reference assumes a controlled trusted process and local filesystem; hostile concurrent path replacement and power-loss continuation need separate designs.
 
@@ -34,3 +36,16 @@ python3 -B -m unittest discover -s examples/submitted-proposal/tests -p 'test_*.
 ```
 
 An uncertain effect stays uncertain for the lifetime of this session. File snapshots, saved requests, effect records, receipts and external observations can support operator diagnosis; inspection grants no authority to clear the marker, reclassify the effect or admit a retry. This version admits no human attestation, provider response or independent observation as reconciliation evidence. Editing the ledger or deleting its marker would bypass the admission contract. A separately accepted #32 design must define the evidence, its admission authority and fresh run/attempt rules before recovery can be implemented. GAAP retains authority over its bounded run and effects; ThreadLoop retains authority over its outer lifecycle.
+
+Approval continuation and resumption remain deferred to #32, including handling approval expiry and revocation after interruption. Terminal receipts, including authority-required outcomes, stay immutable and never reopen. A fresh proposal receives fresh host-issued run/request IDs and current policy, subject and capability checks. Returning a historical duplicate grants no new authority.
+
+## Regression coverage from the conference fixture
+
+| Conference behavior | Coverage in this reference |
+| --- | --- |
+| Restart, receipt preservation and exact duplicates | `test_discovery_completion_denial_restart_and_historical_duplicate` checks these through independent MCP and CLI consumers. |
+| Existing roots and unsafe adoption | Initialization refuses existing roots; Rust identity tests reject links and relocated sessions. Commands require an explicit root. |
+| Protected writes and publication failures | Rust fault matrices cover staged writes, admission, abort, result and warning publication, with actual file and saved-history inspection. |
+| Launcher selection, browser URLs and saved Goose recipes | These features remain in the original preserved fixture. This reference exposes CLI/MCP commands and an ephemeral Goose acceptance profile; it has no launcher, browser-route or recipe-publication entry point to exercise. |
+
+The original launcher tests still cover that local UI and its saved selection. Porting those features and tests would publish additional conference work beyond this adapter. The adapter's public interface and the CLI/MCP behavior that this PR ships have their own in-repository regressions.

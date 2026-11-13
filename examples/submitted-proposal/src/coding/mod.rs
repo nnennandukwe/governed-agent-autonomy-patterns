@@ -181,6 +181,13 @@ impl CodingStore {
         self.root.join("operator")
     }
     pub fn initialize(root: &Path) -> Result<Self> {
+        Self::initialize_inner(
+            root,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn initialize_inner(root: &Path, #[cfg(test)] fault: Option<&'static str>) -> Result<Self> {
         let root = std::path::absolute(root).map_err(|e| e.to_string())?;
         let parent = root
             .parent()
@@ -196,7 +203,7 @@ impl CodingStore {
         let store = Self {
             root,
             #[cfg(test)]
-            fault: None,
+            fault,
         };
         for path in [store.workspace(), store.operator()] {
             fs::DirBuilder::new()
@@ -232,7 +239,11 @@ impl CodingStore {
             runs: vec![],
             inflight: None,
         };
-        store.save(&state, "init")?;
+        if let Some(warning) = store.save(&state, "init")? {
+            return Err(format!(
+                "initialization incomplete: {warning}; preserve the existing root for inspection"
+            ));
+        }
         Ok(store)
     }
     pub fn open(root: &Path) -> Result<Self> {
@@ -317,10 +328,14 @@ impl CodingStore {
             .collect()
     }
     pub fn inspect(&self) -> Result<Value> {
-        let state = self.load()?;
+        let mut state = self.load()?;
+        for run in &mut state.runs {
+            // A saved snapshot can't attest to its own later directory sync.
+            run["publication_durability"] = Value::Null;
+        }
         let snapshot = self.snapshot()?;
         Ok(
-            json!({"schema":state.schema,"workspace":self.workspace(),"task":TASK,"policy":POLICY,"subject_digest":snapshot_digest(&snapshot)?,"files":snapshot.iter().map(|(k,v)|(k.clone(),v.content.clone())).collect::<BTreeMap<_,_>>(),"runs":state.runs,"inflight":state.inflight,"model_usage":null,"usage_scope":"engine operations and verification only; Goose model tokens and cost are not measured","limits":{"effects_per_run":1,"accounted_calls_per_run":2,"engine_elapsed_ms":10000,"verifier_timeout_ms":5000,"session_runs":12}}),
+            json!({"schema":state.schema,"workspace":self.workspace(),"task":TASK,"policy":POLICY,"subject_digest":snapshot_digest(&snapshot)?,"files":snapshot.iter().map(|(k,v)|(k.clone(),v.content.clone())).collect::<BTreeMap<_,_>>(),"runs":state.runs,"inflight":state.inflight,"publication_durability":null,"model_usage":null,"usage_scope":"engine operations and verification only; Goose model tokens and cost are not measured","limits":{"effects_per_run":1,"accounted_calls_per_run":2,"engine_elapsed_ms":10000,"verifier_timeout_ms":5000,"session_runs":12}}),
         )
     }
     pub fn submit(&self, input: Value) -> Result<Value> {
@@ -351,6 +366,7 @@ impl CodingStore {
         {
             let mut copy = existing.clone();
             copy["duplicate"] = json!(true);
+            copy["publication_durability"] = Value::Null;
             return Ok(copy);
         }
         if state.runs.len() >= 12 {
@@ -419,7 +435,7 @@ impl CodingStore {
                 .map_err(|e| e.to_string())?;
         }
         let after = self.snapshot()?;
-        let mut result = json!({"input_digest":input_digest,"path":change.path,"plan":change.plan,"before":before.get(&change.path).map(|v|&v.content),"proposed":change.content,"after":after.get(&change.path).map(|v|&v.content),"request":request,"effect_request":effect,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"verification":report.borrow().clone(),"execution_evidence":evidence.borrow().clone(),"terminal_receipt_verified":true,"elapsed_ms":start.elapsed().as_millis() as u64,"model_usage":null,"duplicate":false});
+        let mut result = json!({"input_digest":input_digest,"path":change.path,"plan":change.plan,"before":before.get(&change.path).map(|v|&v.content),"proposed":change.content,"after":after.get(&change.path).map(|v|&v.content),"request":request,"effect_request":effect,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"verification":report.borrow().clone(),"execution_evidence":evidence.borrow().clone(),"terminal_receipt_verified":true,"elapsed_ms":start.elapsed().as_millis() as u64,"model_usage":null,"publication_durability":null,"duplicate":false});
         if !execution
             .protected_effect_results
             .iter()
@@ -430,6 +446,15 @@ impl CodingStore {
         state.runs.push(result.clone());
         if let Some(warning) = self.save(&state, "result")? {
             result["durability_warning"] = json!(warning);
+            *state.runs.last_mut().expect("the result was appended") = result.clone();
+            let repeated_warning = self.save(&state, "result_warning").map_err(|error| format!(
+                "{warning}; warning publication failed: {error}; actual effect and visible receipt retained; inspect the session"
+            ))?;
+            if let Some(repeated_warning) = repeated_warning {
+                return Err(format!(
+                    "{warning}; warning snapshot also has unconfirmed durability: {repeated_warning}; inspect the retained session"
+                ));
+            }
         }
         Ok(result)
     }
@@ -583,6 +608,114 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let store = CodingStore::initialize(&parent.path().join("coding")).unwrap();
         (parent, store)
+    }
+    #[test]
+    fn initialization_refuses_an_unconfirmed_directory_sync_without_resetting() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("initialization-warning");
+        let result = CodingStore::initialize_inner(&root, Some("init_dir_sync"));
+        assert!(
+            result.is_err(),
+            "initialization swallowed its directory-sync warning"
+        );
+        let state = fs::read(root.join("operator/state.json")).unwrap();
+        assert!(CodingStore::initialize(&root).is_err());
+        assert_eq!(fs::read(root.join("operator/state.json")).unwrap(), state);
+        assert!(
+            CodingStore::open(&root.canonicalize().unwrap())
+                .unwrap()
+                .inspect()
+                .unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn publication_warning_survives_inspection_restart_and_duplicate_delivery() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("result_dir_sync");
+        let result = store.submit(change.clone()).unwrap();
+        let warning = result["durability_warning"].clone();
+        assert!(warning.is_string());
+        let reopened = CodingStore::open(&store.root).unwrap();
+        assert_eq!(
+            reopened.inspect().unwrap()["runs"][0]["durability_warning"],
+            warning
+        );
+        assert_eq!(
+            reopened.submit(change).unwrap()["durability_warning"],
+            warning
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            GOOD
+        );
+        assert_eq!(
+            reopened.inspect().unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn warning_publication_failure_keeps_the_actual_receipt_and_unknown_durability() {
+        for (point, faults) in [
+            (
+                "result_warning_create",
+                "result_dir_sync,result_warning_create",
+            ),
+            (
+                "result_warning_write",
+                "result_dir_sync,result_warning_write",
+            ),
+            (
+                "result_warning_flush",
+                "result_dir_sync,result_warning_flush",
+            ),
+            ("result_warning_sync", "result_dir_sync,result_warning_sync"),
+            (
+                "result_warning_rename",
+                "result_dir_sync,result_warning_rename",
+            ),
+            (
+                "result_warning_dir_sync",
+                "result_dir_sync,result_warning_dir_sync",
+            ),
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(faults);
+            let error = store.submit(change.clone()).unwrap_err();
+            assert!(
+                error.contains("directory durability uncertain"),
+                "{point}: {error}"
+            );
+            store.fault = None;
+            let reopened = CodingStore::open(&store.root).unwrap();
+            let inspected = reopened.inspect().unwrap();
+            assert_eq!(
+                inspected["runs"][0]["receipt"]["body"]["terminal_status"],
+                "completed"
+            );
+            assert!(inspected["runs"][0]["publication_durability"].is_null());
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                GOOD
+            );
+            let duplicate = reopened.submit(change).unwrap();
+            assert_eq!(duplicate["receipt"], inspected["runs"][0]["receipt"]);
+            assert!(duplicate["publication_durability"].is_null());
+            assert_eq!(
+                reopened.inspect().unwrap()["runs"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
     }
     #[test]
     fn engine_budget_refuses_execution_before_any_write() {
