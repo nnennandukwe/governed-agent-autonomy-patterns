@@ -1,5 +1,5 @@
 use gaap_submitted_proposal_reference::coding::CodingStore;
-use serde_json::json;
+use serde_json::{Value, json};
 const GOOD: &str = "def shipping_quote(quantity, unit_price):\n    if quantity <= 0:\n        raise ValueError('quantity must be positive')\n    subtotal = quantity * unit_price\n    if quantity >= 5:\n        subtotal = subtotal * 0.9\n    if subtotal < 100:\n        subtotal = subtotal + 7\n    return round(subtotal, 2)\n";
 
 #[test]
@@ -216,6 +216,33 @@ fn saved_effect_results_must_match_the_receipt_without_removal_or_duplication() 
 
 #[test]
 fn concurrent_inspection_returns_coherent_views_or_bounded_refusal() {
+    const LOCK_DEADLINE: &str = "operation interrupted while waiting for the session lock: host proposal deadline exceeded; no run or effect admitted";
+    const PREPARATION_DEADLINE: &str = "proposal interrupted before admission: host proposal deadline exceeded; no run or effect admitted";
+    fn expected_source<'a>(state: &'a Value, initial: &'a Value) -> &'a Value {
+        state["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|run| {
+                run["protected_effect_results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|effect| effect["body"]["execution_status"] == "executed")
+            })
+            .map(|run| &run["proposed"])
+            .unwrap_or(initial)
+    }
+    fn read_view(store: &CodingStore) -> Result<Value, String> {
+        for _ in 0..6 {
+            match store.inspect() {
+                Err(error) if error == LOCK_DEADLINE => continue,
+                result => return result,
+            }
+        }
+        Err("writer couldn't read a view after bounded contention retries".into())
+    }
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -240,20 +267,18 @@ fn concurrent_inspection_returns_coherent_views_or_bounded_refusal() {
                 let state = match CodingStore::open(&root).and_then(|store| store.inspect()) {
                     Ok(state) => state,
                     Err(error) => {
-                        assert_eq!(error, "operation interrupted while waiting for the session lock: host proposal deadline exceeded; no run or effect admitted");
+                        assert_eq!(error, LOCK_DEADLINE);
                         refused += 1;
-                        assert!(refused <= 6, "reader kept reaching its deadline after finite writes");
+                        assert!(
+                            refused <= 6,
+                            "reader kept reaching its deadline after finite writes"
+                        );
                         continue;
                     }
                 };
                 completed += 1;
                 if state["inflight"].is_null() {
-                    let expected = state["runs"]
-                        .as_array()
-                        .unwrap()
-                        .last()
-                        .map(|run| &run["proposed"])
-                        .unwrap_or(&initial);
+                    let expected = expected_source(&state, &initial);
                     assert_eq!(
                         &state["files"]["shipping.py"], expected,
                         "saved history and files came from different publication stages"
@@ -268,12 +293,54 @@ fn concurrent_inspection_returns_coherent_views_or_bounded_refusal() {
         }));
     }
     start.wait();
+    let mut completed_runs = 0;
     let written = (|| -> Result<(), String> {
         for revision in 0..12 {
-            let base = store.inspect()?["subject_digest"].clone();
-            let result = store.submit(json!({"path":"shipping.py", "content":format!("{GOOD}# {}\n# revision {revision}\n", "x".repeat(28000)),
-                "plan":format!("Publish shipping revision {revision}."),"base_digest":base}))?;
-            assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");
+            let mut admitted = None;
+            for _ in 0..3 {
+                let view = read_view(&store)?;
+                let before = std::fs::read(root.join("operator/state.json")).unwrap();
+                let result = store.submit(json!({"path":"shipping.py", "content":format!("{GOOD}# {}\n# revision {revision}\n", "x".repeat(28000)),
+                    "plan":format!("Publish shipping revision {revision}."),"base_digest":view["subject_digest"]}));
+                match result {
+                    Ok(result) => {
+                        admitted = Some(result);
+                        break;
+                    }
+                    Err(error) if error == LOCK_DEADLINE || error == PREPARATION_DEADLINE => {
+                        assert_eq!(
+                            std::fs::read(root.join("operator/state.json")).unwrap(),
+                            before
+                        );
+                        assert_eq!(
+                            std::fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                            view["files"]["shipping.py"].as_str().unwrap()
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let result = admitted.ok_or("writer couldn't enter after bounded admission retries")?;
+            let receipt: gaap::contracts::TerminalRunReceipt =
+                serde_json::from_value(result["receipt"].clone()).unwrap();
+            match receipt.body.terminal_status {
+                gaap::contracts::AgentRunStatus::Completed => {
+                    completed_runs += 1;
+                    assert_eq!(
+                        result["protected_effect_results"].as_array().unwrap().len(),
+                        1
+                    );
+                    assert_eq!(
+                        result["protected_effect_results"][0]["body"]["execution_status"],
+                        "executed"
+                    );
+                }
+                gaap::contracts::AgentRunStatus::Interrupted => {
+                    assert!(receipt.body.events.iter().any(|event| matches!(event,
+                        gaap::contracts::RunEvent::Interruption { reason, .. } if reason == "host proposal deadline exceeded")));
+                }
+                status => panic!("unexpected outcome under read contention: {status:?}"),
+            }
         }
         Ok(())
     })();
@@ -282,9 +349,16 @@ fn concurrent_inspection_returns_coherent_views_or_bounded_refusal() {
         reader.join().unwrap();
     }
     written.unwrap();
+    let final_view = store.inspect().unwrap();
+    assert_eq!(final_view["runs"].as_array().unwrap().len(), 12);
+    assert!(final_view["inflight"].is_null());
+    assert!(
+        completed_runs > 0,
+        "no completed effect exercised concurrent publication"
+    );
     assert_eq!(
-        store.inspect().unwrap()["runs"].as_array().unwrap().len(),
-        12
+        &final_view["files"]["shipping.py"],
+        expected_source(&final_view, &initial)
     );
 }
 
