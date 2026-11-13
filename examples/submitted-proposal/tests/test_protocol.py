@@ -32,6 +32,42 @@ def cli(command, root, value=None, success=True):
     return json.loads(result.stdout) if success else result
 
 class CliIngressTests(unittest.TestCase):
+    def test_initialized_parent_alias_reopens_without_refreshing_identity(self):
+        """Use one parent alias across CLI/MCP without changing the saved trust."""
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            alias = parent / 'alias'
+            target = parent / 'actual'
+            target.mkdir()
+            alias.symlink_to(target, target_is_directory=True)
+            root = alias / 'session'
+            initial = cli('coding-init', root)
+            state = target / 'session/operator/state.json'
+            before = state.read_bytes()
+            self.assertEqual(cli('coding-inspect', root), initial)
+            leaf_alias = parent / 'session-link'
+            leaf_alias.symlink_to(target / 'session', target_is_directory=True)
+            self.assertNotEqual(cli('coding-inspect', leaf_alias, success=False).returncode, 0)
+            client = Client(root)
+            try:
+                status, error = client.tool('read_project')
+                self.assertFalse(error, status)
+                self.assertEqual(status['subject_digest'], initial['subject_digest'])
+                result = cli('coding-submit', root, {'path': 'shipping.py', 'content': GOOD,
+                    'plan': 'Implement through the initialized parent alias.',
+                    'base_digest': initial['subject_digest']})
+                self.assertEqual(result['receipt']['body']['terminal_status'], 'completed')
+            finally:
+                client.close()
+            saved = json.loads(state.read_bytes())
+            original = json.loads(before)
+            for field in ['root', 'root_identity', 'workspace_identity',
+                          'operator_identity', 'trusted_schema', 'policy']:
+                self.assertEqual(saved[field], original[field])
+            moved = target / 'moved'
+            (target / 'session').rename(moved)
+            self.assertNotEqual(cli('coding-inspect', moved, success=False).returncode, 0)
+
     def test_cli_caps_bytes_before_parsing_and_preserves_the_session(self):
         """Refuse oversized JSON and padding before admission, then accept the boundary."""
         with tempfile.TemporaryDirectory() as directory:
@@ -284,9 +320,8 @@ class ProtocolTests(unittest.TestCase):
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 status, error = self.client.tool('run_status')
-                if error:
-                    self.assertIn('file identity changed while opening', status['error'])
-                elif status['active_submissions'] == 0:
+                self.assertFalse(error, status)
+                if status['active_submissions'] == 0:
                     state = self.stored()
                     if len(state['runs']) == index + 1:
                         break

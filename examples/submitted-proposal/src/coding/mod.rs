@@ -67,6 +67,16 @@ pub fn hash_json(value: &impl Serialize) -> Result<String> {
 fn snapshot_digest(snapshot: &Snapshot) -> Result<String> {
     hash_json(snapshot)
 }
+fn session_root(root: &Path) -> Result<PathBuf> {
+    let root = std::path::absolute(root).map_err(|e| e.to_string())?;
+    let parent = root
+        .parent()
+        .ok_or("session needs a parent")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    trusted_parent(&parent)?;
+    Ok(parent.join(root.file_name().ok_or("session needs a name")?))
+}
 
 fn validate_record(run: &Value) -> Result<()> {
     let request: AgentRunRequest =
@@ -188,14 +198,7 @@ impl CodingStore {
         )
     }
     fn initialize_inner(root: &Path, #[cfg(test)] fault: Option<&'static str>) -> Result<Self> {
-        let root = std::path::absolute(root).map_err(|e| e.to_string())?;
-        let parent = root
-            .parent()
-            .ok_or("session needs a parent")?
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
-        trusted_parent(&parent)?;
-        let root = parent.join(root.file_name().ok_or("session needs a name")?);
+        let root = session_root(root)?;
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)
@@ -247,14 +250,32 @@ impl CodingStore {
         Ok(store)
     }
     pub fn open(root: &Path) -> Result<Self> {
-        directory(root)?;
+        let root = session_root(root)?;
+        directory(&root)?;
         let store = Self {
-            root: root.canonicalize().map_err(|e| e.to_string())?,
+            root,
             #[cfg(test)]
             fault: None,
         };
+        let _snapshot = store.lock_snapshot()?;
         store.load()?;
         Ok(store)
+    }
+    fn lock_snapshot(&self) -> Result<File> {
+        let operator = self.operator();
+        directory(&operator)?;
+        let descriptor = rustix::fs::open(
+            &operator,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| e.to_string())?;
+        let lock = File::from(descriptor);
+        lock.lock().map_err(|e| e.to_string())?;
+        Ok(lock)
     }
     fn hit(&self, point: &str) -> Result<()> {
         #[cfg(test)]
@@ -328,6 +349,7 @@ impl CodingStore {
             .collect()
     }
     pub fn inspect(&self) -> Result<Value> {
+        let _snapshot = self.lock_snapshot()?;
         let mut state = self.load()?;
         for run in &mut state.runs {
             // A saved snapshot can't attest to its own later directory sync.
@@ -354,6 +376,9 @@ impl CodingStore {
         }
         let lock = open_regular(&self.operator().join("lock"), true)?;
         lock.lock().map_err(|e| e.to_string())?;
+        // Admission can wait while status remains readable. Once admitted, the
+        // separate directory lock keeps readers outside the effect/save span.
+        let _snapshot = self.lock_snapshot()?;
         let mut state = self.load()?;
         if state.inflight.is_some() {
             return Err("previous run has an uncertain outcome; inspect the files and use a fresh session; no replay dispatched".into());

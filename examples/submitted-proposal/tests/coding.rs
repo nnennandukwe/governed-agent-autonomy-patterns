@@ -213,3 +213,65 @@ fn saved_effect_results_must_match_the_receipt_without_removal_or_duplication() 
             .contains("receipt effect result count")
     );
 }
+
+#[test]
+fn concurrent_inspection_returns_one_coherent_saved_view() {
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().canonicalize().unwrap().join("coding");
+    let store = CodingStore::initialize(&root).unwrap();
+    let initial = store.inspect().unwrap()["files"]["shipping.py"].clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let start = Arc::new(Barrier::new(5));
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let root = root.clone();
+        let done = done.clone();
+        let start = start.clone();
+        let initial = initial.clone();
+        readers.push(std::thread::spawn(move || {
+            start.wait();
+            for _ in 0..500 {
+                let state = CodingStore::open(&root).unwrap().inspect().unwrap();
+                if state["inflight"].is_null() {
+                    let expected = state["runs"]
+                        .as_array()
+                        .unwrap()
+                        .last()
+                        .map(|run| &run["proposed"])
+                        .unwrap_or(&initial);
+                    assert_eq!(
+                        &state["files"]["shipping.py"], expected,
+                        "saved history and files came from different publication stages"
+                    );
+                }
+                if done.load(Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }));
+    }
+    start.wait();
+    let written = (|| -> Result<(), String> {
+        for revision in 0..12 {
+            let base = store.inspect()?["subject_digest"].clone();
+            let result = store.submit(json!({"path":"shipping.py", "content":format!("{GOOD}# {}\n# revision {revision}\n", "x".repeat(28000)),
+                "plan":format!("Publish shipping revision {revision}."),"base_digest":base}))?;
+            assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");
+        }
+        Ok(())
+    })();
+    done.store(true, Ordering::Release);
+    for reader in readers {
+        reader.join().unwrap();
+    }
+    written.unwrap();
+    assert_eq!(
+        store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+        12
+    );
+}
