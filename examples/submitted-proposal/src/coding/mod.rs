@@ -93,12 +93,64 @@ fn validate_record(run: &Value) -> Result<()> {
     {
         return Err("recorded proposal differs from the bound engine input".into());
     }
+    let effect_digest = validate_protected_effect_request(&request, &support(), &effect)
+        .map_err(|error| error.to_string())?;
+    // This reference admits at most one effect. Every non-workflow decision
+    // belongs to that effect; completion authorization uses the workflow gate.
+    let mut decided = false;
+    for event in &receipt.body.events {
+        if let RunEvent::ProtectedEffectDecision {
+            gate,
+            protected_effect_digest,
+            ..
+        } = event
+            && *gate != gaap::Gate::Workflow
+        {
+            if protected_effect_digest != &effect_digest {
+                return Err("receipt effect decision differs from the saved proposal".into());
+            }
+            decided = true;
+        }
+    }
     let results: Vec<ProtectedEffectResult> =
         serde_json::from_value(run["protected_effect_results"].clone())
             .map_err(|e| e.to_string())?;
+    if results.len() != usize::from(decided) {
+        return Err("receipt effect result count differs from the saved evidence".into());
+    }
+    let executions = receipt
+        .body
+        .events
+        .iter()
+        .filter(|event| matches!(event, RunEvent::ToolExecution { .. }))
+        .collect::<Vec<_>>();
+    if results.is_empty() && !executions.is_empty() {
+        return Err("receipt effect execution has no saved result".into());
+    }
     for result in results {
         verify_protected_effect_result(&request, &support(), &effect, &result)
             .map_err(|e| e.to_string())?;
+        let decision = &result.body.decision;
+        if !receipt.body.events.iter().any(|event| matches!(event,
+            RunEvent::ProtectedEffectDecision { decision_id, gate, protected_effect_digest, subject_digest, decision: recorded, .. }
+                if decision_id == &decision.decision_id && gate == &decision.gate
+                    && protected_effect_digest == &decision.effect_request_digest
+                    && subject_digest == &decision.subject_digest && recorded == &decision.decision)) {
+            return Err("receipt effect decision differs from the saved result".into());
+        }
+        let attempted = !matches!(
+            result.body.execution_status,
+            EffectExecutionStatus::Denied | EffectExecutionStatus::AwaitingAuthority
+        );
+        let locator = format!("gaap:protected-effect-result/{}", effect.effect_id);
+        if executions.len() != usize::from(attempted) || executions.iter().any(|event| !matches!(event,
+            RunEvent::ToolExecution { protected_effect_digest, action_digest, capability_digest, evidence, .. }
+                if protected_effect_digest == &effect_digest && action_digest == &effect_digest
+                    && capability_digest == &effect.capability.digest
+                    && evidence.iter().any(|reference| reference.evidence_type == EvidenceType::ToolExecution
+                        && reference.digest == result.result_digest && reference.locator.as_deref() == Some(locator.as_str())))) {
+            return Err("receipt effect evidence differs from the saved result".into());
+        }
         for reference in &result.body.evidence {
             if reference.locator.as_deref() == Some("gaap:record/execution_evidence")
                 && reference.digest != hash_json(&run["execution_evidence"])?

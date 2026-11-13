@@ -29,7 +29,7 @@ The server exposes `read_project`, `submit_change` and `run_status`. Read the pr
 }
 ```
 
-This sample function fails verification after its write executes. Inspect `protected_effect_results`, `verification` and `receipt.body.terminal_status` separately. A blocked completion never implies rollback. Requests to write `deployment.json` or another path receive a denied effect without changing that file.
+This sample function fails verification after its write executes. Inspect `protected_effect_results`, `verification` and `receipt.body.terminal_status` separately. A blocked completion never implies rollback. Saved results must match the receipt's effect decisions and result digests; missing, duplicated or substituted results block inspection and duplicate delivery. Requests to write `deployment.json` or another path receive a denied effect without changing that file.
 
 Only those four input fields are accepted. The caller can't submit an approval, run ID, policy decision, verifier identity, completion status or ThreadLoop claim. The host creates separate run/request IDs from 256 bits of OS randomness. The local approval describes host policy over the exact observed subject. These IDs provide correlation; this reference's local policy and receipt hashes don't authenticate a remote principal.
 

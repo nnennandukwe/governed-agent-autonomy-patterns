@@ -157,3 +157,59 @@ fn missed_published_case_cant_be_completed_by_a_wrong_function() {
         result["receipt"]["body"]["request_digest"]
     );
 }
+
+#[test]
+fn saved_effect_results_must_match_the_receipt_without_removal_or_duplication() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = CodingStore::initialize(&parent.path().join("coding")).unwrap();
+    let input = json!({"path":"shipping.py","content":GOOD,"plan":"Implement quote","base_digest":store.inspect().unwrap()["subject_digest"]});
+    store.submit(input.clone()).unwrap();
+    let path = parent.path().join("coding/operator/state.json");
+    let original = std::fs::read(&path).unwrap();
+    let original_state: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    let effect = original_state["runs"][0]["protected_effect_results"][0].clone();
+    for results in [json!([]), json!([effect.clone(), effect])] {
+        let mut state = original_state.clone();
+        state["runs"][0]["protected_effect_results"] = results;
+        let corrupt = serde_json::to_vec(&state).unwrap();
+        std::fs::write(&path, &corrupt).unwrap();
+        assert!(store.inspect().unwrap_err().contains("receipt effect"));
+        assert!(
+            store
+                .submit(input.clone())
+                .unwrap_err()
+                .contains("receipt effect")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert_eq!(
+            std::fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            GOOD
+        );
+    }
+    let mut state = original_state.clone();
+    let mut alternate: gaap::contracts::ProtectedEffectResult =
+        serde_json::from_value(state["runs"][0]["protected_effect_results"][0].clone()).unwrap();
+    alternate.body.usage.elapsed_ms += 1;
+    alternate.result_digest =
+        gaap_submitted_proposal_reference::coding::hash_json(&alternate.body).unwrap();
+    state["runs"][0]["protected_effect_results"][0] = serde_json::to_value(alternate).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(
+        store
+            .inspect()
+            .unwrap_err()
+            .contains("receipt effect evidence")
+    );
+    std::fs::write(&path, &original).unwrap();
+    store.submit(json!({"path":"deployment.json","content":"{}","plan":"Request deployment","base_digest":store.inspect().unwrap()["subject_digest"]})).unwrap();
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    state["runs"][1]["protected_effect_results"] = json!([]);
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(
+        store
+            .inspect()
+            .unwrap_err()
+            .contains("receipt effect result count")
+    );
+}

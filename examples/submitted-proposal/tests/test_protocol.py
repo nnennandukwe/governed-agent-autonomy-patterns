@@ -206,6 +206,24 @@ class ProtocolTests(unittest.TestCase):
         failed_init = cli('coding-init', self.root, success=False)
         self.assertNotEqual(failed_init.returncode, 0)
         self.assertEqual(self.stored(), before)
+    def test_missing_saved_effect_evidence_is_refused_by_all_consumers(self):
+        """Reject erased results during CLI/MCP inspection and duplicate delivery."""
+        completed, error = self.client.tool('submit_change', self.change())
+        self.assertFalse(error, completed)
+        state_path = self.root / 'operator/state.json'
+        state = json.loads(state_path.read_text())
+        state['runs'][0]['protected_effect_results'] = []
+        corrupt = json.dumps(state).encode()
+        state_path.write_bytes(corrupt)
+        refused = cli('coding-inspect', self.root, success=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('receipt effect', refused.stderr)
+        for name, arguments in [('run_status', {}), ('submit_change', self.change())]:
+            result, error = self.client.tool(name, arguments)
+            self.assertTrue(error, result)
+            self.assertIn('receipt effect', result['error'])
+        self.assertEqual(state_path.read_bytes(), corrupt)
+        self.assertEqual((self.root / 'workspace/shipping.py').read_text(), GOOD)
     def test_authority_forgery_and_stale_input_fail_before_admission(self):
         """Reject forged authority and preserve a manual edit before admission."""
         for field in ['approved', 'approval_context', 'verifier_id', 'policy_decision',
