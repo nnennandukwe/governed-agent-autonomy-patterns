@@ -225,7 +225,7 @@ through the existing GAAP executor port. It uses the official Rust SDK in a sepa
 immutable effect bindings, host subject observation, and bounded stdio. Its deterministic subprocess tests also run
 through AgentRunEngine and validate the resulting receipts independently.
 
-The initial profile pins MCP `2025-11-25` and rmcp `3.5.1`. The local stdio execution profile doesn't provide OS isolation.
+The initial profile pins MCP `2025-11-25` and rmcp `3.9.0`. The local stdio execution profile doesn't provide OS isolation.
 The governed Goose reference exercises interoperability; durable reconciliation and ThreadLoop ingestion retain their own
 roadmap issues. The [reuse mapping](docs/adr/0006-mcp-client-adapter.md) records which conference-demo patterns carry
 forward and which capabilities remain separate work.
