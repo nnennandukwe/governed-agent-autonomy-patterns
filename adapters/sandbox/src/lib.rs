@@ -471,7 +471,7 @@ impl LocalOciAdapter {
         // The daemon can emit OOM independently of its terminal State marker.
         // Read its cached/live event stream within this execution's deadline;
         // the bounded process reader retains complete events before stopping it.
-        let probe_deadline = deadline.min(Instant::now() + Duration::from_millis(250));
+        let probe_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
         let output = self.process(
             &[
                 "events".into(),
@@ -1436,5 +1436,75 @@ mod tests {
         ] {
             assert!(!absolute(path), "{path}");
         }
+    }
+    #[test]
+    fn delayed_owned_oom_events_are_observed_within_the_request_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "gaap-delayed-oom-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let executable = root.join("daemon");
+        fs::write(&executable, r##"#!/bin/sh
+if [ "$1" = events ]; then
+  /bin/sleep 0.4
+  printf '%s\n' '{"Type":"container","Action":"oom","Actor":{"ID":"owned-container","Attributes":{"org.gaap.owner":"owned-label"}},"time":1,"timeNano":1000000000}'
+else
+  printf '%s\n' '[{"Id":"owned-container","Config":{"Labels":{"org.gaap.owner":"owned-label"}},"State":{"OOMKilled":false}}]'
+fi
+"##).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut adapter = control_adapter();
+        adapter.config.executable = executable;
+        let result = adapter.oom_evidence(
+            "owned-name",
+            "owned-label",
+            "owned-container",
+            Instant::now() + Duration::from_secs(2),
+            &|| false,
+        );
+        let wrong_owner = adapter.oom_evidence(
+            "owned-name",
+            "other-owner",
+            "owned-container",
+            Instant::now() + Duration::from_secs(2),
+            &|| false,
+        );
+        let started = Instant::now();
+        let expired = adapter.oom_evidence(
+            "owned-name",
+            "owned-label",
+            "owned-container",
+            started + Duration::from_millis(100),
+            &|| false,
+        );
+        let cancelled = adapter.oom_evidence(
+            "owned-name",
+            "owned-label",
+            "owned-container",
+            Instant::now() + Duration::from_secs(2),
+            &|| true,
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            result.unwrap().is_some(),
+            "a matching daemon event after 400 ms was lost"
+        );
+        assert!(
+            wrong_owner.unwrap().is_none(),
+            "another owner's event was accepted"
+        );
+        assert!(expired.unwrap_err().starts_with("sandbox.control_timeout"));
+        assert!(
+            cancelled
+                .unwrap_err()
+                .starts_with("sandbox.control_cancelled")
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

@@ -355,6 +355,20 @@ jobs:
           GAAP_DOCKER_HOST: unix:///var/run/docker.sock
         run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native native_ -- --ignored --test-threads=1
 
+      - name: Retain daemon OOM events after native test failure
+        if: failure()
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          python3 - <<'PYTHON'
+          import subprocess
+          import time
+          subprocess.run([
+              "docker", "events", "--since", "1", "--until", str(int(time.time()) + 1),
+              "--filter", "type=container", "--filter", "event=oom", "--format", "{{json .}}"
+          ], check=True, timeout=5)
+          PYTHON
+
       - name: Install pinned Goose locally
         run: python3 examples/governed-goose/install_goose.py /tmp/gaap-goose-oci-1.54.0
 
