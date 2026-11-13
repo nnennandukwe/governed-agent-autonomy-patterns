@@ -3,7 +3,7 @@ use super::*;
 pub fn policy() -> PolicyIdentity {
     PolicyIdentity {
         name: "shipping-demo-policy".into(),
-        version: "1".into(),
+        version: "2".into(),
         digest: digest(POLICY.as_bytes()),
     }
 }

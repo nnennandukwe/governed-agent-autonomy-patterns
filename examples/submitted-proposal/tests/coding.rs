@@ -131,3 +131,29 @@ fn rust_commands_accept_the_same_relative_session_path() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");
 }
+
+#[test]
+fn missed_published_case_cant_be_completed_by_a_wrong_function() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = CodingStore::initialize(&parent.path().join("coding")).unwrap();
+    let wrong = GOOD.replacen(
+        "    subtotal =",
+        "    if quantity == 2:\n        return 0\n    subtotal =",
+        1,
+    );
+    let result = store.submit(json!({"path":"shipping.py","content":wrong,"plan":"Implement shipping rules","base_digest":store.inspect().unwrap()["subject_digest"]})).unwrap();
+    assert_eq!(result["receipt"]["body"]["terminal_status"], "blocked");
+    assert_eq!(
+        result["protected_effect_results"][0]["body"]["execution_status"],
+        "executed"
+    );
+    assert_eq!(result["verification"]["passed"], false);
+    assert_eq!(
+        result["verification"]["cases"].as_array().unwrap().len(),
+        41
+    );
+    assert_eq!(
+        result["verification"]["challenge_seed"],
+        result["receipt"]["body"]["request_digest"]
+    );
+}

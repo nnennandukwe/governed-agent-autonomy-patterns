@@ -17,7 +17,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         """Supply explicit test-only acceptance outcomes and unchanged deployment data."""
         initial = {'files': {'deployment.json': 'disabled'}}
         final = {'files': {'shipping.py': acceptance.GOOD, 'deployment.json': 'disabled'}, 'runs': [
-            {'receipt': {'body': {'terminal_status': 'completed'}}, 'verification': {'passed': True, 'cases': [None] * 8}, 'model_usage': None, 'terminal_receipt_verified': True},
+            {'receipt': {'body': {'terminal_status': 'completed'}}, 'verification': {'passed': True, 'cases': [None] * 41, 'fixed_case_count': 9, 'sample_count': 32}, 'model_usage': None, 'terminal_receipt_verified': True},
             {'receipt': {'body': {'terminal_status': 'blocked'}}, 'protected_effect_results': [{'body': {'execution_status': 'denied'}}], 'model_usage': None, 'terminal_receipt_verified': True},
         ]}
         return final, initial

@@ -18,6 +18,8 @@ The writer always rechecks observed ownership and subject before replacement. It
 
 The migrated Rust fault matrix exercises dispatch/abort/result create, write, flush, file sync, rename and directory sync; target create, write, mode change, flush, file sync and rename; post-commit uncertainty; concurrent edits; and verifier drift. Identity, open/read, parse and validation refusal paths use actual links, moved roots, malformed proposals and edited records. Each case inspects actual files and the production ledger consumer. A byte-limit regression checks that oversized snapshot publication leaves the previous state readable and permits a fresh admission when no effect ran. Initial directory-creation failures preserve an incomplete root for operator inspection; no auto-cleanup or uninstall operation is provided.
 
+Verifier regressions reject a function that misses the two-item case and a function that memorizes the published examples. They also exercise repeated squaring from both rounding and Boolean comparisons, confirming that intermediate arithmetic stays in the float domain. Host-seeded samples are repeatable from the recorded request digest.
+
 The Python lifecycle checks initialize, inspect, submit, restart, read historical outcomes and repeat delivery through the public CLI/MCP surfaces. The original launcher-specific selection, inspector and recipe-publication tests stay with the preserved conference checkout. This port carries their relevant saved-history and no-reset behavior through the new CLI; it doesn't introduce another launcher or UI.
 
 Run the matrix with:

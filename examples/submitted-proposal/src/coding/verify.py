@@ -1,5 +1,6 @@
 """Execute only the documented bounded arithmetic function, never arbitrary Python."""
 import ast
+import hashlib
 import json
 import math
 import sys
@@ -63,24 +64,95 @@ def validate(source):
     for node in nodes:
         if isinstance(node, ast.Constant) and type(node.value) in (int, float) and id(node) not in precision_constants:
             node.value = float(node.value)
-    return ast.fix_missing_locations(tree)
+    return ast.fix_missing_locations(FloatArithmetic().visit(tree))
 
 
-try:
-    payload = json.load(sys.stdin)
-    tree = validate(payload['source'])
-    namespace = {'__builtins__': {}, 'round': round, 'ValueError': ValueError}
-    exec(compile(tree, '<governed-shipping-function>', 'exec'), namespace)
-    observations = []
-    for quantity, price in payload['inputs']:
-        try:
-            value = namespace['shipping_quote'](float(quantity), float(price))
-            if type(value) not in (int, float) or not math.isfinite(value):
-                observations.append({'error': 'non_finite_or_non_numeric_result'})
-            else:
-                observations.append({'value': value})
-        except Exception as error:
-            observations.append({'error': type(error).__name__})
-    print(json.dumps({'observations': observations}))
-except Exception as error:
-    print(json.dumps({'validation_error': str(error)[:500]}))
+class FloatArithmetic(ast.NodeTransformer):
+    """Keep every binary arithmetic result in the bounded float domain."""
+    def number(self, value):
+        """Convert an operand through a host-owned name unavailable to source."""
+        return ast.Call(func=ast.Name(id='_gaap_float', ctx=ast.Load()), args=[value], keywords=[])
+
+    def visit_BinOp(self, node):
+        """Normalize both operands, including values produced by comparisons."""
+        node = self.generic_visit(node)
+        node.left = self.number(node.left)
+        node.right = self.number(node.right)
+        return node
+
+    def visit_AugAssign(self, node):
+        """Replace augmented assignment with the same bounded binary operation."""
+        node = self.generic_visit(node)
+        value = ast.BinOp(left=self.number(ast.Name(id=node.target.id, ctx=ast.Load())),
+                          op=node.op, right=self.number(node.value))
+        return ast.copy_location(ast.Assign(targets=[node.target], value=value), node)
+
+
+def bounded_round(value, precision=0):
+    """Return a float even when rounding or Boolean arithmetic produced an integer."""
+    return float(round(float(value), precision))
+
+
+def compile_candidate(source):
+    """Compile validated source with host-owned bounded arithmetic bindings."""
+    namespace = {'__builtins__': {}, 'round': bounded_round,
+                 'ValueError': ValueError, '_gaap_float': float}
+    exec(compile(validate(source), '<governed-shipping-function>', 'exec'), namespace)
+    return namespace['shipping_quote']
+
+
+def observe(candidate, quantity, price):
+    """Record one numeric result or exception without candidate-controlled output."""
+    try:
+        value = candidate(float(quantity), float(price))
+        if type(value) not in (int, float) or not math.isfinite(value):
+            return {'error': 'non_finite_or_non_numeric_result'}
+        return {'value': value}
+    except Exception as error:
+        return {'error': type(error).__name__}
+
+
+def reference_quote(quantity, price):
+    """Compute the task expectation in the verifier's separate trusted namespace."""
+    if quantity <= 0:
+        raise ValueError('quantity must be positive')
+    subtotal = float(quantity) * float(price)
+    if quantity >= 5:
+        subtotal *= 0.9
+    if subtotal < 100:
+        subtotal += 7
+    return round(subtotal, 2)
+
+
+def challenge_inputs(seed):
+    """Derive replayable samples from a host request issued after input binding."""
+    for index in range(32):
+        block = hashlib.sha256((seed + ':' + str(index)).encode()).digest()
+        quantity = 1 + int.from_bytes(block[:4], 'big') % 200
+        price = (int.from_bytes(block[4:8], 'big') % 50001) / 100.0
+        yield quantity, price
+
+
+def evaluate(source, inputs, seed):
+    """Check published fixtures and recorded host-seeded samples independently."""
+    candidate = compile_candidate(source)
+    observations = [observe(candidate, quantity, price) for quantity, price in inputs]
+    probes = []
+    for quantity, price in challenge_inputs(seed):
+        expected = reference_quote(quantity, price)
+        probes.append({'quantity': quantity, 'unit_price': price,
+                       'expected': expected, 'observed': observe(candidate, quantity, price)})
+    return {'observations': observations, 'probes': probes}
+
+
+def main():
+    """Read one host payload and emit bounded verifier observations."""
+    try:
+        payload = json.load(sys.stdin)
+        print(json.dumps(evaluate(payload['source'], payload['inputs'], payload['seed'])))
+    except Exception as error:
+        print(json.dumps({'validation_error': str(error)[:500]}))
+
+
+if __name__ == '__main__':
+    main()

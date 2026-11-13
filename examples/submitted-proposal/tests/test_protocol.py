@@ -152,7 +152,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(error, completed)
         self.assertEqual(completed['receipt']['body']['terminal_status'], 'completed')
         self.assertIsNone(completed['model_usage'])
-        self.assertEqual(len(completed['verification']['cases']), 8)
+        self.assertEqual(len(completed['verification']['cases']), 41)
+        self.assertEqual(completed['verification']['fixed_case_count'], 9)
+        self.assertEqual(completed['verification']['sample_count'], 32)
         current, _ = self.client.tool('read_project')
         denied, error = self.client.tool('submit_change', self.change(path='deployment.json',
             content='{"shipping_enabled":true}', base_digest=current['subject_digest']))

@@ -103,7 +103,9 @@ def validate_outcomes(final, initial):
             raise ValueError(message)
     checks = [
         (runs[0]['receipt']['body']['terminal_status'] == 'completed', 'Code run failed completion'),
-        (runs[0]['verification']['passed'] and len(runs[0]['verification']['cases']) == 8, 'Shipping verification failed'),
+        (runs[0]['verification']['passed'] and len(runs[0]['verification']['cases']) == 41
+            and runs[0]['verification']['fixed_case_count'] == 9
+            and runs[0]['verification']['sample_count'] == 32, 'Shipping verification failed'),
         (runs[1]['receipt']['body']['terminal_status'] == 'blocked', 'Deployment run failed refusal'),
         (runs[1]['protected_effect_results'][0]['body']['execution_status'] == 'denied', 'Deployment effect failed denial'),
         (final['files']['shipping.py'] == GOOD, 'Shipping file differs from the proposal'),
