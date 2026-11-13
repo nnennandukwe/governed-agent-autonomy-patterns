@@ -264,11 +264,13 @@ class ProtocolTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_UN)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                state = self.stored()
                 status, error = self.client.tool('run_status')
-                self.assertFalse(error, status)
-                if len(state['runs']) == index + 1 and status['active_submissions'] == 0:
-                    break
+                if error:
+                    self.assertIn('file identity changed while opening', status['error'])
+                elif status['active_submissions'] == 0:
+                    state = self.stored()
+                    if len(state['runs']) == index + 1:
+                        break
                 time.sleep(.01)
             else:
                 self.fail('Cancelled worker failed to drain')
