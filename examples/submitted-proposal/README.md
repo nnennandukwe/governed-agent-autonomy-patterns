@@ -10,11 +10,11 @@ Use the repository's pinned Rust 1.96 toolchain and Python 3 on macOS or Linux:
 
 ```bash
 cargo build --manifest-path examples/submitted-proposal/Cargo.toml --locked
-examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference coding-init /tmp/my-new-proposal-session
-examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference coding-serve /tmp/my-new-proposal-session
+examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference coding-init ./my-new-proposal-session
+examples/submitted-proposal/target/debug/gaap-submitted-proposal-reference coding-serve ./my-new-proposal-session
 ```
 
-The last command serves MCP JSON-RPC on stdin/stdout. Attach an MCP client instead of typing into that stream. `coding-inspect ROOT` prints the validated saved history; `coding-submit ROOT` accepts one JSON object on stdin and prints its result. `--help` lists these commands. Initialization refuses an existing root.
+The last command serves MCP JSON-RPC on stdin/stdout. Attach an MCP client instead of typing into that stream. `coding-inspect ROOT` prints the validated saved history; `coding-submit ROOT` accepts one JSON object on stdin and prints its result. `--help` lists these commands. Initialization refuses an existing root. CLI submissions have the same 256 KiB input limit: the host reads at most that limit plus one byte and rejects oversized input before JSON parsing or session admission.
 
 The transport caps each incoming frame at 256 KiB before JSON deserialization and permits eight outstanding RPC requests per connection. Oversized lines are discarded through their next newline; they produce no run or receipt. A request flood or a duplicate active RPC ID closes the connection, cancels registered work and prevents later admissions on that connection. Open a new connection and inspect saved outcomes before resubmitting.
 

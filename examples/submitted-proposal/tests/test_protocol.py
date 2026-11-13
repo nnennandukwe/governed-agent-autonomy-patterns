@@ -31,6 +31,35 @@ def cli(command, root, value=None, success=True):
         raise AssertionError(result.stderr)
     return json.loads(result.stdout) if success else result
 
+class CliIngressTests(unittest.TestCase):
+    def test_cli_caps_bytes_before_parsing_and_preserves_the_session(self):
+        """Refuse oversized JSON and padding before admission, then accept the boundary."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'session'
+            status = cli('coding-init', root)
+            proposal = {'path': 'shipping.py', 'content': GOOD,
+                'plan': 'Implement the shipping task.', 'base_digest': status['subject_digest']}
+            encoded = json.dumps(proposal).encode()
+            state = root / 'operator/state.json'
+            before = state.read_bytes()
+            source = (root / 'workspace/shipping.py').read_bytes()
+            oversized = [b' ' * (256 * 1024) + encoded,
+                json.dumps(dict(proposal, content='x' * (256 * 1024))).encode()]
+            for payload in oversized:
+                result = subprocess.run([str(BINARY), 'coding-submit', str(root)],
+                    input=payload, capture_output=True, timeout=20, env={})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'256 KiB byte limit', result.stderr)
+                self.assertEqual(state.read_bytes(), before)
+                self.assertEqual((root / 'workspace/shipping.py').read_bytes(), source)
+                self.assertEqual(cli('coding-inspect', root)['runs'], [])
+            boundary = encoded + b' ' * (256 * 1024 - len(encoded))
+            result = subprocess.run([str(BINARY), 'coding-submit', str(root)],
+                input=boundary, capture_output=True, timeout=20, env={})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['receipt']['body']['terminal_status'], 'completed')
+
+
 class Client:
     """Use only the public MCP wire format, independently of the Rust SDK."""
     def __init__(self, root):

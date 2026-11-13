@@ -1,6 +1,9 @@
 use gaap_submitted_proposal_reference::coding::{CodingStore, mcp::CodingServer, transport};
 use rmcp::ServiceExt;
-use std::{io, path::Path};
+use std::{
+    io::{self, Read},
+    path::Path,
+};
 fn print(value: impl serde::Serialize) -> Result<(), String> {
     println!(
         "{}",
@@ -28,7 +31,16 @@ async fn run() -> Result<(), String> {
         ["coding-init", root] => print(CodingStore::initialize(Path::new(root))?.inspect()?),
         ["coding-inspect", root] => print(CodingStore::open(Path::new(root))?.inspect()?),
         ["coding-submit", root] => {
-            let input = serde_json::from_reader(io::stdin()).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            io::stdin()
+                .lock()
+                .take((transport::MAX_FRAME_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > transport::MAX_FRAME_BYTES {
+                return Err("proposal input exceeds the 256 KiB byte limit".into());
+            }
+            let input = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             print(CodingStore::open(Path::new(root))?.submit(input)?)
         }
         ["coding-serve", root] => {
