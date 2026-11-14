@@ -13,7 +13,20 @@ fn examples() -> Vec<(&'static str, ApprovedAction, RequestedScope, Value)> {
         version: "1".into(),
         digest: fixture_digest('a'),
     };
-    let mcp=ApprovedAction::mcp(fixture_digest('1'),"2025-11-25".into(),json!({"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}})).unwrap();
+    let mcp = ApprovedAction::mcp(
+        fixture_digest('1'),
+        "2025-11-25".into(),
+        json!({
+            "name": "lookup",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        }),
+    )
+    .unwrap();
     vec![
         (
             "filesystem",
@@ -106,7 +119,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![action.clone()],
         )?;
         pins.insert(name.into(), json!(pack.identities()));
-        inspected.insert(name.into(),json!({"policies":pack.identities(),"schema":pack.schema_document(),"action":action,"scope":scope,"input":input,"input_digest":input_digest,"source":saved}));
+        inspected.insert(
+            name.into(),
+            json!({
+                "policies": pack.identities(),
+                "schema": pack.schema_document(),
+                "action": action,
+                "scope": scope,
+                "input": input,
+                "input_digest": input_digest,
+                "source": saved
+            }),
+        );
     }
     let pin_path = root.join("pins.json");
     if write {
