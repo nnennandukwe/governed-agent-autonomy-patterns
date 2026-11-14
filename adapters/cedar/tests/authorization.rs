@@ -10,14 +10,14 @@ use gaap::static_policy::StaticPolicyAdapter;
 use gaap_cedar::{ApprovedAction, CedarAdapter, PreparedPack, content_digest, exact_permit};
 use serde_json::{Value, json};
 
-fn d(c: char) -> String {
-    format!("sha256:{}", c.to_string().repeat(64))
+fn fixture_digest(hex_digit: char) -> String {
+    format!("sha256:{}", hex_digit.to_string().repeat(64))
 }
 fn cap() -> CapabilityIdentity {
     CapabilityIdentity {
         name: "local.effect".into(),
         version: "1".into(),
-        digest: d('a'),
+        digest: fixture_digest('a'),
     }
 }
 fn scope() -> RequestedScope {
@@ -69,7 +69,7 @@ fn run_request(capability: CapabilityIdentity, pins: &[PolicyIdentity]) -> Agent
     let subject = Subject {
         kind: SubjectKind::Repository,
         locator: "/workspace".into(),
-        digest: d('b'),
+        digest: fixture_digest('b'),
     };
     AgentRunRequest {
         schema_version: AGENT_RUN_REQUEST_SCHEMA.into(),
@@ -95,7 +95,7 @@ fn run_request(capability: CapabilityIdentity, pins: &[PolicyIdentity]) -> Agent
             subject_digest: subject.digest,
             evidence: EvidenceReference {
                 evidence_type: EvidenceType::Approval,
-                digest: d('c'),
+                digest: fixture_digest('c'),
                 locator: None,
             },
         }],
@@ -133,7 +133,7 @@ fn effect(
         sandbox_profile: SandboxProfileIdentity {
             name: "local-fixture".into(),
             version: "1".into(),
-            digest: d('d'),
+            digest: fixture_digest('d'),
         },
         idempotency_key: "local-run/1".into(),
         repeatability: Repeatability::Idempotent,
@@ -271,7 +271,7 @@ fn activation_rejects_missing_invalid_incompatible_and_wildcard_policies() {
     }
     let pack = prepare(&action(), &scope(), &input(), "");
     let mut pins = pack.identities().clone();
-    pins[1].digest = d('0');
+    pins[1].digest = fixture_digest('0');
     assert!(
         pack.activate(&pins, BTreeMap::new())
             .unwrap_err()
@@ -293,11 +293,11 @@ fn missing_context_unknown_actions_and_changed_pins_fail_closed() {
         let mut changed = request.clone();
         match change {
             0 => changed.normalized_operation = "filesystem.delete".into(),
-            1 => changed.capability.digest = d('e'),
-            2 => changed.policies[0].digest = d('0'),
+            1 => changed.capability.digest = fixture_digest('e'),
+            2 => changed.policies[0].digest = fixture_digest('0'),
             3 => changed.subject.locator.clear(),
             4 => changed.run_id = "unknown-run".into(),
-            _ => changed.tool_schema_digest = Some(d('f')),
+            _ => changed.tool_schema_digest = Some(fixture_digest('f')),
         };
         assert_eq!(adapter.evaluate(&changed).decision, PolicyDecision::Deny);
     }
@@ -311,17 +311,17 @@ fn missing_context_unknown_actions_and_changed_pins_fail_closed() {
 }
 
 fn mcp_action() -> ApprovedAction {
-    ApprovedAction::mcp(d('1'),"2025-11-25".into(),json!({"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}})).unwrap()
+    ApprovedAction::mcp(fixture_digest('1'),"2025-11-25".into(),json!({"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}})).unwrap()
 }
 fn mcp_scope() -> RequestedScope {
     RequestedScope::ExternalService {
-        service: d('1'),
+        service: fixture_digest('1'),
         operation: "lookup".into(),
         resource: "/workspace".into(),
     }
 }
 fn mcp_input() -> Value {
-    json!({"server":d('1'),"tool":"lookup","arguments":{"query":"approved"}})
+    json!({"server":fixture_digest('1'),"tool":"lookup","arguments":{"query":"approved"}})
 }
 
 #[test]
@@ -331,10 +331,10 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
     let pack = prepare(&action, &mcp_scope(), &input, "");
     let (_, request) = effect(&action, mcp_scope(), &input, pack.identities());
     let original_ids = pack.identities().clone();
-    let wrong = json!({"server":d('1'),"tool":"lookup","arguments":{}});
-    let wrong_type = json!({"server":d('1'),"tool":"lookup","arguments":{"query":123}});
-    let extra =
-        json!({"server":d('1'),"tool":"lookup","arguments":{"query":"approved","extra":true}});
+    let wrong = json!({"server":fixture_digest('1'),"tool":"lookup","arguments":{}});
+    let wrong_type =
+        json!({"server":fixture_digest('1'),"tool":"lookup","arguments":{"query":123}});
+    let extra = json!({"server":fixture_digest('1'),"tool":"lookup","arguments":{"query":"approved","extra":true}});
     let adapter = activate(
         pack,
         vec![input, wrong.clone(), wrong_type.clone(), extra.clone()],
@@ -348,7 +348,8 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
     }
     let mut descriptor = action.mcp.as_ref().unwrap().descriptor.clone();
     descriptor["inputSchema"]["properties"]["query"]["type"] = json!("integer");
-    let changed = ApprovedAction::mcp(d('1'), "2025-11-25".into(), descriptor).unwrap();
+    let changed =
+        ApprovedAction::mcp(fixture_digest('1'), "2025-11-25".into(), descriptor).unwrap();
     assert_eq!(action.capability.name, changed.capability.name);
     assert_ne!(action.capability.digest, changed.capability.digest);
     assert_ne!(action.tool_schema_digest, changed.tool_schema_digest);
@@ -356,7 +357,8 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
     assert_ne!(original_ids[1], pack.identities()[1]);
     let mut description = action.mcp.as_ref().unwrap().descriptor.clone();
     description["description"] = json!("Changed advertised behavior");
-    let described = ApprovedAction::mcp(d('1'), "2025-11-25".into(), description).unwrap();
+    let described =
+        ApprovedAction::mcp(fixture_digest('1'), "2025-11-25".into(), description).unwrap();
     assert_ne!(action.capability.digest, described.capability.digest);
     assert_eq!(action.tool_schema_digest, described.tool_schema_digest);
     let described_pack = prepare(&described, &mcp_scope(), &mcp_input(), "");
@@ -368,7 +370,7 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
     );
     let mut unknown = request;
     unknown.requested_scopes = vec![RequestedScope::ExternalService {
-        service: d('2'),
+        service: fixture_digest('2'),
         operation: "lookup".into(),
         resource: "/workspace".into(),
     }];
@@ -379,9 +381,11 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
 fn unsupported_descriptor_semantics_and_forged_identity_are_rejected() {
     let mut unsafe_descriptor = mcp_action().mcp.unwrap().descriptor;
     unsafe_descriptor["unknownNumericMetadata"] = json!(9_007_199_254_740_992_u64);
-    assert!(ApprovedAction::mcp(d('1'), "2025-11-25".into(), unsafe_descriptor).is_err());
+    assert!(
+        ApprovedAction::mcp(fixture_digest('1'), "2025-11-25".into(), unsafe_descriptor).is_err()
+    );
     let mut action = mcp_action();
-    action.capability.digest = d('0');
+    action.capability.digest = fixture_digest('0');
     assert!(
         PreparedPack::prepare(
             "pack",
@@ -400,7 +404,7 @@ fn unsupported_descriptor_semantics_and_forged_identity_are_rejected() {
     ] {
         assert!(
             ApprovedAction::mcp(
-                d('1'),
+                fixture_digest('1'),
                 "2025-11-25".into(),
                 json!({"name":"lookup","inputSchema":schema})
             )
@@ -446,7 +450,7 @@ fn parallel_readonly_evaluations_are_deterministic_and_bound() {
         assert_eq!(thread.join().unwrap(), expected);
     }
     let mut changed = expected.clone();
-    changed.effect_request_digest = d('0');
+    changed.effect_request_digest = fixture_digest('0');
     assert_ne!(expected.evidence_digest(), changed.evidence_digest());
 }
 
@@ -491,7 +495,7 @@ struct Executor {
 fn reference(kind: EffectEvidenceType) -> EffectEvidenceReference {
     EffectEvidenceReference {
         evidence_type: kind,
-        digest: d('e'),
+        digest: fixture_digest('e'),
         locator: None,
     }
 }
@@ -499,7 +503,7 @@ fn executor_id() -> ExecutorIdentity {
     ExecutorIdentity {
         name: "fixture".into(),
         version: "1".into(),
-        digest: d('f'),
+        digest: fixture_digest('f'),
     }
 }
 impl ExecutorPort for Executor {
@@ -510,7 +514,7 @@ impl ExecutorPort for Executor {
         self.calls.fetch_add(1, Ordering::SeqCst);
         std::fs::write(&self.path, b"approved").unwrap();
         let mut subject = effect.subject.clone();
-        subject.digest = d('2');
+        subject.digest = fixture_digest('2');
         Ok(ExecutorObservation {
             execution_status: EffectExecutionStatus::Executed,
             observed_post_effect_subject: Some(subject),
@@ -554,7 +558,7 @@ impl VerifierPort for Verifier {
                 },
                 evidence: vec![EvidenceReference {
                     evidence_type: EvidenceType::Artifact,
-                    digest: d('e'),
+                    digest: fixture_digest('e'),
                     locator: None,
                 }],
             },
@@ -597,10 +601,10 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
         );
         let (mut run, mut effect) = effect(&action(), scope, &input(), pack.identities());
         if mode == "stale_subject" {
-            effect.subject.digest = d('3');
+            effect.subject.digest = fixture_digest('3');
         }
         if mode == "schema_drift" {
-            effect.tool_schema_digest = Some(d('4'));
+            effect.tool_schema_digest = Some(fixture_digest('4'));
         }
         if mode == "budget" {
             run.resource_budget.max_tool_calls = 0;
@@ -666,7 +670,7 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
             runtime,
             config,
             Agent {
-                plan: d('b'),
+                plan: fixture_digest('b'),
                 steps: VecDeque::from([
                     AgentStep::ProtectedEffect(Box::new(ProtectedEffectProposal {
                         request: effect.clone(),
@@ -792,7 +796,7 @@ fn real_stdio_mcp_descriptors_and_effects_pass_through_cedar_and_engine() {
         let provisional = [PolicyIdentity {
             name: "probe".into(),
             version: "1".into(),
-            digest: d('1'),
+            digest: fixture_digest('1'),
         }];
         let run = run_request(tool.capability.clone(), &provisional);
         let observed = run.subject.clone();
@@ -920,7 +924,7 @@ fn real_stdio_mcp_descriptors_and_effects_pass_through_cedar_and_engine() {
             runtime,
             config,
             Agent {
-                plan: d('b'),
+                plan: fixture_digest('b'),
                 steps: VecDeque::from([
                     AgentStep::ProtectedEffect(Box::new(ProtectedEffectProposal {
                         request: effect.clone(),

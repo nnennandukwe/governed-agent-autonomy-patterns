@@ -4,16 +4,16 @@ use gaap_cedar::{ApprovedAction, PreparedPack, content_digest, exact_permit};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-fn d(c: char) -> String {
-    format!("sha256:{}", c.to_string().repeat(64))
+fn fixture_digest(hex_digit: char) -> String {
+    format!("sha256:{}", hex_digit.to_string().repeat(64))
 }
 fn examples() -> Vec<(&'static str, ApprovedAction, RequestedScope, Value)> {
     let cap = CapabilityIdentity {
         name: "local.example".into(),
         version: "1".into(),
-        digest: d('a'),
+        digest: fixture_digest('a'),
     };
-    let mcp=ApprovedAction::mcp(d('1'),"2025-11-25".into(),json!({"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}})).unwrap();
+    let mcp=ApprovedAction::mcp(fixture_digest('1'),"2025-11-25".into(),json!({"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}})).unwrap();
     vec![
         (
             "filesystem",
@@ -52,11 +52,11 @@ fn examples() -> Vec<(&'static str, ApprovedAction, RequestedScope, Value)> {
             "mcp",
             mcp,
             RequestedScope::ExternalService {
-                service: d('1'),
+                service: fixture_digest('1'),
                 operation: "lookup".into(),
                 resource: "/workspace".into(),
             },
-            json!({"server":d('1'),"tool":"lookup","arguments":{"query":"approved"}}),
+            json!({"server":fixture_digest('1'),"tool":"lookup","arguments":{"query":"approved"}}),
         ),
     ]
 }
