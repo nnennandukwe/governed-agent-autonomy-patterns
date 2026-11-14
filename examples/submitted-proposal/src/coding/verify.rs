@@ -118,11 +118,12 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
     )
 }
 
-pub struct ShippingVerifier {
+pub struct ShippingVerifier<'a> {
     pub store: CodingStore,
+    pub state: &'a State,
     pub report: Rc<RefCell<Value>>,
 }
-impl VerifierPort for ShippingVerifier {
+impl VerifierPort for ShippingVerifier<'_> {
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
@@ -130,7 +131,7 @@ impl VerifierPort for ShippingVerifier {
         let start = Instant::now();
         let result = (|| -> Result<_> {
             // Both snapshots are after the executor has finished the file change.
-            let before_verification = self.store.snapshot()?;
+            let before_verification = self.store.snapshot(self.state)?;
             let observed_digest = snapshot_digest(&before_verification)?;
             let seed = validate_request(context.request, &support()).map_err(|e| e.to_string())?;
             let mut report = evaluate_seed(&before_verification["shipping.py"].content, &seed)?;
@@ -142,7 +143,7 @@ impl VerifierPort for ShippingVerifier {
                 )
                 .map_err(|e| e.to_string())?;
             }
-            let after_verification = self.store.snapshot()?;
+            let after_verification = self.store.snapshot(self.state)?;
             let fresh = before_verification == after_verification
                 && observed_digest == context.current_subject.digest;
             report["subject_digest"] = json!(observed_digest);

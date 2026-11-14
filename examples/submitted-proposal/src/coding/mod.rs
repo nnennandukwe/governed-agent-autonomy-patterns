@@ -336,6 +336,13 @@ impl CodingStore {
         let state: State =
             serde_json::from_str(&read(&self.operator().join("state.json"), MAX_STATE_BYTES)?.0)
                 .map_err(|e| e.to_string())?;
+        self.validate_identity(&state)?;
+        for run in &state.runs {
+            validate_record(run)?;
+        }
+        Ok(state)
+    }
+    fn validate_identity(&self, state: &State) -> Result<()> {
         if state.schema != "gaap-submitted-proposal-session/v1"
             || state.root != self.root
             || state.trusted_schema != mcp::capability_digest()
@@ -346,10 +353,7 @@ impl CodingStore {
         {
             return Err("session identity or policy changed; preserve it for inspection and use a fresh session".into());
         }
-        for run in &state.runs {
-            validate_record(run)?;
-        }
-        Ok(state)
+        Ok(())
     }
     fn save(&self, state: &State, phase: &str) -> Result<Option<String>> {
         let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
@@ -380,8 +384,11 @@ impl CodingStore {
             .err()
             .map(|e| format!("snapshot visible; directory durability uncertain: {e}")))
     }
-    fn snapshot(&self) -> Result<Snapshot> {
-        self.load()?;
+    fn snapshot(&self, state: &State) -> Result<Snapshot> {
+        // The caller retains the snapshot lock and validated ledger for this
+        // operation. Recheck live directory/file identities without parsing
+        // and hashing the unchanged history at every effect observation.
+        self.validate_identity(state)?;
         ["TASK.md", "shipping.py", "deployment.json"]
             .into_iter()
             .map(|name| {
@@ -401,7 +408,7 @@ impl CodingStore {
             // A saved snapshot can't attest to its own later directory sync.
             run["publication_durability"] = Value::Null;
         }
-        let snapshot = self.snapshot()?;
+        let snapshot = self.snapshot(&state)?;
         Ok(
             json!({"schema":state.schema,"workspace":self.workspace(),"task":TASK,"policy":POLICY,"subject_digest":snapshot_digest(&snapshot)?,"files":snapshot.iter().map(|(k,v)|(k.clone(),v.content.clone())).collect::<BTreeMap<_,_>>(),"runs":state.runs,"inflight":state.inflight,"publication_durability":null,"model_usage":null,"usage_scope":"engine operations and verification only; Goose model tokens and cost are not measured","limits":{"effects_per_run":1,"accounted_calls_per_run":2,"engine_elapsed_ms":10000,"verifier_timeout_ms":5000,"session_runs":12}}),
         )
@@ -445,7 +452,7 @@ impl CodingStore {
                 "session run limit reached; no effect dispatched; use a fresh session".into(),
             );
         }
-        let before = self.snapshot()?;
+        let before = self.snapshot(&state)?;
         let request = request(self, state.runs.len() + 1, &change, &before)?;
         let effect = effect(&request, &change)?;
         // Validate before the durable running marker; malformed input cannot strand a session.
@@ -500,6 +507,7 @@ impl CodingStore {
             adapter,
             FileExecutor {
                 store: self.clone(),
+                state: &state,
                 before: before.clone(),
                 change: change.clone(),
                 evidence: evidence.clone(),
@@ -507,6 +515,7 @@ impl CodingStore {
             },
             verify::ShippingVerifier {
                 store: self.clone(),
+                state: &state,
                 report: report.clone(),
             },
         );
@@ -519,7 +528,7 @@ impl CodingStore {
             verify_protected_effect_result(&request, &support(), &effect, result)
                 .map_err(|e| e.to_string())?;
         }
-        let after = self.snapshot()?;
+        let after = self.snapshot(&state)?;
         let mut result = json!({"input_digest":input_digest,"path":change.path,"plan":change.plan,"before":before.get(&change.path).map(|v|&v.content),"proposed":change.content,"after":after.get(&change.path).map(|v|&v.content),"request":request,"effect_request":effect,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"verification":report.borrow().clone(),"execution_evidence":evidence.borrow().clone(),"terminal_receipt_verified":true,"elapsed_ms":start.elapsed().as_millis() as u64,"model_usage":null,"publication_durability":null,"duplicate":false});
         if !execution
             .protected_effect_results
@@ -545,20 +554,21 @@ impl CodingStore {
     }
 }
 
-struct FileExecutor {
+struct FileExecutor<'a> {
     store: CodingStore,
+    state: &'a State,
     before: Snapshot,
     change: Change,
     evidence: Rc<RefCell<Value>>,
     control: RunControl,
 }
-impl FileExecutor {
+impl FileExecutor<'_> {
     fn commit(&self) -> std::result::Result<Snapshot, (bool, String)> {
         let prepare = (|| -> Result<_> {
             if self.change.path != "shipping.py" {
                 return Err("executor scope refused".into());
             }
-            if self.store.snapshot()? != self.before {
+            if self.store.snapshot(self.state)? != self.before {
                 return Err("workspace changed before execution".into());
             }
             self.store.hit("target_create")?;
@@ -587,7 +597,7 @@ impl FileExecutor {
             }
             // External writers must use the same admission/snapshot locks.
             // An ordinary editor can race this check and the rename; see TRANSACTION.md.
-            if self.store.snapshot()? != self.before {
+            if self.store.snapshot(self.state)? != self.before {
                 return Err("workspace changed before commit; concurrent work preserved".into());
             }
             if self.control.cancellation().is_some() {
@@ -601,7 +611,7 @@ impl FileExecutor {
         })();
         prepare.map_err(|e| (false, e))?;
         self.store.hit("postcommit").map_err(|e| (true, e))?;
-        let after = self.store.snapshot().map_err(|e| (true, e))?;
+        let after = self.store.snapshot(self.state).map_err(|e| (true, e))?;
         if after["shipping.py"].content != self.change.content {
             return Err((true, "postcommit content differs".into()));
         }
@@ -611,7 +621,7 @@ impl FileExecutor {
         Ok(after)
     }
 }
-impl ExecutorPort for FileExecutor {
+impl ExecutorPort for FileExecutor<'_> {
     fn cancellation(&self) -> Option<Cancellation> {
         self.control.cancellation()
     }
@@ -632,7 +642,7 @@ impl ExecutorPort for FileExecutor {
                 if committed {
                     None
                 } else {
-                    self.store.snapshot().ok()
+                    self.store.snapshot(self.state).ok()
                 },
                 Some(e),
             ),
@@ -907,7 +917,8 @@ mod tests {
     fn engine_budget_refuses_execution_before_any_write() {
         let (_parent, store) = prepared();
         let change: Change = serde_json::from_value(input(&store)).unwrap();
-        let before = store.snapshot().unwrap();
+        let state = store.load().unwrap();
+        let before = store.snapshot(&state).unwrap();
         let mut request = request(&store, 1, &change, &before).unwrap();
         request.resource_budget.max_tool_calls = 0;
         let effect = effect(&request, &change).unwrap();
@@ -924,6 +935,7 @@ mod tests {
             .unwrap(),
             FileExecutor {
                 store: store.clone(),
+                state: &state,
                 before,
                 change,
                 evidence: Rc::new(RefCell::new(Value::Null)),
@@ -931,6 +943,7 @@ mod tests {
             },
             verify::ShippingVerifier {
                 store: store.clone(),
+                state: &state,
                 report: Rc::new(RefCell::new(Value::Null)),
             },
         );
