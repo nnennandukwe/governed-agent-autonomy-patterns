@@ -9,7 +9,7 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("diagnose-native-oom.py")
 FAKE_DOCKER = r'''
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 arguments = sys.argv[1:]
 state_path = Path(os.environ["FAKE_DOCKER_STATE"])
@@ -30,11 +30,20 @@ elif arguments[:2] == ["container", "create"]:
 elif arguments[:2] == ["container", "start"]:
     raise SystemExit(137)
 elif arguments[:2] == ["container", "inspect"]:
-    print("malformed inspection")
+    if state["mode"] == "probe":
+        print(json.dumps([{"Id": "a"*64, "State": {"OOMKilled": True, "ExitCode": 137},
+            "Config": {"Labels": {"org.gaap.owner": state["owner"]}},
+            "HostConfig": {"Memory": 33554432, "MemorySwap": 33554432}}]))
+    else:
+        print("malformed inspection")
 elif arguments[:2] == ["container", "ls"]:
     expected_owner = next(value.split("=", 2)[2] for value in arguments if value.startswith("label=org.gaap.owner="))
     if state["created"] and state["owner"] == expected_owner:
         print("a" * 64)
+elif arguments[:1] == ["events"]:
+    print(json.dumps({"Action": "oom", "Actor": {"ID": "a"*64}}), flush=True)
+    if "--until" not in arguments:
+        time.sleep(2)
 elif arguments[:2] == ["container", "rm"]:
     state["created"] = False
     state["removed"] = arguments[-1]
@@ -77,6 +86,17 @@ class DiagnosticCleanupTests(unittest.TestCase):
         state, result = self.exercise("create_loss")
         self.assertFalse(state["created"], result.stderr + result.stdout)
         self.assertEqual(state["removed"], "a" * 64)
+
+    def test_live_probe_retains_output_and_cleanup_completes(self):
+        """A live-stream timeout retains complete records and releases its fixture."""
+        state, result = self.exercise("probe")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse(state["created"])
+        record = next(line.split(" ", 2)[2] for line in result.stdout.splitlines()
+            if line.startswith("[DEBUG-gaap19-oom] live_events "))
+        value = json.loads(record)
+        self.assertTrue(value["timed_out"])
+        self.assertIn("oom", value["stdout"])
 
     def test_foreign_owner_is_preserved(self):
         """A mismatched owner prevents fixture deletion."""
