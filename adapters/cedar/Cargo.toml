@@ -1,0 +1,21 @@
+[package]
+name = "gaap-cedar"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+cedar-policy = { version = "=4.14.1", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+serde_jcs = "=0.2.0"
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+gaap-mcp = { path = "../mcp", version = "=0.1.0" }
