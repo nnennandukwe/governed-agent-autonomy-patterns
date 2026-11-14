@@ -45,7 +45,11 @@ pub struct CodingServer {
 #[derive(Default)]
 struct ConnectionState {
     closed: bool,
-    controls: BTreeMap<u64, RunControl>,
+    controls: BTreeMap<u64, PendingCall>,
+}
+struct PendingCall {
+    control: RunControl,
+    is_submission: bool,
 }
 impl CodingServer {
     pub fn new(store: CodingStore) -> Self {
@@ -59,8 +63,8 @@ impl CodingServer {
         let mut state = self.active.lock().unwrap_or_else(|e| e.into_inner());
         let first_close = !state.closed;
         state.closed = true;
-        for control in state.controls.values() {
-            control.cancel();
+        for call in state.controls.values() {
+            call.control.cancel();
         }
         first_close
     }
@@ -79,7 +83,7 @@ impl CodingServer {
                 let mut state = self.store.inspect_control(&control)?;
                 if name == "run_status" {
                     return Ok(
-                        json!({"latest_run":state["runs"].as_array().and_then(|r|r.last()),"inflight":state["inflight"],"subject_digest":state["subject_digest"],"active_submissions":self.active.lock().unwrap_or_else(|e| e.into_inner()).controls.len()}),
+                        json!({"latest_run":state["runs"].as_array().and_then(|r|r.last()),"inflight":state["inflight"],"subject_digest":state["subject_digest"],"active_submissions":self.active.lock().unwrap_or_else(|e| e.into_inner()).controls.values().filter(|call| call.is_submission).count()}),
                     );
                 }
                 state.as_object_mut().unwrap().remove("runs");
@@ -89,12 +93,12 @@ impl CodingServer {
         }
     }
 }
-struct ActiveSubmission {
+struct ActiveCall {
     id: u64,
     server: CodingServer,
     control: RunControl,
 }
-impl Drop for ActiveSubmission {
+impl Drop for ActiveCall {
     fn drop(&mut self) {
         // Dropping a handler mustn't detach a live write from cancellation.
         // The blocking worker still drains and stores its actual outcome.
@@ -130,7 +134,7 @@ impl ServerHandler for CodingServer {
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, ErrorData> {
         let control = RunControl::new(std::time::Duration::from_secs(10));
-        let _active = if request.name == "submit_change" {
+        let _active = {
             let id = self.next_correlation.fetch_add(1, Ordering::Relaxed);
             let mut state = self.active.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
@@ -138,14 +142,18 @@ impl ServerHandler for CodingServer {
                     "Connection closed before admission; no effect dispatched. Inspect saved outcomes with a new connection."
                 )]).into());
             }
-            state.controls.insert(id, control.clone());
-            Some(ActiveSubmission {
+            state.controls.insert(
+                id,
+                PendingCall {
+                    control: control.clone(),
+                    is_submission: request.name == "submit_change",
+                },
+            );
+            ActiveCall {
                 id,
                 server: self.clone(),
                 control: control.clone(),
-            })
-        } else {
-            None
+            }
         };
         let server = self.clone();
         let worker_control = control.clone();

@@ -438,6 +438,33 @@ class ProtocolTests(unittest.TestCase):
             os.close(snapshot)
         self.client.idle()
         self.assertEqual(self.stored(), self.initial)
+    def test_disconnect_queued_reads_exits_without_unlocking_snapshot(self):
+        """Cancel both queued read tools on disconnect while their lock stays held."""
+        before = (self.root / 'operator/state.json').read_bytes()
+        for name in ['read_project', 'run_status']:
+            with self.subTest(tool=name):
+                snapshot = os.open(self.root / 'operator', os.O_RDONLY)
+                fcntl.flock(snapshot, fcntl.LOCK_EX)
+                try:
+                    identifier = self.client.start('tools/call', {'name': name, 'arguments': {}})
+                    self.client.request('tools/list', {})
+                    time.sleep(.1)
+                    self.assertFalse(any(message.get('id') == identifier
+                                         for message in self.client.messages))
+                    self.client.process.stdin.close()
+                    ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
+                    self.assertTrue(ready, 'Host never observed the read client disconnect')
+                    self.assertIn('MCP connection closed', self.client.process.stderr.readline())
+                    self.client.process.wait(timeout=2)
+                    self.assertEqual((self.root / 'operator/state.json').read_bytes(), before)
+                finally:
+                    fcntl.flock(snapshot, fcntl.LOCK_UN)
+                    os.close(snapshot)
+                    self.client.close()
+                    self.client = Client(self.root)
+                    self.addCleanup(self.client.close)
+                self.assertEqual(self.stored(), self.initial)
+
     def test_disconnect_while_queued_drains_without_replay(self):
         """Exit a disconnected worker while the external admission lock stays held."""
         lock = self.lock()

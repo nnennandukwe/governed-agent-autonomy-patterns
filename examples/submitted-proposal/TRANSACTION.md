@@ -29,7 +29,7 @@ The migrated Rust fault matrix exercises dispatch/abort/result create, write, fl
 
 Verifier regressions reject a function that misses the two-item case and a function that memorizes the published examples. They also exercise repeated squaring from both rounding and Boolean comparisons, confirming that intermediate arithmetic stays in the float domain. Host-seeded samples are repeatable from the recorded request digest.
 
-The Python lifecycle checks initialize, inspect, submit, restart, read historical outcomes and repeat delivery through the public CLI/MCP surfaces. The original launcher-specific selection, inspector and recipe-publication tests stay with the preserved conference checkout. This port carries their relevant saved-history and no-reset behavior through the new CLI; it doesn't introduce another launcher or UI.
+The Python lifecycle checks initialize, inspect, submit, restart, read historical outcomes and repeat delivery through the public CLI/MCP surfaces. All tool-call controls participate in connection shutdown, including reads waiting for the snapshot lock. The public MCP regression disconnects each read tool with that lock still held, requires the process to exit within two seconds and verifies unchanged files/history. The status field `active_submissions` continues to count submissions only. The original launcher-specific selection, inspector and recipe-publication tests stay with the preserved conference checkout. This port carries their relevant saved-history and no-reset behavior through the new CLI; it doesn't introduce another launcher or UI.
 
 Run the matrix with:
 
