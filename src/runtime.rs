@@ -629,16 +629,16 @@ where
             } else {
                 PolicyDecision::Deny
             };
-            permission.policy_decision =
-                Some(match (permission.policy_decision, evaluated_decision) {
-                    (Some(PolicyDecision::Deny), _) | (_, PolicyDecision::Deny) => {
-                        PolicyDecision::Deny
-                    }
-                    (Some(PolicyDecision::Ask), _) | (_, PolicyDecision::Ask) => {
-                        PolicyDecision::Ask
-                    }
-                    _ => PolicyDecision::Allow,
-                });
+            permission.policy_decision = match (permission.policy_decision, evaluated_decision) {
+                (Some(PolicyDecision::Deny), _) | (_, PolicyDecision::Deny) => {
+                    Some(PolicyDecision::Deny)
+                }
+                (Some(PolicyDecision::Ask), _) | (_, PolicyDecision::Ask) => {
+                    Some(PolicyDecision::Ask)
+                }
+                (Some(PolicyDecision::Allow), PolicyDecision::Allow) => Some(PolicyDecision::Allow),
+                (None, PolicyDecision::Allow) => None,
+            };
             policy_evidence = vec![
                 format!("static_policy.policy:{}", evaluation.policy.digest),
                 format!("static_policy.schema:{}", evaluation.schema.digest),

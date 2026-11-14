@@ -160,3 +160,18 @@ cargo audit --file examples/submitted-proposal/Cargo.lock
 ```
 
 The required `submitted_proposal` CI lane also runs [real Goose against a local deterministic provider](examples/submitted-proposal/README.md#deterministic-goose-acceptance). Keep that acceptance separate from live-model validation. Existing conference sessions stay in their original checkout; use a fresh root for the new reference.
+
+## Cedar static-policy checks
+
+The [Cedar adapter](adapters/cedar/README.md) uses a separate locked crate and requires Rust 1.89. Run its formatting, Clippy, tests, build and example pin check before review:
+
+```bash
+cargo fmt --manifest-path adapters/cedar/Cargo.toml --check
+cargo clippy --manifest-path adapters/cedar/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/cedar/Cargo.toml --locked
+cargo build --manifest-path adapters/cedar/Cargo.toml --locked
+cargo run --manifest-path adapters/cedar/Cargo.toml --locked --example packs -- --check
+cargo audit --file adapters/cedar/Cargo.lock
+```
+
+The required `cedar` lane also tests Rust 1.89. Its deterministic stdio fixture uses Python 3. Changes to the provider-neutral policy port require the core runtime and state-machine checks too. Keep both policy/schema pins in existing request policies and retain the returned evaluation records beside effect evidence. The adapter guide explains explicit host activation and unsupported schema semantics.

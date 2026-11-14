@@ -289,13 +289,14 @@ fn missing_context_unknown_actions_and_changed_pins_fail_closed() {
     assert_eq!(evidence.decision, PolicyDecision::Deny);
     assert!(evidence.errors[0].contains("missing bound input"));
     let adapter = activate(prepare(&action(), &scope(), &input(), ""), vec![input()]);
-    for change in 0..5 {
+    for change in 0..6 {
         let mut changed = request.clone();
         match change {
             0 => changed.normalized_operation = "filesystem.delete".into(),
             1 => changed.capability.digest = d('e'),
             2 => changed.policies[0].digest = d('0'),
             3 => changed.subject.locator.clear(),
+            4 => changed.run_id = "unknown-run".into(),
             _ => changed.tool_schema_digest = Some(d('f')),
         };
         assert_eq!(adapter.evaluate(&changed).decision, PolicyDecision::Deny);
@@ -353,6 +354,13 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
     assert_ne!(action.tool_schema_digest, changed.tool_schema_digest);
     let pack = prepare(&changed, &mcp_scope(), &mcp_input(), "");
     assert_ne!(original_ids[1], pack.identities()[1]);
+    let mut description = action.mcp.as_ref().unwrap().descriptor.clone();
+    description["description"] = json!("Changed advertised behavior");
+    let described = ApprovedAction::mcp(d('1'), "2025-11-25".into(), description).unwrap();
+    assert_ne!(action.capability.digest, described.capability.digest);
+    assert_eq!(action.tool_schema_digest, described.tool_schema_digest);
+    let described_pack = prepare(&described, &mcp_scope(), &mcp_input(), "");
+    assert_ne!(original_ids[1], described_pack.identities()[1]);
     let changed_adapter = activate(pack, vec![mcp_input()]);
     assert_eq!(
         changed_adapter.evaluate(&request).decision,
@@ -369,6 +377,9 @@ fn mcp_descriptor_schema_identity_and_required_arguments_are_enforced() {
 
 #[test]
 fn unsupported_descriptor_semantics_and_forged_identity_are_rejected() {
+    let mut unsafe_descriptor = mcp_action().mcp.unwrap().descriptor;
+    unsafe_descriptor["unknownNumericMetadata"] = json!(9_007_199_254_740_992_u64);
+    assert!(ApprovedAction::mcp(d('1'), "2025-11-25".into(), unsafe_descriptor).is_err());
     let mut action = mcp_action();
     action.capability.digest = d('0');
     assert!(
@@ -385,6 +396,7 @@ fn unsupported_descriptor_semantics_and_forged_identity_are_rejected() {
         json!({"type":"object","properties":{},"additionalProperties":true}),
         json!({"type":"string","pattern":"^safe$"}),
         json!({"type":"number"}),
+        json!({"type":"string"}),
     ] {
         assert!(
             ApprovedAction::mcp(
@@ -406,7 +418,10 @@ fn evaluation_errors_override_otherwise_allowed_decisions() {
         &content_digest(&input()).unwrap(),
     )
     .unwrap();
-    let source = source.trim_end_matches(';').to_owned() + " when { 9223372036854775807 + 1 > 0 };";
+    let source = format!(
+        "{source}\n{} when {{ 9223372036854775807 + 1 > 0 }};",
+        source.trim_end_matches(';')
+    );
     let pack = PreparedPack::prepare("pack", "1", "local-run", &source, vec![action()]).unwrap();
     let (_, request) = effect(&action(), scope(), &input(), pack.identities());
     let evidence = activate(pack, vec![input()]).evaluate(&request);
@@ -559,6 +574,9 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
         "budget",
         "verification",
         "legacy_deny",
+        "host_unset",
+        "stale_subject",
+        "schema_drift",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("result.txt");
@@ -578,6 +596,12 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
             },
         );
         let (mut run, mut effect) = effect(&action(), scope, &input(), pack.identities());
+        if mode == "stale_subject" {
+            effect.subject.digest = d('3');
+        }
+        if mode == "schema_drift" {
+            effect.tool_schema_digest = Some(d('4'));
+        }
         if mode == "budget" {
             run.resource_budget.max_tool_calls = 0;
             effect.agent_run_request_digest =
@@ -604,8 +628,10 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
             PermissionPolicy {
                 policy_decision: if mode == "legacy_deny" {
                     Some(PolicyDecision::Deny)
-                } else {
+                } else if mode == "host_unset" {
                     None
+                } else {
+                    Some(PolicyDecision::Allow)
                 },
                 risk_tags: if mode == "risk" {
                     vec!["destructive_path".into()]
@@ -681,7 +707,21 @@ fn real_engine_preserves_static_and_runtime_authority_and_evidence() {
             &execution.protected_effect_results[0],
         )
         .unwrap();
-        if mode != "budget" {
+        if mode == "host_unset" {
+            assert_eq!(
+                execution.receipt.body.terminal_reason,
+                "permission.unknown_action"
+            );
+            assert_eq!(
+                execution.protected_effect_results[0].body.execution_status,
+                EffectExecutionStatus::AwaitingAuthority
+            );
+            assert_eq!(
+                execution.static_policy_evaluations[0].decision,
+                PolicyDecision::Allow
+            );
+        }
+        if !["budget", "stale_subject"].contains(&mode) {
             let evaluation = &execution.static_policy_evaluations[0];
             let marker = format!("static_policy.evidence:{}", evaluation.evidence_digest());
             assert!(execution.receipt.body.events.iter().any(|event|matches!(event,RunEvent::ProtectedEffectDecision{decision,..} if decision.effects.contains(&marker))));

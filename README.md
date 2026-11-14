@@ -207,6 +207,16 @@ repository roadmap.
 
 GAAP is licensed under the [Apache License 2.0](./LICENSE).
 
+## Cedar static-policy adapter
+
+The [Cedar adapter](adapters/cedar/README.md) evaluates local, explicitly pinned policies for exact filesystem, process, network and MCP effects. The runtime binds typed evaluation evidence to each request and records its policy/schema digests in existing receipt decision events. RunCoordinator keeps authority over subject freshness, approval, tool trust, budgets, runtime and verification.
+
+Inspect and validate the committed examples without activating them:
+
+```bash
+cargo run --manifest-path adapters/cedar/Cargo.toml --locked --example packs -- --check
+```
+
 ## ACP agent-session adapter
 
 The [ACP adapter](adapters/acp/README.md) pins the official Rust SDK 3.3.0 and stable protocol v1. One session belongs

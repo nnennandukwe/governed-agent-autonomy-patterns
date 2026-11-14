@@ -77,6 +77,9 @@ impl ApprovedAction {
         protocol: String,
         descriptor: Value,
     ) -> Result<Self, PolicyError> {
+        if bounded_json(&descriptor)? > 1024 * 1024 {
+            return Err(error("MCP descriptor exceeds its byte bound"));
+        }
         let name = descriptor
             .get("name")
             .and_then(Value::as_str)
@@ -88,6 +91,9 @@ impl ApprovedAction {
         let input_schema = descriptor
             .get("inputSchema")
             .ok_or_else(|| error("MCP inputSchema is required"))?;
+        if input_schema["type"] != "object" {
+            return Err(error("MCP inputSchema must describe an object"));
+        }
         cedar_type(input_schema, 0)?;
         let capability = CapabilityIdentity {
             name: format!("mcp.{name}"),
@@ -171,6 +177,9 @@ impl PreparedPack {
             return Err(error(
                 "a bounded nonempty local policy pack and action inventory are required",
             ));
+        }
+        if serde_json::to_vec(&actions).map_err(error)?.len() > 1024 * 1024 {
+            return Err(error("approved action inventory exceeds its byte bound"));
         }
         actions.sort_by_key(|action| {
             action_uid(action)
