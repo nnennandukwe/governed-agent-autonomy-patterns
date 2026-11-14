@@ -388,6 +388,7 @@ impl CodingStore {
         // The caller retains the snapshot lock and validated ledger for this
         // operation. Recheck live directory/file identities without parsing
         // and hashing the unchanged history at every effect observation.
+        directory(&self.root)?;
         self.validate_identity(state)?;
         ["TASK.md", "shipping.py", "deployment.json"]
             .into_iter()
@@ -913,6 +914,26 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn snapshot_refuses_a_symlinked_ancestor_after_loading_the_session() {
+        let parent = tempfile::tempdir().unwrap();
+        let base = parent.path().canonicalize().unwrap();
+        let original = base.join("original");
+        fs::create_dir(&original).unwrap();
+        let store = CodingStore::initialize(&original.join("session")).unwrap();
+        let _lock = store
+            .lock_snapshot(&RunControl::new(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let state = store.load().unwrap();
+        fs::rename(&original, base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(base.join("moved"), &original).unwrap();
+        assert!(store.snapshot(&state).unwrap_err().contains("symlinks"));
+        assert_eq!(
+            fs::read_to_string(base.join("moved/session/workspace/shipping.py")).unwrap(),
+            INITIAL
+        );
+    }
+
     #[test]
     fn engine_budget_refuses_execution_before_any_write() {
         let (_parent, store) = prepared();
