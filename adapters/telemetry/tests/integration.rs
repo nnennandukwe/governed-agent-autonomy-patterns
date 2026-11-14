@@ -1,4 +1,5 @@
-use std::cell::RefCell;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -11,6 +12,52 @@ use gaap::contracts::*;
 use gaap::runtime::*;
 use gaap_telemetry::*;
 use serde_json::{Value, json};
+
+// Count allocations only on the probing thread; other tests keep using System.
+struct TrackingAllocator;
+thread_local! {
+    static TRACK_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATED_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+fn record_allocation(bytes: usize) {
+    if TRACK_ALLOCATIONS.try_with(Cell::get).unwrap_or(false) {
+        let _ = ALLOCATED_BYTES.try_with(|total| total.set(total.get().saturating_add(bytes)));
+    }
+}
+// SAFETY: every allocation operation delegates unchanged to the system allocator.
+unsafe impl GlobalAlloc for TrackingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        record_allocation(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        record_allocation(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        record_allocation(size);
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: TrackingAllocator = TrackingAllocator;
+struct AllocationProbe;
+impl Drop for AllocationProbe {
+    fn drop(&mut self) {
+        TRACK_ALLOCATIONS.with(|enabled| enabled.set(false));
+    }
+}
+fn allocated_by(action: impl FnOnce() -> Submission) -> (Submission, usize) {
+    ALLOCATED_BYTES.with(|total| total.set(0));
+    TRACK_ALLOCATIONS.with(|enabled| enabled.set(true));
+    let probe = AllocationProbe;
+    let result = action();
+    drop(probe);
+    (result, ALLOCATED_BYTES.with(Cell::get))
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
@@ -515,6 +562,12 @@ fn actual_otlp_http_success_failure_partial_rejection_and_slow_collector_are_iso
         (503, "{}", Duration::ZERO, Delivery::Failed),
         (
             200,
+            "{\"partial_success\":{\"rejected_spans\":\"1\"}}",
+            Duration::ZERO,
+            Delivery::Delivered,
+        ),
+        (
+            200,
             "{\"partialSuccess\":{\"rejectedSpans\":null,\"errorMessage\":null}}",
             Duration::ZERO,
             Delivery::Delivered,
@@ -890,4 +943,84 @@ fn malformed_receipt_digest_is_rejected_before_sampling() {
         telemetry.shutdown(Duration::from_secs(2)),
         Shutdown::Complete
     );
+}
+
+#[test]
+fn full_export_budget_rejects_without_allocating_a_projection() {
+    let (_, calibration) = allocated_by(|| {
+        std::hint::black_box(vec![0_u8; 1024]);
+        Submission::Disabled
+    });
+    assert!(
+        calibration >= 1024,
+        "the allocation probe must observe its positive control"
+    );
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut telemetry = Telemetry::with_sink(
+        QueueConfig {
+            capacity: 1,
+            sample_every: 1,
+        },
+        move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Delivery::Delivered
+        },
+    )
+    .unwrap();
+    let (execution, _) = run(Scenario::Completed);
+    let correlation = Correlation::default();
+    assert_eq!(
+        telemetry.observe(&execution, &correlation),
+        Submission::Queued
+    );
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        telemetry.observe(&execution, &correlation),
+        Submission::Queued
+    );
+    let (submission, allocated) = allocated_by(|| telemetry.observe(&execution, &correlation));
+    assert_eq!(telemetry.shutdown(Duration::ZERO), Shutdown::TimedOut);
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        telemetry.shutdown(Duration::from_secs(2)),
+        Shutdown::Complete
+    );
+    assert_eq!(submission, Submission::Full);
+    assert_eq!(
+        allocated, 0,
+        "a full exporter must reject before building JSON"
+    );
+}
+
+#[test]
+fn invalid_projection_releases_capacity_for_later_valid_runs() {
+    let (execution, _) = run(Scenario::Completed);
+    let mut invalid = execution.clone();
+    invalid.receipt.body.request_digest = "invalid".into();
+    let mut telemetry = Telemetry::with_sink(
+        QueueConfig {
+            capacity: 1,
+            sample_every: 1,
+        },
+        |_| Delivery::Delivered,
+    )
+    .unwrap();
+    for _ in 0..10 {
+        assert_eq!(
+            telemetry.observe(&invalid, &Correlation::default()),
+            Submission::Invalid(ProjectionError::InvalidDigest)
+        );
+    }
+    assert_eq!(
+        telemetry.observe(&execution, &Correlation::default()),
+        Submission::Queued
+    );
+    assert_eq!(
+        telemetry.shutdown(Duration::from_secs(2)),
+        Shutdown::Complete
+    );
+    assert_eq!(telemetry.statistics().dropped, 10);
+    assert_eq!(telemetry.statistics().delivered, 1);
 }

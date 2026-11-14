@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -408,6 +408,21 @@ struct Counters {
     failed: AtomicU64,
 }
 
+// Keep each reservation through construction, queueing and sink execution.
+struct AdmissionSlot(Arc<AtomicUsize>);
+
+impl Drop for AdmissionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+struct Batch {
+    // Release the allocation before releasing its admission slot.
+    bytes: Vec<u8>,
+    _slot: AdmissionSlot,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shutdown {
     Complete,
@@ -436,10 +451,12 @@ impl std::error::Error for ConfigError {}
 
 /// An opt-in worker. Default construction starts no worker and opens no socket.
 pub struct Telemetry {
-    sender: Option<SyncSender<Vec<u8>>>,
+    sender: Option<SyncSender<Batch>>,
     worker: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     counters: Arc<Counters>,
+    in_flight: Arc<AtomicUsize>,
+    max_in_flight: usize,
     sample_every: u32,
     enabled: bool,
 }
@@ -457,6 +474,8 @@ impl Telemetry {
             worker: None,
             stop: Arc::default(),
             counters: Arc::default(),
+            in_flight: Arc::default(),
+            max_in_flight: 0,
             sample_every: 1,
             enabled: false,
         }
@@ -471,7 +490,7 @@ impl Telemetry {
         if !(1..=256).contains(&config.capacity) {
             return Err(ConfigError::Capacity);
         }
-        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(config.capacity);
+        let (sender, receiver) = mpsc::sync_channel::<Batch>(config.capacity);
         let stop = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(Counters::default());
         let worker_stop = stop.clone();
@@ -481,8 +500,8 @@ impl Telemetry {
             .spawn(move || {
                 while !worker_stop.load(Ordering::Relaxed) {
                     match receiver.recv_timeout(Duration::from_millis(20)) {
-                        Ok(bytes) => {
-                            let delivery = catch_unwind(AssertUnwindSafe(|| sink(&bytes)))
+                        Ok(batch) => {
+                            let delivery = catch_unwind(AssertUnwindSafe(|| sink(&batch.bytes)))
                                 .unwrap_or(Delivery::Failed);
                             let counter = match delivery {
                                 Delivery::Delivered => &worker_counters.delivered,
@@ -502,6 +521,8 @@ impl Telemetry {
             worker: Some(worker),
             stop,
             counters,
+            in_flight: Arc::default(),
+            max_in_flight: config.capacity + 1,
             sample_every: config.sample_every,
             enabled: true,
         })
@@ -589,6 +610,17 @@ impl Telemetry {
             self.counters.sampled_out.fetch_add(1, Ordering::Relaxed);
             return Submission::SampledOut;
         }
+        if self
+            .in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                (used < self.max_in_flight).then_some(used + 1)
+            })
+            .is_err()
+        {
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            return Submission::Full;
+        }
+        let slot = AdmissionSlot(self.in_flight.clone());
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -601,7 +633,7 @@ impl Telemetry {
                 return Submission::Invalid(error);
             }
         };
-        match sender.try_send(bytes) {
+        match sender.try_send(Batch { bytes, _slot: slot }) {
             Ok(()) => {
                 self.counters.queued.fetch_add(1, Ordering::Relaxed);
                 Submission::Queued

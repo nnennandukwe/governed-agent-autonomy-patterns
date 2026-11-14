@@ -76,6 +76,10 @@ rejections and no warning, counts as delivered. A positive rejection count or
 a nonempty warning counts as partial. Malformed message
 shapes or field types count as failed acknowledgements. This follows the
 [pinned trace-service response](https://github.com/open-telemetry/opentelemetry-proto/blob/v1.9.0/opentelemetry/proto/collector/trace/v1/trace_service.proto).
+The [pinned OTLP JSON encoding rules](https://github.com/open-telemetry/opentelemetry-proto/blob/v1.9.0/docs/specification.md#json-protobuf-encoding)
+require lowerCamelCase keys and ignore unknown field names. Original Protobuf
+snake-case keys aren't valid OTLP JSON field names, so the exporter leaves them
+uninterpreted rather than treating them as acknowledgement aliases.
 Other responses, refusal and timeout also count as failed telemetry. Here,
 failed means delivery couldn't be confirmed within the response/time bounds;
 a consumer may already have accepted the batch. A partial result doesn't claim
@@ -148,6 +152,10 @@ and unavailable usage display independently of this projection.
 ## Bounds and lifecycle
 
 The queue defaults to 16 batches and accepts capacities from 1 through 256.
+Before building a projection, the adapter reserves an admission slot. Projection
+construction, queued batches and the active sink jointly use at most capacity
+plus one slots. Each slot stays owned until its payload is freed or an error
+returns. A fully occupied exporter rejects new work before allocating JSON.
 A projection accepts at most 1,024 ledger events, 128 effect results, 4,096 bytes
 per raw correlation/run/request/effect identity and 1 MiB of serialized output.
 An oversized projection is dropped as a whole. Full queues drop the incoming
@@ -196,3 +204,9 @@ The concurrency test holds one sink call while eight producers fill a two-batch
 queue, checks that excess batches drop, and runs an authority-required engine
 case while export is blocked. Fractional sampling is checked separately for
 stable inclusion of the same receipt.
+
+A thread-local allocation probe calibrates against a real allocation, fills a
+held exporter, and verifies zero allocation requests on the calling thread for
+the rejected submission. A recovery test repeatedly rejects invalid projections
+and verifies that a later valid run still gains admission. These checks cover
+pre-construction backpressure and reservation cleanup without exhausting memory.
