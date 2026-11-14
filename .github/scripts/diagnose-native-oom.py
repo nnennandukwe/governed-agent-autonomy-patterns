@@ -36,6 +36,20 @@ def inspect(name):
 
 
 
+
+def live_events(name):
+    """Capture the same 250 ms live event probe used by the adapter."""
+    arguments = ["docker", "events", "--since", "1", "--filter", "container="+name,
+                 "--filter", "event=oom", "--format", "{{json .}}"]
+    try:
+        return command(arguments, timeout=0.25)
+    except subprocess.TimeoutExpired as exception:
+        stdout = exception.stdout or b""
+        stderr = exception.stderr or b""
+        return {"timed_out": True,
+                "stdout": stdout.decode(errors="replace")[-65536:] if isinstance(stdout, bytes) else stdout[-65536:],
+                "stderr": stderr.decode(errors="replace")[-8192:] if isinstance(stderr, bytes) else stderr[-8192:]}
+
 def cleanup(name, owner, container_id):
     """Remove only an exact name/owner match within an independent deadline."""
     deadline = time.monotonic() + 8
@@ -107,9 +121,12 @@ def main():
             if delay:
                 time.sleep(delay)
             emit("state", {"elapsed_ms": round((time.monotonic()-start)*1000), "value": inspect(name)})
-        # A finite cached-event window avoids terminating a live client before it flushes.
-        emit("events", command(["docker", "events", "--since", "1", "--until", str(int(time.time())+1),
-            "--filter", "container="+container_id, "--filter", "event=oom", "--format", "{{json .}}"], timeout=5))
+        emit("live_events", live_events(name))
+        # Compare a finite cached query by name and ID with the short live probe.
+        for selector in [name, container_id]:
+            emit("finite_events", {"selector": selector, "value": command([
+                "docker", "events", "--since", "1", "--until", str(int(time.time())+1),
+                "--filter", "container="+selector, "--filter", "event=oom", "--format", "{{json .}}"], timeout=5)})
     finally:
         cleanup(name, owner, container_id)
 
