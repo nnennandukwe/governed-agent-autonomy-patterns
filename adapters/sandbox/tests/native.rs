@@ -17,6 +17,10 @@ use gaap_sandbox::{
 use serde_json::Value;
 
 const IMAGE: &str = "sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a";
+// Keep the cgroup alive briefly after the allocating child exits so the runtime
+// can report its OOM event before systemd tears down the empty cgroup. Preserve
+// the child's actual exit; the assertions still require Docker OOM evidence.
+const OOM_WORKLOAD: &str = "import subprocess,sys,time;child=subprocess.run([sys.executable,'-I','-S','-B','-c','allocation=bytearray(256*1024*1024);print(len(allocation))']);time.sleep(0.25);sys.exit(128-child.returncode if child.returncode<0 else child.returncode)";
 struct Fixture {
     root: PathBuf,
     config: OciConfig,
@@ -426,8 +430,7 @@ fn native_memory_limit_is_recorded() {
         32
     } * 1024
         * 1024;
-    fixture.request.command[5] =
-        "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
+    fixture.request.command[5] = OOM_WORKLOAD.into();
     fixture.config.approved_profile_digest = fixture.request.profile_digest().unwrap();
     let result = run(&fixture);
     assert_eq!(result.status, SandboxStatus::ResourceLimit, "{result:?}");
@@ -703,8 +706,7 @@ fn native_weakened_container_profiles_never_start() {
 fn native_oom_event_recovers_a_missing_state_marker() {
     let mut fixture = fixture();
     fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
-    fixture.request.command[5] =
-        "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
+    fixture.request.command[5] = OOM_WORKLOAD.into();
     let real = fixture
         .config
         .executable
@@ -759,8 +761,7 @@ fn native_exit_137_alone_doesnt_prove_oom() {
 fn native_terminal_oom_marker_can_arrive_after_event_probe() {
     let mut fixture = fixture();
     fixture.request.limits.memory_bytes = 32 * 1024 * 1024;
-    fixture.request.command[5] =
-        "allocation=bytearray(256*1024*1024);print(len(allocation))".into();
+    fixture.request.command[5] = OOM_WORKLOAD.into();
     let real = fixture
         .config
         .executable
