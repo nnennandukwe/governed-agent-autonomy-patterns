@@ -187,7 +187,7 @@ jobs:
 
   telemetry:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -202,6 +202,18 @@ jobs:
           cargo clippy --manifest-path adapters/telemetry/Cargo.toml --locked --all-targets -- -D warnings
           cargo test --manifest-path adapters/telemetry/Cargo.toml --locked
           cargo build --manifest-path adapters/telemetry/Cargo.toml --locked
+
+      - name: Install declared minimum Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check minimum Rust compatibility
+        run: cargo +1.88.0 test --manifest-path adapters/telemetry/Cargo.toml --locked
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit telemetry dependency lockfile
+        run: cargo audit --file adapters/telemetry/Cargo.lock
 
   cedar:
     runs-on: ubuntu-latest

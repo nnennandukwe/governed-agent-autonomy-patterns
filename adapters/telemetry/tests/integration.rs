@@ -515,6 +515,18 @@ fn actual_otlp_http_success_failure_partial_rejection_and_slow_collector_are_iso
         (503, "{}", Duration::ZERO, Delivery::Failed),
         (
             200,
+            "{\"partialSuccess\":{}}",
+            Duration::ZERO,
+            Delivery::Partial,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"rejectedSpans\":\"0\"}}",
+            Duration::ZERO,
+            Delivery::Partial,
+        ),
+        (
+            200,
             "{\"partialSuccess\":{\"rejectedSpans\":\"1\"}}",
             Duration::ZERO,
             Delivery::Partial,

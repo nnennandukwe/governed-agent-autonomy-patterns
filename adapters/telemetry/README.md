@@ -72,8 +72,11 @@ proxy routing are disabled; no DNS names, URL credentials, arbitrary paths or
 environment overrides are accepted. The total HTTP timeout must be greater
 than zero and at most five seconds. Responses must be HTTP 200 with a bounded
 JSON object; a `partialSuccess` response is counted separately and never retried.
-Other responses, refusal and timeout count as failed telemetry. There are no
-automatic retries. Re-observing the same sealed output retains its stable IDs.
+Other responses, refusal and timeout count as failed telemetry. Here, failed
+means delivery couldn't be confirmed within the response/time bounds; a consumer
+may already have accepted the batch. A `partialSuccess` object, including an
+empty object or a zero-rejection warning, records that protocol response rather
+than claiming a count of lost spans. There are no automatic retries. Re-observing the same sealed output retains its stable IDs.
 
 This transport profile has no authentication headers. Use an explicitly
 configured local authenticated relay when ingestion requires credentials;
@@ -118,7 +121,10 @@ names, credentials, free-text reasons and full canonical audit records are
 omitted by construction. Request/run/effect IDs are bounded and hashed with a
 field-specific namespace plus a zero byte before SHA-256. Already-authoritative
 content digests remain exact; the adapter rejects malformed digests. Hashes
-aren't authentication or a claim that a supplied identity is trusted.
+aren't authentication or a claim that a supplied identity is trusted. Predictable
+raw IDs can be guessed by hashing candidate values; this mapping omits plaintext
+without claiming anonymity. Keep these correlation hashes within the telemetry
+consumer's access and retention policy.
 
 The host may supply Workflow Run, Action Request, Execution Claim and Attempt
 identities through `Correlation`. They become `threadloop.workflow_run.id_sha256`,
@@ -148,7 +154,10 @@ subset. None of these settings changes runtime behavior.
 
 Explicit shutdown stops admission and drains until its deadline. A timeout
 signals the worker to stop taking further batches and returns `TimedOut`.
-Outstanding batches may be discarded. Dropping the adapter never waits for a
+Outstanding batches may be discarded. `queued` counts cumulative admission;
+subtract delivered, partial and failed batches to find unresolved admissions.
+That gap can include in-flight work and batches discarded at shutdown; the
+counters don't certify trace completeness. Dropping the adapter never waits for a
 sink, and the built-in HTTP sink has its own total timeout. A custom sink that
 blocks indefinitely can retain one detached worker and one bounded queue until
 it returns; callers must bound their own custom sink. Sink panics count as failed

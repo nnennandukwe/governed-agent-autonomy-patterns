@@ -6,7 +6,8 @@ Export sealed Agent Run executions through an optional read-only adapter under
 [#20](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/20),
 after the completed #15/#18 prerequisites in [#21](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/21).
 Baseline: `cf49db5ca262a5b43156f48c46b74b9b11a4dac2`. One PR will own the adapter,
-its integration tests, mapping documentation and required CI. Telemetry will
+its integration tests, mapping documentation and required CI, including the
+declared minimum Rust and pinned dependency-audit checks. Telemetry will
 consume the existing sealed receipt ledger after the engine returns.
 
 ## Skills To Use
