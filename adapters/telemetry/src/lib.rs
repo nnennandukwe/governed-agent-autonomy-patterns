@@ -40,8 +40,8 @@ pub enum ProjectionError {
 }
 
 impl std::fmt::Display for ProjectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
             Self::TooLarge => "telemetry projection exceeds a size limit; retain native evidence and reduce the observed batch",
             Self::InvalidDigest => "telemetry source contains a malformed digest; inspect the native sealed execution",
         })
@@ -70,7 +70,7 @@ fn is_digest(value: &str) -> bool {
         && value.starts_with("sha256:")
         && value.as_bytes()[7..]
             .iter()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 fn digest_attribute(attrs: &mut Vec<Value>, key: &str, value: &str) -> Result<(), ProjectionError> {
@@ -204,7 +204,7 @@ pub fn project(
         || execution
             .protected_effect_results
             .iter()
-            .any(|e| e.body.effect_id.len() > MAX_ID_BYTES)
+            .any(|effect| effect.body.effect_id.len() > MAX_ID_BYTES)
     {
         return Err(ProjectionError::TooLarge);
     }
@@ -423,8 +423,8 @@ pub enum ConfigError {
 }
 
 impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
             Self::Capacity => "telemetry queue capacity must be between 1 and 256; choose a bounded capacity",
             Self::Endpoint => "telemetry endpoint must be a loopback socket with a nonzero port; use 127.0.0.1:4318 or [::1]:4318",
             Self::Timeout => "telemetry HTTP timeout must be greater than zero and at most five seconds; choose a bounded timeout",
@@ -618,14 +618,14 @@ impl Telemetry {
     }
 
     pub fn statistics(&self) -> Statistics {
-        let c = &self.counters;
+        let counters = &self.counters;
         Statistics {
-            queued: c.queued.load(Ordering::Relaxed),
-            dropped: c.dropped.load(Ordering::Relaxed),
-            sampled_out: c.sampled_out.load(Ordering::Relaxed),
-            delivered: c.delivered.load(Ordering::Relaxed),
-            partial: c.partial.load(Ordering::Relaxed),
-            failed: c.failed.load(Ordering::Relaxed),
+            queued: counters.queued.load(Ordering::Relaxed),
+            dropped: counters.dropped.load(Ordering::Relaxed),
+            sampled_out: counters.sampled_out.load(Ordering::Relaxed),
+            delivered: counters.delivered.load(Ordering::Relaxed),
+            partial: counters.partial.load(Ordering::Relaxed),
+            failed: counters.failed.load(Ordering::Relaxed),
         }
     }
 

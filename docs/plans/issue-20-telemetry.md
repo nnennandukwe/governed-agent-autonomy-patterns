@@ -90,7 +90,10 @@ Raw IDs will be domain-separated SHA-256 identities; content digests will remain
 exact. Known Workflow Run/Action Request/Claim/Attempt identities will be
 host-supplied and hashed under documented `threadloop.*` keys. Evidence links
 will be relative content-addressed references without tokens or source paths.
-Frozen native bytes and digest definitions will remain unchanged.
+Frozen native bytes and digest definitions will remain unchanged. OTLP v1.9.0
+will govern acknowledgement field casing: lowerCamelCase is valid; unknown
+field names are ignored. The general Protobuf JSON allowance for original
+field names won't override that pinned OTLP rule.
 
 ## TDD And BDD Implementation Strategy
 
@@ -104,6 +107,13 @@ Frozen native bytes and digest definitions will remain unchanged.
 One adapter module will own projection and worker lifecycle. It'll copy only
 allowlisted values into bounded JSON before enqueueing. The worker will own
 network I/O, catch sink panic, and retain aggregate delivery/drop counters.
+Admission will reserve at most queue capacity plus one worker slot before
+projection begins. A private ownership guard will retain each slot through
+construction, queueing and sink execution, and release it on every exit path.
+This will bound simultaneous caller allocations as well as queued payloads.
+A public-API allocation probe under a held/full sink will verify that rejected
+submissions allocate no projection. An invalid-projection recovery case will
+check that an error releases its slot.
 Dropping telemetry will signal stop and won't join a blocked sink. An explicit
 bounded shutdown will allow callers to collect delivery results outside the
 run path. Each sink invocation will get no canonical writer or authority port.

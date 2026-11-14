@@ -59,8 +59,8 @@ impl AgentAdapter for Agent {
         })
     }
 }
-fn hash(c: char) -> String {
-    format!("sha256:{}", c.to_string().repeat(64))
+fn hash(character: char) -> String {
+    format!("sha256:{}", character.to_string().repeat(64))
 }
 fn zero() -> ResourceUsage {
     ResourceUsage {
@@ -479,16 +479,16 @@ fn http_sink(
         let mut bytes = Vec::new();
         let mut buf = [0; 4096];
         loop {
-            let n = stream.read(&mut buf).unwrap();
-            if n == 0 {
+            let bytes_read = stream.read(&mut buf).unwrap();
+            if bytes_read == 0 {
                 break;
             }
-            bytes.extend_from_slice(&buf[..n]);
-            if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+            bytes.extend_from_slice(&buf[..bytes_read]);
+            if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
                 let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
                 let length: usize = headers
                     .lines()
-                    .find_map(|s| s.strip_prefix("content-length: "))
+                    .find_map(|header| header.strip_prefix("content-length: "))
                     .unwrap()
                     .parse()
                     .unwrap();
@@ -616,7 +616,10 @@ fn actual_otlp_http_success_failure_partial_rejection_and_slow_collector_are_iso
             );
             let received = server.join().unwrap();
             assert!(received.starts_with(b"POST /v1/traces HTTP/1.1\r\n"));
-            let end = received.windows(4).position(|b| b == b"\r\n\r\n").unwrap();
+            let end = received
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap();
             let payload: Value = serde_json::from_slice(&received[end + 4..]).unwrap();
             assert_eq!(
                 payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"],
@@ -775,14 +778,20 @@ fn concurrent_producers_drop_at_the_bound_while_engine_execution_continues() {
         .collect();
     let results: Vec<_> = producers
         .into_iter()
-        .flat_map(|p| p.join().unwrap())
+        .flat_map(|producer| producer.join().unwrap())
         .collect();
     assert_eq!(
-        results.iter().filter(|r| **r == Submission::Queued).count(),
+        results
+            .iter()
+            .filter(|submission| **submission == Submission::Queued)
+            .count(),
         2
     );
     assert_eq!(
-        results.iter().filter(|r| **r == Submission::Full).count(),
+        results
+            .iter()
+            .filter(|submission| **submission == Submission::Full)
+            .count(),
         30
     );
     let (baseline, baseline_calls) = run(Scenario::Ask);
