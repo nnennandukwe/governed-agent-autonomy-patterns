@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -16,6 +17,7 @@ use crate::contracts::{
     seal_protected_effect_result, seal_terminal_receipt, validate_protected_effect_request,
     validate_request,
 };
+use crate::static_policy::{StaticPolicyAdapter, StaticPolicyEvaluation};
 use crate::{Decision, Gate, Outcome, RunCoordinator};
 
 /// The sealed terminal output of one bounded Agent Run execution.
@@ -23,6 +25,7 @@ use crate::{Decision, Gate, Outcome, RunCoordinator};
 pub struct AgentRunExecution {
     pub receipt: TerminalRunReceipt,
     pub protected_effect_results: Vec<ProtectedEffectResult>,
+    pub static_policy_evaluations: Vec<StaticPolicyEvaluation>,
 }
 
 /// A host approval binds one tool schema to one exact capability identity.
@@ -39,6 +42,7 @@ pub struct RuntimeSupport {
     contract_support: ContractSupport,
     trusted_capabilities: Vec<CapabilityIdentity>,
     permission_policy: PermissionPolicy,
+    static_policy_adapter: Option<Arc<dyn StaticPolicyAdapter>>,
     protected_effect_usage_estimate: EffectUsage,
     runtime_approvals: Vec<GateApproval>,
     trusted_verifier_ids: Vec<String>,
@@ -59,11 +63,18 @@ impl RuntimeSupport {
             contract_support,
             trusted_capabilities,
             permission_policy,
+            static_policy_adapter: None,
             protected_effect_usage_estimate,
             runtime_approvals,
             trusted_verifier_ids,
             trusted_tool_schemas: None,
         }
+    }
+
+    /// Explicitly activate a host-validated static policy adapter for each effect.
+    pub fn with_static_policy_adapter(mut self, adapter: Arc<dyn StaticPolicyAdapter>) -> Self {
+        self.static_policy_adapter = Some(adapter);
+        self
     }
 
     /// Pin tool schemas independently of capability names and digests.
@@ -135,7 +146,8 @@ pub struct PlanProposal {
 }
 
 /// A policy decision supplied by a deterministic policy adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyDecision {
     Allow,
     Ask,
@@ -604,10 +616,44 @@ where
                 .map(|execution| EffectHandling::Terminal(Box::new(execution)));
         }
 
-        let permission_decision = self.coordinator.evaluate(
+        let mut permission = self.support.permission_policy().clone();
+        let mut policy_evidence = Vec::new();
+        if let Some(adapter) = &self.support.static_policy_adapter {
+            let evaluation = adapter.evaluate(&proposal.request);
+            let bound = evaluation.effect_request_digest == effect_digest
+                && proposal.request.policies.contains(&evaluation.policy)
+                && proposal.request.policies.contains(&evaluation.schema)
+                && evaluation.policy != evaluation.schema;
+            let evaluated_decision = if bound && evaluation.errors.is_empty() {
+                evaluation.decision
+            } else {
+                PolicyDecision::Deny
+            };
+            permission.policy_decision =
+                Some(match (permission.policy_decision, evaluated_decision) {
+                    (Some(PolicyDecision::Deny), _) | (_, PolicyDecision::Deny) => {
+                        PolicyDecision::Deny
+                    }
+                    (Some(PolicyDecision::Ask), _) | (_, PolicyDecision::Ask) => {
+                        PolicyDecision::Ask
+                    }
+                    _ => PolicyDecision::Allow,
+                });
+            policy_evidence = vec![
+                format!("static_policy.policy:{}", evaluation.policy.digest),
+                format!("static_policy.schema:{}", evaluation.schema.digest),
+                format!("static_policy.evidence:{}", evaluation.evidence_digest()),
+            ];
+            if !bound {
+                policy_evidence.push("static_policy.invalid_binding".to_string());
+            }
+            ledger.static_policy_evaluations.push(evaluation);
+        }
+        let mut permission_decision = self.coordinator.evaluate(
             Gate::Permission,
-            &permission_input(&effect_digest, self.support.permission_policy()),
+            &permission_input(&effect_digest, &permission),
         );
+        permission_decision.effects.extend(policy_evidence);
         let permission_decision_id =
             ledger.decision_id("permission", proposal.request.effect_sequence);
         ledger.protected_effect_decision(
@@ -1404,12 +1450,14 @@ where
         ledger.transition(terminal_status, Some(reason.clone()));
         let request = ledger.request.clone();
         let protected_effect_results = std::mem::take(&mut ledger.effect_results);
+        let static_policy_evaluations = std::mem::take(&mut ledger.static_policy_evaluations);
         let body = ledger.into_receipt_body(terminal_status, reason);
         let receipt = seal_terminal_receipt(&request, self.support.contract_support(), body)
             .map_err(RuntimeError::Receipt)?;
         Ok(AgentRunExecution {
             receipt,
             protected_effect_results,
+            static_policy_evaluations,
         })
     }
 }
@@ -1422,6 +1470,7 @@ struct Ledger {
     usage: ResourceUsage,
     events: Vec<RunEvent>,
     effect_results: Vec<ProtectedEffectResult>,
+    static_policy_evaluations: Vec<StaticPolicyEvaluation>,
     effects_seen: u64,
     effect_ids: BTreeSet<String>,
     effect_request_digests: BTreeSet<String>,
@@ -1440,6 +1489,7 @@ impl Ledger {
             usage: zero_resource_usage(),
             events: Vec::new(),
             effect_results: Vec::new(),
+            static_policy_evaluations: Vec::new(),
             effects_seen: 0,
             effect_ids: BTreeSet::new(),
             effect_request_digests: BTreeSet::new(),

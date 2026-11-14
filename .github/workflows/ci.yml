@@ -185,6 +185,37 @@ jobs:
           cargo audit --file Cargo.lock
           cargo audit --file adapters/mcp/Cargo.lock
 
+  cedar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Check out GAAP
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Cedar formatting, warnings and public effect paths
+        run: |
+          cargo fmt --manifest-path adapters/cedar/Cargo.toml --check
+          cargo clippy --manifest-path adapters/cedar/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path adapters/cedar/Cargo.toml --locked
+          cargo build --manifest-path adapters/cedar/Cargo.toml --locked
+          cargo run --manifest-path adapters/cedar/Cargo.toml --locked --example packs -- --check > /tmp/gaap-cedar-packs.json
+
+      - name: Install declared minimum Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+
+      - name: Check minimum Rust compatibility
+        run: cargo +1.89.0 test --manifest-path adapters/cedar/Cargo.toml --locked
+
+      - name: Install pinned dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Cedar dependency lockfile
+        run: cargo audit --file adapters/cedar/Cargo.lock
+
   submitted_proposal:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -443,6 +474,7 @@ jobs:
       - runtime
       - mcp
       - submitted_proposal
+      - cedar
       - acp
       - goose
       - attestation
@@ -461,6 +493,7 @@ jobs:
           COORDINATOR_RESULT: ${{ needs.coordinator.result }}
           RUNTIME_SELECTED: ${{ needs.classify.outputs.runtime }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
+          CEDAR_RESULT: ${{ needs.cedar.result }}
           MCP_RESULT: ${{ needs.mcp.result }}
           SUBMITTED_PROPOSAL_RESULT: ${{ needs.submitted_proposal.result }}
           ACP_RESULT: ${{ needs.acp.result }}
@@ -472,6 +505,7 @@ jobs:
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == "success" ]]
           [[ "$BASELINE_RESULT" == "success" ]]
+          [[ "$CEDAR_RESULT" == "success" ]]
           [[ "$MCP_RESULT" == "success" ]]
           [[ "$SUBMITTED_PROPOSAL_RESULT" == "success" ]]
           [[ "$ACP_RESULT" == "success" ]]

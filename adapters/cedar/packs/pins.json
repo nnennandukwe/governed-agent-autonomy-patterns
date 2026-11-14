@@ -1,0 +1,50 @@
+{
+  "filesystem": [
+    {
+      "name": "example-filesystem",
+      "version": "1",
+      "digest": "sha256:d611bb5570f098a73db995695cecc4b88538d580f216b5c2e3bf556b09ec4c66"
+    },
+    {
+      "name": "gaap.cedar-schema",
+      "version": "1",
+      "digest": "sha256:1b0c190d30ee33af37c690becd3f0489599d849813062bb3e5f2405c20e03da9"
+    }
+  ],
+  "process": [
+    {
+      "name": "example-process",
+      "version": "1",
+      "digest": "sha256:8a15fbbde205ee2d6aa0cd7f74f1432c9669f3177ffd9dbc17768f52f95a4617"
+    },
+    {
+      "name": "gaap.cedar-schema",
+      "version": "1",
+      "digest": "sha256:2626705893c56e05f27c4e7e2ca6f0ede4d37a5e2f1f02115c4864294c1e6376"
+    }
+  ],
+  "network": [
+    {
+      "name": "example-network",
+      "version": "1",
+      "digest": "sha256:ff7f2807eadc1df288b7adc5b1b7b630e0eb92a1b13640729a095f3aa554d94c"
+    },
+    {
+      "name": "gaap.cedar-schema",
+      "version": "1",
+      "digest": "sha256:de6e8782accc8437dddf2293e982f71c2c38523a597caeabf77a0d62c163495b"
+    }
+  ],
+  "mcp": [
+    {
+      "name": "example-mcp",
+      "version": "1",
+      "digest": "sha256:a4aadf93248b989f4b3dfe1dfef89676ab98d56457faff5f23c24ed14babda67"
+    },
+    {
+      "name": "gaap.cedar-schema",
+      "version": "1",
+      "digest": "sha256:7ce4c42679a7275bd40afe800aeaacd226d7b1e3596344d8763a7ea1bcd57479"
+    }
+  ]
+}

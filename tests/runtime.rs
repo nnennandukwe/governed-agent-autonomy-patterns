@@ -2155,3 +2155,88 @@ fn completion_claim_failures_retain_sampled_usage_without_completion_authority()
         assert!(!execution.receipt.body.events.iter().any(|event| matches!(event, RunEvent::ProtectedEffectDecision { decision_id, .. } if decision_id == "decision-completion")));
     }
 }
+
+#[derive(Debug)]
+struct StaticPolicyFixture {
+    schema: PolicyIdentity,
+    defect: &'static str,
+}
+
+impl gaap::static_policy::StaticPolicyAdapter for StaticPolicyFixture {
+    fn evaluate(
+        &self,
+        request: &ProtectedEffectRequest,
+    ) -> gaap::static_policy::StaticPolicyEvaluation {
+        use sha2::{Digest, Sha256};
+        let bytes = gaap::contracts::canonical_protected_effect_request_bytes(request).unwrap();
+        let mut evaluation = gaap::static_policy::StaticPolicyEvaluation {
+            effect_request_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+            policy: policy(),
+            schema: self.schema.clone(),
+            decision: PolicyDecision::Allow,
+            reason: "fixture.allowed".into(),
+            determining_policies: vec!["permit0".into()],
+            errors: vec![],
+        };
+        match self.defect {
+            "request" => evaluation.effect_request_digest = digest(b'0'),
+            "schema" => evaluation.schema.digest = digest(b'0'),
+            "policy" => evaluation.policy.digest = digest(b'0'),
+            "error" => evaluation.errors.push("evaluation failed".into()),
+            "deny" => evaluation.decision = PolicyDecision::Deny,
+            _ => {}
+        }
+        evaluation
+    }
+}
+
+#[test]
+fn static_policy_cannot_supply_unbound_or_erroneous_allow_evidence() {
+    for defect in ["request", "schema", "policy", "error", "deny"] {
+        let schema = PolicyIdentity {
+            name: "fixture-schema".into(),
+            version: "1".into(),
+            digest: digest(b'f'),
+        };
+        let mut run = request();
+        run.policies.push(schema.clone());
+        let support = ContractSupport::new(run.policies.clone());
+        let effect = effect_request(&run, &support, 1);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = RuntimeSupport::new(
+            support.clone(),
+            vec![capability()],
+            allow_permission(),
+            usage(10),
+            vec![],
+            vec!["fixture-verifier".into()],
+        )
+        .with_static_policy_adapter(std::sync::Arc::new(StaticPolicyFixture { schema, defect }));
+        let execution = run_with(
+            run.clone(),
+            runtime,
+            ScriptedAgent::new(
+                plan_for(&run),
+                [Ok(AgentStep::ProtectedEffect(Box::new(proposal(
+                    effect.clone(),
+                ))))],
+            ),
+            RecordingExecutor::new(calls.clone(), []),
+            ScriptedVerifier::new(passing_verification(&run.subject.digest)),
+        );
+        assert!(calls.borrow().is_empty(), "{defect}");
+        assert_eq!(
+            execution.receipt.body.terminal_reason, "permission.denied",
+            "{defect}"
+        );
+        assert_eq!(execution.static_policy_evaluations.len(), 1);
+        verify_terminal_receipt(&run, &support, &execution.receipt).unwrap();
+        verify_protected_effect_result(
+            &run,
+            &support,
+            &effect,
+            &execution.protected_effect_results[0],
+        )
+        .unwrap();
+    }
+}
