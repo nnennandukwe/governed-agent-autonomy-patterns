@@ -64,10 +64,15 @@ struct ControlState {
 }
 
 impl RunControl {
+    /// An unrepresentable deadline interrupts immediately.
     pub fn new(timeout: Duration) -> Self {
+        let now = Instant::now();
+        let deadline = now.checked_add(timeout);
         Self(Arc::new(Mutex::new(ControlState {
-            deadline: Instant::now() + timeout,
-            cancellation: None,
+            deadline: deadline.unwrap_or(now),
+            cancellation: deadline
+                .is_none()
+                .then(|| cancellation("host proposal timeout exceeds the monotonic clock range")),
             completed: false,
         })))
     }

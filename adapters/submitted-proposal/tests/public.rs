@@ -442,3 +442,25 @@ fn changed_descriptor_revokes_trust_and_unknown_outcome_cant_replay_adapter() {
     assert_eq!(replay.receipt.body.terminal_status, AgentRunStatus::Failed);
     assert_eq!(fs::read_to_string(fixture.path).unwrap(), "accepted\n");
 }
+
+#[test]
+fn an_unrepresentable_deadline_interrupts_before_any_effect() {
+    let fixture = Fixture::new("report.txt", "accepted\n");
+    let output = fixture
+        .engine(
+            RunControl::new(Duration::MAX),
+            false,
+            "host-text-oracle",
+            false,
+            false,
+        )
+        .run(fixture.request.clone())
+        .unwrap();
+    fixture.verify(&output);
+    assert_eq!(
+        output.receipt.body.terminal_status,
+        AgentRunStatus::Interrupted
+    );
+    assert!(output.protected_effect_results.is_empty());
+    assert_eq!(fs::read_to_string(fixture.path).unwrap(), "before");
+}

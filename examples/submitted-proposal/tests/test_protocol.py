@@ -69,6 +69,55 @@ class CliIngressTests(unittest.TestCase):
             (target / 'session').rename(moved)
             self.assertNotEqual(cli('coding-inspect', moved, success=False).returncode, 0)
 
+    def test_lost_response_after_publication_returns_the_same_historical_receipt(self):
+        """Lose a blocked CLI response after publication, then reopen without replay."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'session'
+            initial = cli('coding-init', root)
+            source = GOOD + '# ' + 'x' * 30000 + '\n'
+            proposal = {'path': 'shipping.py', 'content': source,
+                'plan': 'Publish shipping before the response is lost.',
+                'base_digest': initial['subject_digest']}
+            child = subprocess.Popen([str(BINARY), 'coding-submit', str(root)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env={})
+            try:
+                child.stdin.write(json.dumps(proposal))
+                child.stdin.close()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    saved = cli('coding-inspect', root)
+                    if saved['runs']:
+                        break
+                    time.sleep(.01)
+                else:
+                    self.fail('Host never published its result')
+                self.assertEqual(saved['runs'][0]['receipt']['body']['terminal_status'], 'completed')
+                self.assertIsNone(child.poll(), 'Response fit in the unread pipe; loss point missed')
+                ledger = (root / 'operator/state.json').read_bytes()
+                target = root / 'workspace/shipping.py'
+                inode = target.stat().st_ino
+                child.kill()
+                child.wait(timeout=2)
+                partial = child.stdout.read()
+                self.assertTrue(partial)
+                with self.assertRaises(json.JSONDecodeError):
+                    json.loads(partial)
+                reopened = cli('coding-inspect', root)
+                self.assertEqual(reopened, saved)
+                duplicate = cli('coding-submit', root, proposal)
+                self.assertTrue(duplicate['duplicate'])
+                self.assertEqual(duplicate['receipt'], saved['runs'][0]['receipt'])
+                self.assertEqual((root / 'operator/state.json').read_bytes(), ledger)
+                self.assertEqual(target.stat().st_ino, inode)
+                self.assertEqual(target.read_text(), source)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=2)
+                for stream in [child.stdin, child.stdout, child.stderr]:
+                    stream.close()
+
     def test_cli_caps_bytes_before_parsing_and_preserves_the_session(self):
         """Refuse oversized JSON and padding before admission, then accept the boundary."""
         with tempfile.TemporaryDirectory() as directory:
@@ -500,6 +549,7 @@ class ProtocolTests(unittest.TestCase):
         ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
         self.assertTrue(ready, 'Transport accepted more than eight outstanding requests')
         self.assertIn('MCP outstanding request limit', self.client.process.stderr.readline())
+        self.client.process.wait(timeout=2)
         fcntl.flock(lock, fcntl.LOCK_UN)
         self.client.close()
         state = self.stored()
@@ -515,6 +565,7 @@ class ProtocolTests(unittest.TestCase):
         ready, _, _ = select.select([self.client.process.stderr], [], [], 2)
         self.assertTrue(ready, 'Transport accepted an ambiguous active request ID')
         self.assertIn('MCP duplicate active request ID', self.client.process.stderr.readline())
+        self.client.process.wait(timeout=2)
         fcntl.flock(lock, fcntl.LOCK_UN)
         self.client.close()
         self.assertEqual(self.stored()['files'], self.initial['files'])

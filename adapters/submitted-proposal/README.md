@@ -34,3 +34,5 @@ cargo clippy --manifest-path adapters/submitted-proposal/Cargo.toml --locked --a
 Public integration tests run two text-task configurations through the same adapter and engine, with actual disposable file writes and host-owned expected output. They cover binding tampering, strict input parsing, changed descriptors, untrusted verifier identity, cancellation before and after execution, expired deadlines, and uncertain outcomes with refused adapter reuse. The separate shipping reference covers MCP delivery, saved history and its restricted Python verifier.
 
 The frozen Agent Run and Protected Effect contracts, `AgentRunEngine`, and `RunCoordinator` stay authoritative. ThreadLoop owns lifecycle advancement. Authenticated receipt exchange, runtime isolation and durable reconciliation retain their existing project scopes.
+
+`RunControl::new` treats a timeout beyond the monotonic clock's representable range as an immediate interruption.
