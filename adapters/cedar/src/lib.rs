@@ -23,9 +23,9 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyError(pub String);
 impl fmt::Display for PolicyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            f,
+            formatter,
             "{}; correct the local pack or context, validate and pin it again",
             self.0
         )
@@ -169,7 +169,7 @@ impl PreparedPack {
     ) -> Result<Self, PolicyError> {
         if [name, version, principal, source]
             .iter()
-            .any(|v| v.trim().is_empty())
+            .any(|component| component.trim().is_empty())
             || source.len() > 1024 * 1024
             || actions.is_empty()
             || actions.len() > 128
@@ -234,7 +234,7 @@ impl PreparedPack {
             .filter(|policy| policy.effect() == Effect::Permit)
         {
             if policy.principal_constraint() != PrincipalConstraint::Eq(expected_principal.clone())
-                || !matches!(policy.action_constraint(), ActionConstraint::Eq(ref id) if actions.iter().any(|a| action_uid(a).ok().as_ref() == Some(id)))
+                || !matches!(policy.action_constraint(), ActionConstraint::Eq(ref id) if actions.iter().any(|approved_action| action_uid(approved_action).ok().as_ref() == Some(id)))
                 || !matches!(policy.resource_constraint(), ResourceConstraint::Eq(ref id) if is_digest(id.id().as_ref()))
             {
                 return Err(error(
@@ -384,7 +384,9 @@ impl CedarAdapter {
             let name = mcp.descriptor["name"]
                 .as_str()
                 .expect("validated tool name");
-            if input.as_object().is_none_or(|obj| obj.len() != 3)
+            if input
+                .as_object()
+                .is_none_or(|input_fields| input_fields.len() != 3)
                 || input["server"] != mcp.server_digest
                 || input["tool"] != name
             {
@@ -539,7 +541,7 @@ fn is_digest(value: &str) -> bool {
         hex.len() == 64
             && hex
                 .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
 }
 
@@ -567,7 +569,9 @@ fn validate_scope(scope: &RequestedScope) -> Result<(), PolicyError> {
             service,
             operation,
             resource,
-        } => [service, operation, resource].into_iter().all(|s| exact(s)),
+        } => [service, operation, resource]
+            .into_iter()
+            .all(|scope_component| exact(scope_component)),
     };
     if valid {
         Ok(())
@@ -583,10 +587,10 @@ fn cedar_type(schema: &Value, depth: usize) -> Result<Value, PolicyError> {
     if depth > 12 {
         return Err(error("MCP input schema is too deep"));
     }
-    let obj = schema
+    let schema_fields = schema
         .as_object()
         .ok_or_else(|| error("MCP schema must be an object"))?;
-    if obj.keys().any(|k| {
+    if schema_fields.keys().any(|keyword| {
         ![
             "type",
             "properties",
@@ -596,7 +600,7 @@ fn cedar_type(schema: &Value, depth: usize) -> Result<Value, PolicyError> {
             "description",
             "title",
         ]
-        .contains(&k.as_str())
+        .contains(&keyword.as_str())
     }) {
         return Err(error("unsupported MCP input schema keyword"));
     }
@@ -609,33 +613,36 @@ fn cedar_type(schema: &Value, depth: usize) -> Result<Value, PolicyError> {
             if schema["additionalProperties"] != false {
                 return Err(error("MCP objects must set additionalProperties to false"));
             }
-            let props = schema["properties"]
+            let properties = schema["properties"]
                 .as_object()
                 .ok_or_else(|| error("MCP object properties are required"))?;
             let required = schema
                 .get("required")
-                .map(|v| {
-                    v.as_array()
+                .map(|required_fields| {
+                    required_fields
+                        .as_array()
                         .ok_or_else(|| error("MCP required must be an array"))
                 })
                 .transpose()?
                 .cloned()
                 .unwrap_or_default();
-            if required
-                .iter()
-                .any(|v| v.as_str().is_none_or(|s| !props.contains_key(s)))
-            {
+            if required.iter().any(|required_field| {
+                required_field
+                    .as_str()
+                    .is_none_or(|property_name| !properties.contains_key(property_name))
+            }) {
                 return Err(error("unknown required MCP property"));
             }
-            let attrs: Result<serde_json::Map<String, Value>, PolicyError> = props
+            let attributes: Result<serde_json::Map<String, Value>, PolicyError> = properties
                 .iter()
-                .map(|(name, ty)| {
-                    let mut ty = cedar_type(ty, depth + 1)?;
-                    ty["required"] = json!(required.contains(&Value::String(name.clone())));
-                    Ok((name.clone(), ty))
+                .map(|(name, property_schema)| {
+                    let mut property_schema = cedar_type(property_schema, depth + 1)?;
+                    property_schema["required"] =
+                        json!(required.contains(&Value::String(name.clone())));
+                    Ok((name.clone(), property_schema))
                 })
                 .collect();
-            record(Value::Object(attrs?))
+            record(Value::Object(attributes?))
         }
         _ => return Err(error("unsupported MCP input schema type")),
     })
@@ -646,20 +653,21 @@ fn bounded_json(value: &Value) -> Result<usize, PolicyError> {
             return Err(error("input context is too deep"));
         }
         match value {
-            Value::Number(n)
-                if n.as_i64()
-                    .is_none_or(|n| n.unsigned_abs() > 9_007_199_254_740_991) =>
+            Value::Number(number)
+                if number
+                    .as_i64()
+                    .is_none_or(|integer| integer.unsigned_abs() > 9_007_199_254_740_991) =>
             {
                 return Err(error("inputs require JCS-safe integers"));
             }
-            Value::Array(a) => {
-                for v in a {
-                    visit(v, depth + 1)?;
+            Value::Array(items) => {
+                for item in items {
+                    visit(item, depth + 1)?;
                 }
             }
-            Value::Object(o) => {
-                for v in o.values() {
-                    visit(v, depth + 1)?;
+            Value::Object(fields) => {
+                for field in fields.values() {
+                    visit(field, depth + 1)?;
                 }
             }
             _ => {}
