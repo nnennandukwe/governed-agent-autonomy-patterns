@@ -390,6 +390,12 @@ jobs:
           GAAP_DOCKER_HOST: unix:///var/run/docker.sock
         run: cargo test --manifest-path adapters/sandbox/Cargo.toml --locked --test native native_ -- --ignored --test-threads=1
 
+      - name: Diagnose native OOM signal timing
+        if: failure()
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: python3 .github/scripts/diagnose-native-oom.py --run
+
       - name: Retain daemon OOM events after native test failure
         if: failure()
         env:
