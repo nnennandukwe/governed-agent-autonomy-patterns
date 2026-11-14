@@ -75,12 +75,14 @@ def main():
         emit("events", command(["docker", "events", "--since", "1", "--until", str(int(time.time())+1),
             "--filter", "container="+container_id, "--filter", "event=oom", "--format", "{{json .}}"], timeout=5))
     finally:
-        if container_id:
-            current = inspect(name)
-            if current.get("Id") == container_id and current.get("Owner") == owner:
-                emit("cleanup", command(["docker", "container", "rm", "--force", "--volumes", container_id]))
-            else:
-                emit("cleanup_unconfirmed", current)
+        current = inspect(name)
+        observed_id = current.get("Id")
+        if observed_id and current.get("Owner") == owner and (container_id is None or observed_id == container_id):
+            emit("cleanup", command(["docker", "container", "rm", "--force", "--volumes", observed_id]))
+        elif current.get("code") == 1 and "No such" in current.get("stderr", ""):
+            emit("cleanup", "not_created")
+        else:
+            emit("cleanup_unconfirmed", current)
 
 
 if __name__ == "__main__":
