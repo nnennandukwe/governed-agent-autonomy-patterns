@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 gaap = { path = "../..", version = "=0.1.0" }
-rmcp = { version = "=3.5.1", default-features = false, features = ["client"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["client"] }
 tokio = { version = "=1.53.3", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
 tokio-util = { version = "=0.7.20", features = ["rt"] }
 serde = { version = "=1.0.229", features = ["derive"] }

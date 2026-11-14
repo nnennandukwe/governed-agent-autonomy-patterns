@@ -225,7 +225,7 @@ through the existing GAAP executor port. It uses the official Rust SDK in a sepa
 immutable effect bindings, host subject observation, and bounded stdio. Its deterministic subprocess tests also run
 through AgentRunEngine and validate the resulting receipts independently.
 
-The initial profile pins MCP `2025-11-25` and rmcp `3.5.1`. The local stdio execution profile doesn't provide OS isolation.
+The initial profile pins MCP `2025-11-25` and rmcp `3.9.0`. The local stdio execution profile doesn't provide OS isolation.
 The governed Goose reference exercises interoperability; durable reconciliation and ThreadLoop ingestion retain their own
 roadmap issues. The [reuse mapping](docs/adr/0006-mcp-client-adapter.md) records which conference-demo patterns carry
 forward and which capabilities remain separate work.
@@ -239,3 +239,9 @@ provider fixtures, per-effect gates and independent shipping-code verification.
 The [attestation adapter](adapters/attestation/README.md) carries full run/effect ledgers in a versioned in-toto Statement and DSSE envelope. Offline consumers use explicit signer and policy trust, frozen contract validation and retained content bytes. The Goose reference emits public-key fixtures for controller integration tests; signing alone doesn't authorize a lifecycle transition.
 
 The [Linux gVisor profile](adapters/sandbox/README.md#linux-gvisor-profile) selects pinned runsc through the same neutral SandboxAdapter. Its required Linux CI lane exercises actual isolation, failure paths and signed Goose evidence; host configuration and runtime trust remain security-critical.
+
+## Submitted proposals over inbound MCP
+
+The [submitted-proposal adapter](adapters/submitted-proposal/README.md) lets an external agent supply one proposal to the existing Agent Run engine. The host owns request identity, policy, execution and independent verification. Each admitted proposal gets one bounded run; external conversation usage stays unavailable.
+
+The [shipping reference](examples/submitted-proposal/README.md) exposes an inbound MCP server and keeps the conference demo's executable coding and persistence checks. Real pinned Goose with a deterministic local provider and an independent Python MCP client exercise the same server. This path complements the outbound MCP and ACP clients above.

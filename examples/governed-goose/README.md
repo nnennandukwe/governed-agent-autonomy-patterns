@@ -61,7 +61,7 @@ Developer, terminal delegation, filesystem delegation and ambient extensions
 aren't enabled. The ingress uses a private local socket and can only submit
 proposals; the separate official MCP client owns effect dispatch.
 
-MCP uses official SDK 3.5.1 and protocol 2025-11-25. The independent server rejects
+MCP uses official SDK 3.9.0 and protocol 2025-11-25. The independent server rejects
 Goose's newer `server/discover` probe instead of silently adopting another
 lifecycle. The approved backend exposes one fixed descriptor and three bounded
 operations. Agent content never becomes a command or arbitrary file path.

@@ -45,7 +45,7 @@ ends the session; it can't reopen a terminal run.
 
 ## Compatibility profile
 
-- Official rmcp SDK: exactly `3.5.1`.
+- Official rmcp SDK: exactly `3.9.0`.
 - Initial protocol: exactly MCP `2025-11-25`, with the session-based initialization handshake.
 - Transport: direct subprocess stdio. The child inherits only the explicitly supplied environment map.
 - Content: text blocks and schema-validated structured content. Other content types and incomplete results fail closed.

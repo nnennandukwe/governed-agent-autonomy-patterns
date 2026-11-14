@@ -34,7 +34,7 @@ GAAP's provider-neutral contracts. A dedicated runtime thread owns the SDK sessi
 interface. The host supplies launch configuration, capability grants, permission policy, subject observations and usage.
 RunCoordinator remains the authorization evaluator; server annotations and success messages don't confer authority.
 
-The initial stdio profile pins the official rmcp 3.5.1 SDK and MCP 2025-11-25. That specification uses the initialization
+The initial decision selected rmcp 3.5.1. Security maintenance in [PR #46](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/pull/46) updates the current exact pin to rmcp 3.9.0 while retaining MCP 2025-11-25 and minimum Rust 1.88. That specification uses the initialization
 handshake and tool-list notifications required by this first adapter. Newer stateless lifecycle support requires an
 explicit compatibility update, rather than automatic negotiation into a different execution model. Only declared text
 and schema-validated structured output are supported initially.

@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-pub const MCP_SDK_VERSION: &str = "3.5.1";
+pub const MCP_SDK_VERSION: &str = "3.9.0";
 pub const MAX_SUBJECT_BYTES: usize = 8192;
 pub const MAX_CANONICAL_NUMBER: u64 = 9_007_199_254_740_991;
 

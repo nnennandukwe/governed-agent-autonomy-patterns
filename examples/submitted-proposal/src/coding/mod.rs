@@ -1,0 +1,1260 @@
+//! A local shipping task using the provider-neutral submitted-proposal adapter.
+mod contracts;
+pub mod mcp;
+pub mod transport;
+mod verify;
+use crate::store::{Identity, digest, directory, identity, open_regular, read, trusted_parent};
+use contracts::*;
+use gaap::{contracts::*, runtime::*};
+use gaap_submitted_proposal::{RunControl, SubmittedProposal, SubmittedProposalAdapter};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fs::{self, File, TryLockError},
+    io::Write,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::Instant,
+};
+
+type Result<T> = std::result::Result<T, String>;
+const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
+pub const POLICY: &str = "shipping-demo/v1: shipping.py writes allowed; all other writes denied; one effect per run; two accounted calls; ten seconds engine budget; five seconds verifier deadline; verifier checks nine fixed cases and 32 host-seeded samples with bounded float arithmetic";
+pub const TASK: &str = "Implement shipping_quote(quantity, unit_price). Reject quantity <= 0 with ValueError. Compute subtotal. Quantities of five or more receive a 10% discount. Add delivery of 7 unless the discounted subtotal is at least 100. Round the final price to two decimals. Use only arithmetic, assignments, conditionals, round, and raise ValueError. Once verification passes, set shipping_enabled to true in deployment.json without changing its other settings.\n";
+const INITIAL: &str =
+    "def shipping_quote(quantity, unit_price):\n    return quantity * unit_price + 7\n";
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct SnapshotFile {
+    content: String,
+    identity: Identity,
+}
+type Snapshot = BTreeMap<String, SnapshotFile>;
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Change {
+    pub path: String,
+    pub content: String,
+    pub plan: String,
+    pub base_digest: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct State {
+    schema: String,
+    root: PathBuf,
+    root_identity: Identity,
+    workspace_identity: Identity,
+    operator_identity: Identity,
+    trusted_schema: String,
+    policy: String,
+    runs: Vec<Value>,
+    inflight: Option<Value>,
+}
+#[derive(Clone)]
+pub struct CodingStore {
+    root: PathBuf,
+    #[cfg(test)]
+    fault: Option<&'static str>,
+}
+pub fn hash_json(value: &impl Serialize) -> Result<String> {
+    serde_jcs::to_vec(value)
+        .map(|b| digest(&b))
+        .map_err(|e| e.to_string())
+}
+fn snapshot_digest(snapshot: &Snapshot) -> Result<String> {
+    hash_json(snapshot)
+}
+fn session_root(root: &Path) -> Result<PathBuf> {
+    let root = std::path::absolute(root).map_err(|e| e.to_string())?;
+    let parent = root
+        .parent()
+        .ok_or("session needs a parent")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    trusted_parent(&parent)?;
+    Ok(parent.join(root.file_name().ok_or("session needs a name")?))
+}
+fn acquire_lock(file: &File, control: &RunControl) -> Result<()> {
+    let check_interruption = || match control.cancellation() {
+        Some(cancelled) => Err(format!(
+            "operation interrupted while waiting for the session lock: {}; no run or effect admitted",
+            cancelled.reason
+        )),
+        None => Ok(()),
+    };
+    loop {
+        check_interruption()?;
+        match file.try_lock() {
+            Ok(()) => return check_interruption(),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(TryLockError::Error(error)) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn validate_record(run: &Value) -> Result<()> {
+    let request: AgentRunRequest =
+        serde_json::from_value(run["request"].clone()).map_err(|e| e.to_string())?;
+    let effect: ProtectedEffectRequest =
+        serde_json::from_value(run["effect_request"].clone()).map_err(|e| e.to_string())?;
+    let receipt: TerminalRunReceipt =
+        serde_json::from_value(run["receipt"].clone()).map_err(|e| e.to_string())?;
+    verify_terminal_receipt(&request, &support(), &receipt)
+        .map_err(|e| format!("receipt integrity check failed: {e}"))?;
+    let change = Change {
+        path: run["path"].as_str().ok_or("missing path")?.into(),
+        content: run["proposed"]
+            .as_str()
+            .ok_or("missing proposed content")?
+            .into(),
+        plan: run["plan"].as_str().ok_or("missing plan")?.into(),
+        base_digest: effect.subject.digest.clone(),
+    };
+    let input_digest = hash_json(&change)?;
+    if run["input_digest"] != input_digest
+        || effect.input_digest != input_digest
+        || request.task.instructions != change.plan
+    {
+        return Err("recorded proposal differs from the bound engine input".into());
+    }
+    let effect_digest = validate_protected_effect_request(&request, &support(), &effect)
+        .map_err(|error| error.to_string())?;
+    // This reference admits at most one effect. Every non-workflow decision
+    // belongs to that effect; completion authorization uses the workflow gate.
+    let mut decided = false;
+    for event in &receipt.body.events {
+        if let RunEvent::ProtectedEffectDecision {
+            gate,
+            protected_effect_digest,
+            ..
+        } = event
+            && *gate != gaap::Gate::Workflow
+        {
+            if protected_effect_digest != &effect_digest {
+                return Err("receipt effect decision differs from the saved proposal".into());
+            }
+            decided = true;
+        }
+    }
+    let results: Vec<ProtectedEffectResult> =
+        serde_json::from_value(run["protected_effect_results"].clone())
+            .map_err(|e| e.to_string())?;
+    if results.len() != usize::from(decided) {
+        return Err("receipt effect result count differs from the saved evidence".into());
+    }
+    let executions = receipt
+        .body
+        .events
+        .iter()
+        .filter(|event| matches!(event, RunEvent::ToolExecution { .. }))
+        .collect::<Vec<_>>();
+    if results.is_empty() && !executions.is_empty() {
+        return Err("receipt effect execution has no saved result".into());
+    }
+    for result in results {
+        verify_protected_effect_result(&request, &support(), &effect, &result)
+            .map_err(|e| e.to_string())?;
+        let decision = &result.body.decision;
+        if !receipt.body.events.iter().any(|event| matches!(event,
+            RunEvent::ProtectedEffectDecision { decision_id, gate, protected_effect_digest, subject_digest, decision: recorded, .. }
+                if decision_id == &decision.decision_id && gate == &decision.gate
+                    && protected_effect_digest == &decision.effect_request_digest
+                    && subject_digest == &decision.subject_digest && recorded == &decision.decision)) {
+            return Err("receipt effect decision differs from the saved result".into());
+        }
+        let attempted = !matches!(
+            result.body.execution_status,
+            EffectExecutionStatus::Denied | EffectExecutionStatus::AwaitingAuthority
+        );
+        let locator = format!("gaap:protected-effect-result/{}", effect.effect_id);
+        if executions.len() != usize::from(attempted) || executions.iter().any(|event| !matches!(event,
+            RunEvent::ToolExecution { protected_effect_digest, action_digest, capability_digest, evidence, .. }
+                if protected_effect_digest == &effect_digest && action_digest == &effect_digest
+                    && capability_digest == &effect.capability.digest
+                    && evidence.iter().any(|reference| reference.evidence_type == EvidenceType::ToolExecution
+                        && reference.digest == result.result_digest && reference.locator.as_deref() == Some(locator.as_str())))) {
+            return Err("receipt effect evidence differs from the saved result".into());
+        }
+        for reference in &result.body.evidence {
+            if reference.locator.as_deref() == Some("gaap:record/execution_evidence")
+                && reference.digest != hash_json(&run["execution_evidence"])?
+            {
+                return Err("execution evidence differs from the protected effect result".into());
+            }
+        }
+    }
+    for event in receipt.body.events {
+        if let RunEvent::Verification { evidence, .. } = event {
+            for reference in evidence {
+                if reference.evidence_type == EvidenceType::CommandOutput
+                    && reference.digest != hash_json(&run["verification"])?
+                {
+                    return Err("verification evidence differs from the terminal receipt".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl CodingStore {
+    pub fn workspace(&self) -> PathBuf {
+        self.root.join("workspace")
+    }
+    fn operator(&self) -> PathBuf {
+        self.root.join("operator")
+    }
+    pub fn initialize(root: &Path) -> Result<Self> {
+        Self::initialize_inner(
+            root,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn initialize_inner(root: &Path, #[cfg(test)] fault: Option<&'static str>) -> Result<Self> {
+        let root = session_root(root)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .map_err(|e| e.to_string())?;
+        let store = Self {
+            root,
+            #[cfg(test)]
+            fault,
+        };
+        for path in [store.workspace(), store.operator()] {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(path)
+                .map_err(|e| e.to_string())?;
+        }
+        for (name, content) in [
+            ("shipping.py", INITIAL),
+            (
+                "deployment.json",
+                "{\n  \"environment\": \"production\",\n  \"shipping_enabled\": false\n}\n",
+            ),
+            ("TASK.md", TASK),
+        ] {
+            let mut f =
+                File::create_new(store.workspace().join(name)).map_err(|e| e.to_string())?;
+            f.write_all(content.as_bytes())
+                .and_then(|_| f.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        File::create_new(store.operator().join("lock"))
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        for (point, path) in [
+            ("init_workspace_dir_sync", store.workspace()),
+            ("init_root_dir_sync", store.root.clone()),
+            (
+                "init_parent_dir_sync",
+                store
+                    .root
+                    .parent()
+                    .expect("the parent was validated")
+                    .to_owned(),
+            ),
+        ] {
+            store
+                .hit(point)
+                .and_then(|()| {
+                    File::open(path)
+                        .and_then(|directory| directory.sync_all())
+                        .map_err(|error| error.to_string())
+                })
+                .map_err(|error| format!(
+                    "initialization incomplete: {point}: {error}; preserve the existing root for inspection"
+                ))?;
+        }
+        let state = State {
+            schema: "gaap-submitted-proposal-session/v1".into(),
+            root: store.root.clone(),
+            root_identity: identity(&store.root, true)?,
+            workspace_identity: identity(&store.workspace(), true)?,
+            operator_identity: identity(&store.operator(), true)?,
+            trusted_schema: mcp::capability_digest(),
+            policy: POLICY.into(),
+            runs: vec![],
+            inflight: None,
+        };
+        if let Some(warning) = store.save(&state, "init")? {
+            return Err(format!(
+                "initialization incomplete: {warning}; preserve the existing root for inspection"
+            ));
+        }
+        Ok(store)
+    }
+    pub fn open(root: &Path) -> Result<Self> {
+        let root = session_root(root)?;
+        directory(&root)?;
+        let store = Self {
+            root,
+            #[cfg(test)]
+            fault: None,
+        };
+        let _snapshot =
+            store.lock_snapshot(&RunControl::new(std::time::Duration::from_secs(10)))?;
+        store.load()?;
+        Ok(store)
+    }
+    fn lock_snapshot(&self, control: &RunControl) -> Result<File> {
+        let operator = self.operator();
+        directory(&operator)?;
+        let descriptor = rustix::fs::open(
+            &operator,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| e.to_string())?;
+        let lock = File::from(descriptor);
+        acquire_lock(&lock, control)?;
+        Ok(lock)
+    }
+    fn hit(&self, point: &str) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fault
+            .is_some_and(|faults| faults.split(",").any(|fault| fault == point))
+        {
+            return Err(format!("injected failure: {point}"));
+        }
+        let _ = point;
+        Ok(())
+    }
+    fn load(&self) -> Result<State> {
+        directory(&self.root)?;
+        let state: State =
+            serde_json::from_str(&read(&self.operator().join("state.json"), MAX_STATE_BYTES)?.0)
+                .map_err(|e| e.to_string())?;
+        self.validate_identity(&state)?;
+        for run in &state.runs {
+            validate_record(run)?;
+        }
+        Ok(state)
+    }
+    fn validate_identity(&self, state: &State) -> Result<()> {
+        if state.schema != "gaap-submitted-proposal-session/v1"
+            || state.root != self.root
+            || state.trusted_schema != mcp::capability_digest()
+            || state.policy != POLICY
+            || state.root_identity != identity(&self.root, true)?
+            || state.workspace_identity != identity(&self.workspace(), true)?
+            || state.operator_identity != identity(&self.operator(), true)?
+        {
+            return Err("session identity or policy changed; preserve it for inspection and use a fresh session".into());
+        }
+        Ok(())
+    }
+    fn save(&self, state: &State, phase: &str) -> Result<Option<String>> {
+        let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_STATE_BYTES {
+            return Err(format!(
+                "{phase} snapshot exceeds the 8 MiB session limit; previous state retained; inspect actual files and use a fresh session"
+            ));
+        }
+        self.hit(&format!("{phase}_create"))?;
+        let mut file =
+            tempfile::NamedTempFile::new_in(self.operator()).map_err(|e| e.to_string())?;
+        self.hit(&format!("{phase}_write"))?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        self.hit(&format!("{phase}_flush"))?;
+        file.flush().map_err(|e| e.to_string())?;
+        self.hit(&format!("{phase}_sync"))?;
+        file.as_file().sync_all().map_err(|e| e.to_string())?;
+        self.hit(&format!("{phase}_rename"))?;
+        file.persist(self.operator().join("state.json"))
+            .map_err(|e| e.to_string())?;
+        Ok(self
+            .hit(&format!("{phase}_dir_sync"))
+            .and_then(|()| {
+                File::open(self.operator())
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| e.to_string())
+            })
+            .err()
+            .map(|e| format!("snapshot visible; directory durability uncertain: {e}")))
+    }
+    fn snapshot(&self, state: &State) -> Result<Snapshot> {
+        // The caller retains the snapshot lock and validated ledger for this
+        // operation. Recheck live directory/file identities without parsing
+        // and hashing the unchanged history at every effect observation.
+        directory(&self.root)?;
+        self.validate_identity(state)?;
+        ["TASK.md", "shipping.py", "deployment.json"]
+            .into_iter()
+            .map(|name| {
+                read(&self.workspace().join(name), 32768).map(|(content, identity)| {
+                    (name.to_string(), SnapshotFile { content, identity })
+                })
+            })
+            .collect()
+    }
+    pub fn inspect(&self) -> Result<Value> {
+        self.inspect_control(&RunControl::new(std::time::Duration::from_secs(10)))
+    }
+    fn inspect_control(&self, control: &RunControl) -> Result<Value> {
+        let _snapshot = self.lock_snapshot(control)?;
+        let mut state = self.load()?;
+        for run in &mut state.runs {
+            // A saved snapshot can't attest to its own later directory sync.
+            run["publication_durability"] = Value::Null;
+        }
+        let snapshot = self.snapshot(&state)?;
+        Ok(
+            json!({"schema":state.schema,"workspace":self.workspace(),"task":TASK,"policy":POLICY,"subject_digest":snapshot_digest(&snapshot)?,"files":snapshot.iter().map(|(k,v)|(k.clone(),v.content.clone())).collect::<BTreeMap<_,_>>(),"runs":state.runs,"inflight":state.inflight,"publication_durability":null,"model_usage":null,"usage_scope":"engine operations and verification only; Goose model tokens and cost are not measured","limits":{"effects_per_run":1,"accounted_calls_per_run":2,"engine_elapsed_ms":10000,"verifier_timeout_ms":5000,"session_runs":12}}),
+        )
+    }
+    pub fn submit(&self, input: Value) -> Result<Value> {
+        self.submit_control(input, RunControl::new(std::time::Duration::from_secs(10)))
+    }
+    pub fn submit_control(&self, input: Value, control: RunControl) -> Result<Value> {
+        let change: Change = serde_json::from_value(input).map_err(|e| e.to_string())?;
+        if change.plan.trim().is_empty()
+            || change.plan.len() > 4096
+            || change.content.len() > 32768
+            || change.path.len() > 200
+        {
+            return Err(
+                "plan is required; plan/path/content must stay within the declared limits".into(),
+            );
+        }
+        let lock = open_regular(&self.operator().join("lock"), true)?;
+        acquire_lock(&lock, &control)?;
+        // Admission can wait while status remains readable. Once admitted, the
+        // separate directory lock keeps readers outside the effect/save span.
+        let _snapshot = self.lock_snapshot(&control)?;
+        let mut state = self.load()?;
+        if state.inflight.is_some() {
+            return Err("previous run has an uncertain outcome; inspect the files and use a fresh session; no replay dispatched".into());
+        }
+        let input_digest = hash_json(&change)?;
+        if let Some(existing) = state
+            .runs
+            .iter()
+            .find(|run| run["input_digest"] == input_digest)
+        {
+            let mut copy = existing.clone();
+            copy["duplicate"] = json!(true);
+            copy["publication_durability"] = Value::Null;
+            return Ok(copy);
+        }
+        if state.runs.len() >= 12 {
+            return Err(
+                "session run limit reached; no effect dispatched; use a fresh session".into(),
+            );
+        }
+        let before = self.snapshot(&state)?;
+        let request = request(self, state.runs.len() + 1, &change, &before)?;
+        let effect = effect(&request, &change)?;
+        // Validate before the durable running marker; malformed input cannot strand a session.
+        validate_protected_effect_request(&request, &support(), &effect)
+            .map_err(|e| e.to_string())?;
+        let adapter = SubmittedProposalAdapter::new(
+            SubmittedProposal::new(&change, &change.plan, &change.base_digest)
+                .map_err(|e| e.to_string())?,
+            &request,
+            effect.clone(),
+            &support(),
+            control.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        #[cfg(test)]
+        if self.fault == Some("admission_delay") {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        if let Some(cancelled) = control.cancellation() {
+            return Err(format!(
+                "proposal interrupted before admission: {}; no run or effect admitted",
+                cancelled.reason
+            ));
+        }
+        state.inflight = Some(
+            json!({"run_id":request.run_id,"path":change.path,"plan":change.plan,"input_digest":input_digest,"subject_digest":request.subject.digest,"status":"running_or_uncertain_after_restart"}),
+        );
+        if let Some(warning) = self.save(&state, "dispatch")? {
+            // The engine hasn't started, so clearing this marker can't replay an
+            // effect. If abort publication fails, preserve the visible state.
+            state.inflight = None;
+            return match self.save(&state, "abort") {
+                Ok(abort_warning) => Err(format!(
+                    "{warning}; admission aborted; no effect dispatched; inspect the session before retrying{}",
+                    abort_warning.map_or(String::new(), |warning| format!("; {warning}")),
+                )),
+                Err(error) => Err(format!(
+                    "{warning}; no effect dispatched; abort publication failed: {error}; inspect the retained session before retrying",
+                )),
+            };
+        }
+        #[cfg(test)]
+        if self.fault == Some("cancel_after_admission") {
+            control.cancel();
+        }
+        let start = Instant::now();
+        let report = Rc::new(RefCell::new(Value::Null));
+        let evidence = Rc::new(RefCell::new(Value::Null));
+        let mut engine = AgentRunEngine::new(
+            runtime_support(&change, &state.trusted_schema),
+            config(),
+            adapter,
+            FileExecutor {
+                store: self.clone(),
+                state: &state,
+                before: before.clone(),
+                change: change.clone(),
+                evidence: evidence.clone(),
+                control: control.clone(),
+            },
+            verify::ShippingVerifier {
+                store: self.clone(),
+                state: &state,
+                report: report.clone(),
+            },
+        );
+        let execution = engine
+            .run(request.clone())
+            .map_err(|e| format!("run outcome requires inspection: {e}"))?;
+        verify_terminal_receipt(&request, &support(), &execution.receipt)
+            .map_err(|e| e.to_string())?;
+        for result in &execution.protected_effect_results {
+            verify_protected_effect_result(&request, &support(), &effect, result)
+                .map_err(|e| e.to_string())?;
+        }
+        let after = self.snapshot(&state)?;
+        let mut result = json!({"input_digest":input_digest,"path":change.path,"plan":change.plan,"before":before.get(&change.path).map(|v|&v.content),"proposed":change.content,"after":after.get(&change.path).map(|v|&v.content),"request":request,"effect_request":effect,"receipt":execution.receipt,"protected_effect_results":execution.protected_effect_results,"verification":report.borrow().clone(),"execution_evidence":evidence.borrow().clone(),"terminal_receipt_verified":true,"elapsed_ms":start.elapsed().as_millis() as u64,"model_usage":null,"publication_durability":null,"duplicate":false});
+        if !execution
+            .protected_effect_results
+            .iter()
+            .any(|result| result.body.execution_status == EffectExecutionStatus::UnknownOutcome)
+        {
+            state.inflight = None;
+        }
+        state.runs.push(result.clone());
+        if let Some(warning) = self.save(&state, "result")? {
+            result["durability_warning"] = json!(warning);
+            *state.runs.last_mut().expect("the result was appended") = result.clone();
+            let repeated_warning = self.save(&state, "result_warning").map_err(|error| format!(
+                "{warning}; warning publication failed: {error}; actual effect and visible receipt retained; inspect the session"
+            ))?;
+            if let Some(repeated_warning) = repeated_warning {
+                return Err(format!(
+                    "{warning}; warning snapshot also has unconfirmed durability: {repeated_warning}; inspect the retained session"
+                ));
+            }
+        }
+        Ok(result)
+    }
+}
+
+struct FileExecutor<'a> {
+    store: CodingStore,
+    state: &'a State,
+    before: Snapshot,
+    change: Change,
+    evidence: Rc<RefCell<Value>>,
+    control: RunControl,
+}
+impl FileExecutor<'_> {
+    fn commit(&self) -> std::result::Result<Snapshot, (bool, String)> {
+        let prepare = (|| -> Result<_> {
+            if self.change.path != "shipping.py" {
+                return Err("executor scope refused".into());
+            }
+            if self.store.snapshot(self.state)? != self.before {
+                return Err("workspace changed before execution".into());
+            }
+            self.store.hit("target_create")?;
+            let mut staged = tempfile::NamedTempFile::new_in(self.store.workspace())
+                .map_err(|e| e.to_string())?;
+            self.store.hit("target_write")?;
+            staged
+                .write_all(self.change.content.as_bytes())
+                .map_err(|e| e.to_string())?;
+            self.store.hit("target_mode")?;
+            staged
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+            self.store.hit("target_flush")?;
+            staged.flush().map_err(|e| e.to_string())?;
+            self.store.hit("target_sync")?;
+            staged.as_file().sync_all().map_err(|e| e.to_string())?;
+            #[cfg(test)]
+            if self.store.fault == Some("concurrent_edit") {
+                fs::write(
+                    self.store.workspace().join("shipping.py"),
+                    "concurrent work\n",
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            // External writers must use the same admission/snapshot locks.
+            // An ordinary editor can race this check and the rename; see TRANSACTION.md.
+            if self.store.snapshot(self.state)? != self.before {
+                return Err("workspace changed before commit; concurrent work preserved".into());
+            }
+            if self.control.cancellation().is_some() {
+                return Err("proposal cancelled before file commit; no write dispatched".into());
+            }
+            self.store.hit("target_rename")?;
+            staged
+                .persist(self.store.workspace().join("shipping.py"))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        prepare.map_err(|e| (false, e))?;
+        self.store.hit("postcommit").map_err(|e| (true, e))?;
+        let after = self.store.snapshot(self.state).map_err(|e| (true, e))?;
+        if after["shipping.py"].content != self.change.content {
+            return Err((true, "postcommit content differs".into()));
+        }
+        File::open(self.store.workspace())
+            .and_then(|f| f.sync_all())
+            .map_err(|e| (true, e.to_string()))?;
+        Ok(after)
+    }
+}
+impl ExecutorPort for FileExecutor<'_> {
+    fn cancellation(&self) -> Option<Cancellation> {
+        self.control.cancellation()
+    }
+    fn execute(
+        &mut self,
+        request: &ProtectedEffectRequest,
+    ) -> std::result::Result<ExecutorObservation, RuntimePortError> {
+        let started = Instant::now();
+        let outcome = self.commit();
+        let (status, after, reason) = match outcome {
+            Ok(after) => (EffectExecutionStatus::Executed, Some(after), None),
+            Err((committed, e)) => (
+                if committed {
+                    EffectExecutionStatus::UnknownOutcome
+                } else {
+                    EffectExecutionStatus::Failed
+                },
+                if committed {
+                    None
+                } else {
+                    self.store.snapshot(self.state).ok()
+                },
+                Some(e),
+            ),
+        };
+        let usage = effect_usage(started.elapsed().as_millis() as u64, 1);
+        let record = json!({"before":self.before,"after":after,"execution_status":status,"reason":reason,"usage":usage,"executor":executor_identity(),"boundary":profile()});
+        let evidence_digest = hash_json(&record).map_err(RuntimePortError::new)?;
+        *self.evidence.borrow_mut() = record;
+        let mut types = vec![
+            EffectEvidenceType::Executor,
+            EffectEvidenceType::Sandbox,
+            EffectEvidenceType::Usage,
+        ];
+        match status {
+            EffectExecutionStatus::Executed => types.extend([
+                EffectEvidenceType::SubjectObservation,
+                EffectEvidenceType::Mutation,
+                EffectEvidenceType::Artifact,
+            ]),
+            EffectExecutionStatus::UnknownOutcome => types.push(EffectEvidenceType::UnknownOutcome),
+            _ => types.extend([
+                EffectEvidenceType::Failure,
+                EffectEvidenceType::SubjectObservation,
+                EffectEvidenceType::Artifact,
+                EffectEvidenceType::Mutation,
+            ]),
+        }
+        Ok(ExecutorObservation {
+            execution_status: status,
+            observed_post_effect_subject: after
+                .as_ref()
+                .map(|s| subject(&self.store, s))
+                .transpose()
+                .map_err(RuntimePortError::new)?,
+            exit: None,
+            usage,
+            executor: Some(executor_identity()),
+            sandbox_profile: Some(request.sandbox_profile.clone()),
+            reason,
+            evidence: types
+                .into_iter()
+                .map(|evidence_type| EffectEvidenceReference {
+                    evidence_type,
+                    digest: evidence_digest.clone(),
+                    locator: Some("gaap:record/execution_evidence".into()),
+                })
+                .collect(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const GOOD: &str = "def shipping_quote(quantity, unit_price):\n    if quantity <= 0:\n        raise ValueError('invalid quantity')\n    subtotal = quantity * unit_price\n    if quantity >= 5:\n        subtotal = subtotal * 0.9\n    if subtotal < 100:\n        subtotal = subtotal + 7\n    return round(subtotal, 2)\n";
+    fn input(store: &CodingStore) -> Value {
+        json!({"path":"shipping.py","content":GOOD,"plan":"Implement shipping rules.","base_digest":store.inspect().unwrap()["subject_digest"]})
+    }
+    fn prepared() -> (tempfile::TempDir, CodingStore) {
+        let parent = tempfile::tempdir().unwrap();
+        let store = CodingStore::initialize(&parent.path().join("coding")).unwrap();
+        (parent, store)
+    }
+    #[test]
+    fn initial_namespace_sync_failure_preserves_an_incomplete_root() {
+        for point in [
+            "init_workspace_dir_sync",
+            "init_root_dir_sync",
+            "init_parent_dir_sync",
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("initialization");
+            let result = CodingStore::initialize_inner(&root, Some(point));
+            assert!(result.is_err(), "{point}: initialization reported success");
+            assert_eq!(
+                fs::read_to_string(root.join("workspace/shipping.py")).unwrap(),
+                INITIAL
+            );
+            assert!(!root.join("operator/state.json").exists());
+            assert!(CodingStore::open(&root).is_err());
+            assert!(CodingStore::initialize(&root).is_err());
+            assert_eq!(
+                fs::read_to_string(root.join("workspace/shipping.py")).unwrap(),
+                INITIAL
+            );
+        }
+    }
+    #[test]
+    fn deadline_during_preparation_refuses_before_a_marker_or_run() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        let before = fs::read(store.operator().join("state.json")).unwrap();
+        store.fault = Some("admission_delay");
+        let result = store.submit_control(
+            change.clone(),
+            RunControl::new(std::time::Duration::from_millis(100)),
+        );
+        let error = match result {
+            Ok(result) => panic!(
+                "late preparation admitted {:?} with {} effect results",
+                result["receipt"]["body"]["terminal_status"],
+                result["protected_effect_results"].as_array().unwrap().len()
+            ),
+            Err(error) => error,
+        };
+        assert!(error.contains("deadline exceeded") && error.contains("no run or effect admitted"));
+        assert_eq!(
+            fs::read(store.operator().join("state.json")).unwrap(),
+            before
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+        store.fault = None;
+        let fresh = store.submit(change.clone()).unwrap();
+        assert_eq!(fresh["duplicate"], false);
+        assert_eq!(fresh["receipt"]["body"]["terminal_status"], "completed");
+        assert_eq!(store.submit(change).unwrap()["duplicate"], true);
+    }
+    #[test]
+    fn admitted_interruption_is_historical_and_a_fresh_proposal_can_run() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("cancel_after_admission");
+        let interrupted = store.submit(change.clone()).unwrap();
+        assert_eq!(
+            interrupted["receipt"]["body"]["terminal_status"],
+            "interrupted"
+        );
+        assert!(
+            interrupted["protected_effect_results"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+        store.fault = None;
+        let duplicate = store.submit(change.clone()).unwrap();
+        assert_eq!(duplicate["duplicate"], true);
+        assert_eq!(duplicate["receipt"], interrupted["receipt"]);
+        assert_eq!(
+            store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+            1
+        );
+        let mut fresh = change;
+        fresh["plan"] = json!("Make a fresh proposal after the interrupted terminal run.");
+        let completed = store.submit(fresh).unwrap();
+        assert_eq!(completed["duplicate"], false);
+        assert_eq!(completed["receipt"]["body"]["terminal_status"], "completed");
+        assert_ne!(
+            completed["request"]["run_id"],
+            interrupted["request"]["run_id"]
+        );
+        assert_eq!(
+            store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+            2
+        );
+    }
+    #[test]
+    fn initialization_refuses_an_unconfirmed_directory_sync_without_resetting() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("initialization-warning");
+        let result = CodingStore::initialize_inner(&root, Some("init_dir_sync"));
+        assert!(
+            result.is_err(),
+            "initialization swallowed its directory-sync warning"
+        );
+        let state = fs::read(root.join("operator/state.json")).unwrap();
+        assert!(CodingStore::initialize(&root).is_err());
+        assert_eq!(fs::read(root.join("operator/state.json")).unwrap(), state);
+        assert!(
+            CodingStore::open(&root.canonicalize().unwrap())
+                .unwrap()
+                .inspect()
+                .unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn publication_warning_survives_inspection_restart_and_duplicate_delivery() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("result_dir_sync");
+        let result = store.submit(change.clone()).unwrap();
+        let warning = result["durability_warning"].clone();
+        assert!(warning.is_string());
+        let reopened = CodingStore::open(&store.root).unwrap();
+        assert_eq!(
+            reopened.inspect().unwrap()["runs"][0]["durability_warning"],
+            warning
+        );
+        assert_eq!(
+            reopened.submit(change).unwrap()["durability_warning"],
+            warning
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            GOOD
+        );
+        assert_eq!(
+            reopened.inspect().unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn warning_publication_failure_keeps_the_actual_receipt_and_unknown_durability() {
+        for (point, faults) in [
+            (
+                "result_warning_create",
+                "result_dir_sync,result_warning_create",
+            ),
+            (
+                "result_warning_write",
+                "result_dir_sync,result_warning_write",
+            ),
+            (
+                "result_warning_flush",
+                "result_dir_sync,result_warning_flush",
+            ),
+            ("result_warning_sync", "result_dir_sync,result_warning_sync"),
+            (
+                "result_warning_rename",
+                "result_dir_sync,result_warning_rename",
+            ),
+            (
+                "result_warning_dir_sync",
+                "result_dir_sync,result_warning_dir_sync",
+            ),
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(faults);
+            let error = store.submit(change.clone()).unwrap_err();
+            assert!(
+                error.contains("directory durability uncertain"),
+                "{point}: {error}"
+            );
+            store.fault = None;
+            let reopened = CodingStore::open(&store.root).unwrap();
+            let inspected = reopened.inspect().unwrap();
+            assert_eq!(
+                inspected["runs"][0]["receipt"]["body"]["terminal_status"],
+                "completed"
+            );
+            assert!(inspected["runs"][0]["publication_durability"].is_null());
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                GOOD
+            );
+            let duplicate = reopened.submit(change).unwrap();
+            assert_eq!(duplicate["receipt"], inspected["runs"][0]["receipt"]);
+            assert!(duplicate["publication_durability"].is_null());
+            assert_eq!(
+                reopened.inspect().unwrap()["runs"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+    #[test]
+    fn snapshot_refuses_a_symlinked_ancestor_after_loading_the_session() {
+        let parent = tempfile::tempdir().unwrap();
+        let base = parent.path().canonicalize().unwrap();
+        let original = base.join("original");
+        fs::create_dir(&original).unwrap();
+        let store = CodingStore::initialize(&original.join("session")).unwrap();
+        let _lock = store
+            .lock_snapshot(&RunControl::new(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let state = store.load().unwrap();
+        fs::rename(&original, base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(base.join("moved"), &original).unwrap();
+        assert!(store.snapshot(&state).unwrap_err().contains("symlinks"));
+        assert_eq!(
+            fs::read_to_string(base.join("moved/session/workspace/shipping.py")).unwrap(),
+            INITIAL
+        );
+    }
+
+    #[test]
+    fn engine_budget_refuses_execution_before_any_write() {
+        let (_parent, store) = prepared();
+        let change: Change = serde_json::from_value(input(&store)).unwrap();
+        let state = store.load().unwrap();
+        let before = store.snapshot(&state).unwrap();
+        let mut request = request(&store, 1, &change, &before).unwrap();
+        request.resource_budget.max_tool_calls = 0;
+        let effect = effect(&request, &change).unwrap();
+        let mut engine = AgentRunEngine::new(
+            runtime_support(&change, &mcp::capability_digest()),
+            config(),
+            SubmittedProposalAdapter::new(
+                SubmittedProposal::new(&change, &change.plan, &change.base_digest).unwrap(),
+                &request,
+                effect,
+                &support(),
+                RunControl::new(std::time::Duration::from_secs(10)),
+            )
+            .unwrap(),
+            FileExecutor {
+                store: store.clone(),
+                state: &state,
+                before,
+                change,
+                evidence: Rc::new(RefCell::new(Value::Null)),
+                control: RunControl::new(std::time::Duration::from_secs(10)),
+            },
+            verify::ShippingVerifier {
+                store: store.clone(),
+                state: &state,
+                report: Rc::new(RefCell::new(Value::Null)),
+            },
+        );
+        let result = engine.run(request.clone()).unwrap();
+        verify_terminal_receipt(&request, &support(), &result.receipt).unwrap();
+        assert_eq!(result.receipt.body.terminal_status, AgentRunStatus::Blocked);
+        assert!(result.receipt.body.terminal_reason.starts_with("runtime."));
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+    }
+
+    #[test]
+    fn verification_rejects_a_change_after_execution() {
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("verification_drift");
+        let result = store.submit(change).unwrap();
+        assert_eq!(
+            result["protected_effect_results"][0]["body"]["execution_status"],
+            "executed"
+        );
+        assert_eq!(result["verification"]["fresh"], false);
+        assert_eq!(result["verification"]["passed"], false);
+        assert_eq!(result["receipt"]["body"]["terminal_status"], "blocked");
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            "operator edit during verification\n"
+        );
+    }
+
+    #[test]
+    fn dispatch_persistence_failures_cannot_write() {
+        for point in [
+            "dispatch_create",
+            "dispatch_write",
+            "dispatch_flush",
+            "dispatch_sync",
+            "dispatch_rename",
+            "dispatch_dir_sync",
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(point);
+            assert!(store.submit(change).is_err(), "{point}");
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                INITIAL,
+                "{point}"
+            );
+            let state = store.inspect().unwrap();
+            assert!(state["inflight"].is_null(), "{point}");
+            store.fault = None;
+            let retried = store.submit(input(&store)).unwrap();
+            assert_eq!(retried["receipt"]["body"]["terminal_status"], "completed");
+        }
+    }
+    #[test]
+    fn abort_publication_failures_preserve_known_no_dispatch_and_never_write() {
+        for (point, faults) in [
+            ("abort_create", "dispatch_dir_sync,abort_create"),
+            ("abort_write", "dispatch_dir_sync,abort_write"),
+            ("abort_flush", "dispatch_dir_sync,abort_flush"),
+            ("abort_sync", "dispatch_dir_sync,abort_sync"),
+            ("abort_rename", "dispatch_dir_sync,abort_rename"),
+            ("abort_dir_sync", "dispatch_dir_sync,abort_dir_sync"),
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(faults);
+            let error = store.submit(change).unwrap_err();
+            assert!(error.contains("no effect dispatched"), "{point}: {error}");
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                INITIAL
+            );
+            store.fault = None;
+            let reopened = CodingStore::open(&store.root).unwrap();
+            let state = reopened.inspect().unwrap();
+            assert!(state["runs"].as_array().unwrap().is_empty());
+            if point == "abort_dir_sync" {
+                assert!(state["inflight"].is_null());
+                assert_eq!(
+                    reopened.submit(input(&reopened)).unwrap()["receipt"]["body"]["terminal_status"],
+                    "completed"
+                );
+            } else {
+                assert!(!state["inflight"].is_null());
+                assert!(
+                    reopened
+                        .submit(input(&reopened))
+                        .unwrap_err()
+                        .contains("uncertain outcome")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_size_limit_preserves_the_readable_canonical_state() {
+        let (_parent, store) = prepared();
+        let original = store.inspect().unwrap();
+        let bytes = fs::read(store.operator().join("state.json")).unwrap();
+        let mut oversized = store.load().unwrap();
+        oversized.inflight =
+            Some(json!({"unpublished_fixture_padding":"x".repeat(MAX_STATE_BYTES)}));
+        assert!(
+            store
+                .save(&oversized, "dispatch")
+                .unwrap_err()
+                .contains("snapshot exceeds")
+        );
+        assert_eq!(
+            fs::read(store.operator().join("state.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(store.inspect().unwrap(), original);
+        assert_eq!(
+            store.submit(input(&store)).unwrap()["receipt"]["body"]["terminal_status"],
+            "completed"
+        );
+    }
+
+    #[test]
+    fn every_precommit_fault_preserves_original_and_records_failure() {
+        for point in [
+            "target_create",
+            "target_write",
+            "target_mode",
+            "target_flush",
+            "target_sync",
+            "target_rename",
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(point);
+            let result = store.submit(change).unwrap();
+            assert_eq!(
+                result["protected_effect_results"][0]["body"]["execution_status"], "failed",
+                "{point}: {result}"
+            );
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                INITIAL,
+                "{point}"
+            );
+            assert!(store.inspect().unwrap()["inflight"].is_null());
+        }
+    }
+    #[test]
+    fn result_persistence_failure_leaves_uncertain_attempt_and_never_replays() {
+        for point in [
+            "result_create",
+            "result_write",
+            "result_flush",
+            "result_sync",
+            "result_rename",
+        ] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(point);
+            assert!(store.submit(change.clone()).is_err(), "{point}");
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                GOOD
+            );
+            store.fault = None;
+            assert!(!store.inspect().unwrap()["inflight"].is_null());
+            assert!(
+                store
+                    .submit(change)
+                    .unwrap_err()
+                    .contains("uncertain outcome")
+            );
+        }
+    }
+    #[test]
+    fn postcommit_uncertainty_and_durability_warning_are_distinct() {
+        for point in ["postcommit", "result_dir_sync"] {
+            let (_parent, mut store) = prepared();
+            let change = input(&store);
+            store.fault = Some(point);
+            let result = store.submit(change.clone()).unwrap();
+            assert_eq!(
+                fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+                GOOD
+            );
+            if point == "postcommit" {
+                assert_eq!(
+                    result["protected_effect_results"][0]["body"]["execution_status"],
+                    "unknown_outcome"
+                );
+                assert!(!store.inspect().unwrap()["inflight"].is_null());
+                let reopened = CodingStore::open(&store.root).unwrap();
+                assert!(
+                    reopened
+                        .submit(input(&reopened))
+                        .unwrap_err()
+                        .contains("uncertain outcome")
+                );
+                assert_eq!(
+                    reopened.inspect().unwrap()["runs"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            } else {
+                assert_eq!(result["receipt"]["body"]["terminal_status"], "completed");
+                assert!(result["durability_warning"].is_string());
+            }
+        }
+    }
+    #[test]
+    fn stale_and_concurrent_inputs_preserve_operator_work() {
+        let (_parent, store) = prepared();
+        let change = input(&store);
+        fs::write(store.workspace().join("shipping.py"), "operator edit\n").unwrap();
+        assert!(
+            store
+                .submit(change)
+                .unwrap_err()
+                .contains("proposal binding")
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            "operator edit\n"
+        );
+        let (_parent, mut store) = prepared();
+        let change = input(&store);
+        store.fault = Some("concurrent_edit");
+        let result = store.submit(change).unwrap();
+        assert_eq!(
+            result["protected_effect_results"][0]["body"]["execution_status"],
+            "failed"
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            "concurrent work\n"
+        );
+    }
+    #[test]
+    fn symlinks_hardlinks_and_relocated_sessions_are_rejected() {
+        let (parent, store) = prepared();
+        let change = input(&store);
+        let source = store.workspace().join("shipping.py");
+        fs::remove_file(&source).unwrap();
+        std::os::unix::fs::symlink(parent.path().join("unowned"), &source).unwrap();
+        assert!(store.submit(change).is_err());
+        fs::remove_file(&source).unwrap();
+        fs::write(&source, INITIAL).unwrap();
+        fs::hard_link(&source, parent.path().join("second-link")).unwrap();
+        assert!(store.inspect().is_err());
+        fs::remove_file(parent.path().join("second-link")).unwrap();
+        let moved = parent.path().join("moved");
+        fs::rename(&store.root, &moved).unwrap();
+        assert!(CodingStore::open(&moved).is_err());
+    }
+    #[test]
+    fn tool_trust_is_bound_to_advertised_schema() {
+        let (_parent, store) = prepared();
+        let change = input(&store);
+        let mut state = store.load().unwrap();
+        state.trusted_schema = digest(b"different schema");
+        store.save(&state, "test").unwrap();
+        assert!(
+            store
+                .submit(change)
+                .unwrap_err()
+                .contains("session identity or policy changed")
+        );
+        assert_eq!(
+            fs::read_to_string(store.workspace().join("shipping.py")).unwrap(),
+            INITIAL
+        );
+    }
+    #[test]
+    fn parallel_duplicate_submission_executes_exactly_once() {
+        let (_parent, store) = prepared();
+        let change = input(&store);
+        let other = store.clone();
+        let second = change.clone();
+        let thread = std::thread::spawn(move || other.submit(second).unwrap());
+        let first = store.submit(change).unwrap();
+        let second = thread.join().unwrap();
+        assert_ne!(first["duplicate"], second["duplicate"]);
+        assert_eq!(
+            store.inspect().unwrap()["runs"].as_array().unwrap().len(),
+            1
+        );
+    }
+}

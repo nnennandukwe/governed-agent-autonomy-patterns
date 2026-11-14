@@ -1,0 +1,245 @@
+use super::*;
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+
+pub const PROGRAM: &str = include_str!("verify.py");
+pub const CASES: &[(i64, f64, Option<f64>, &str)] = &[
+    (1, 20.0, Some(27.0), "single item + delivery"),
+    (2, 20.0, Some(47.0), "two items + delivery"),
+    (4, 20.0, Some(87.0), "below bulk threshold"),
+    (5, 20.0, Some(97.0), "bulk discount before delivery"),
+    (5, 25.0, Some(112.5), "discounted total gets free delivery"),
+    (1, 100.0, Some(100.0), "exact free-delivery threshold"),
+    (6, 19.99, Some(107.95), "rounding to cents"),
+    (0, 20.0, None, "zero quantity rejected"),
+    (-1, 20.0, None, "negative quantity rejected"),
+];
+
+#[cfg(test)]
+pub fn evaluate(source: &str) -> Result<Value> {
+    evaluate_seed(source, "deterministic-unit-fixture")
+}
+fn evaluate_seed(source: &str, seed: &str) -> Result<Value> {
+    evaluate_program(source, PROGRAM, Duration::from_secs(5), seed)
+}
+fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) -> Result<Value> {
+    let started = Instant::now();
+    let mut child = Command::new("/usr/bin/python3")
+        .args(["-I", "-S", "-B", "-c", program])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("verifier spawn failed: {e}"))?;
+    let payload = json!({"source":source,"seed":seed,"inputs":CASES.iter().map(|(q,p,_,_)| json!([q,p])).collect::<Vec<_>>()});
+    let mut stdin = child.stdin.take().unwrap();
+    let payload = payload.to_string();
+    let input = thread::spawn(move || stdin.write_all(payload.as_bytes()));
+    let out = child.stdout.take().unwrap();
+    let err = child.stderr.take().unwrap();
+    let output = thread::spawn(move || {
+        let mut output_bytes = Vec::new();
+        out.take(32769)
+            .read_to_end(&mut output_bytes)
+            .map(|_| output_bytes)
+    });
+    let errors = thread::spawn(move || {
+        let mut error_bytes = Vec::new();
+        err.take(8193)
+            .read_to_end(&mut error_bytes)
+            .map(|_| error_bytes)
+    });
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            timed_out = true;
+            let _ = child.kill();
+            break child.wait().map_err(|e| e.to_string())?;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let bytes = output
+        .join()
+        .map_err(|_| "verifier output thread failed")?
+        .map_err(|e| e.to_string())?;
+    let stderr = errors
+        .join()
+        .map_err(|_| "verifier stderr thread failed")?
+        .map_err(|e| e.to_string())?;
+    let input_result = input.join().map_err(|_| "verifier input thread failed")?;
+    if timed_out
+        || !status.success()
+        || input_result.is_err()
+        || bytes.len() > 32768
+        || !stderr.is_empty()
+    {
+        return Ok(
+            json!({"passed":false,"reason":if timed_out {"verifier time limit exceeded"} else {"verifier process failed"},"elapsed_ms":started.elapsed().as_millis() as u64,"cases":[]}),
+        );
+    }
+    let observed: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid verifier response: {e}"))?;
+    let mut cases: Vec<Value> = CASES.iter().enumerate().map(|(index,(q,p,expected,name))| {
+        let actual = &observed["observations"][index];
+        let passed = match expected {
+            Some(expected) => actual["value"].as_f64().is_some_and(|v| (v-expected).abs() < 0.00001),
+            None => actual["error"] == "ValueError",
+        };
+        json!({"name":name,"quantity":q,"unit_price":p,"expected":expected.map_or(json!("ValueError"), |n|json!(n)),"observed":actual,"passed":passed})
+    }).collect();
+    if observed["validation_error"].is_null() {
+        let probes = observed["probes"]
+            .as_array()
+            .ok_or("missing verifier samples")?;
+        if probes.len() != 32 {
+            return Err("verifier must return 32 host-seeded samples".into());
+        }
+        for (index, probe) in probes.iter().enumerate() {
+            let expected = probe["expected"]
+                .as_f64()
+                .ok_or("missing sample expectation")?;
+            let actual = &probe["observed"];
+            let passed = actual["value"]
+                .as_f64()
+                .is_some_and(|value| (value - expected).abs() < 0.00001);
+            cases.push(json!({"name":format!("host sample {}",index+1),"quantity":probe["quantity"],"unit_price":probe["unit_price"],"expected":expected,"observed":actual,"passed":passed}));
+        }
+    }
+    Ok(
+        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":"independent-shipping-oracle","execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
+    )
+}
+
+pub struct ShippingVerifier<'a> {
+    pub store: CodingStore,
+    pub state: &'a State,
+    pub report: Rc<RefCell<Value>>,
+}
+impl VerifierPort for ShippingVerifier<'_> {
+    fn verify(
+        &mut self,
+        context: VerificationContext<'_>,
+    ) -> std::result::Result<PortObservation<VerificationReport>, RuntimePortError> {
+        let start = Instant::now();
+        let result = (|| -> Result<_> {
+            // Both snapshots are after the executor has finished the file change.
+            let before_verification = self.store.snapshot(self.state)?;
+            let observed_digest = snapshot_digest(&before_verification)?;
+            let seed = validate_request(context.request, &support()).map_err(|e| e.to_string())?;
+            let mut report = evaluate_seed(&before_verification["shipping.py"].content, &seed)?;
+            #[cfg(test)]
+            if self.store.fault == Some("verification_drift") {
+                fs::write(
+                    self.store.workspace().join("shipping.py"),
+                    "operator edit during verification\n",
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let after_verification = self.store.snapshot(self.state)?;
+            let fresh = before_verification == after_verification
+                && observed_digest == context.current_subject.digest;
+            report["subject_digest"] = json!(observed_digest);
+            report["fresh"] = json!(fresh);
+            report["passed"] = json!(report["passed"] == true && fresh);
+            let output_digest = hash_json(&report)?;
+            *self.report.borrow_mut() = report.clone();
+            Ok(PortObservation {
+                value: VerificationReport {
+                    subject_digest: observed_digest.clone(),
+                    verifier_id: "independent-shipping-oracle".into(),
+                    verdict: if report["passed"] == true {
+                        VerificationVerdict::Pass
+                    } else {
+                        VerificationVerdict::Fail
+                    },
+                    evidence: vec![
+                        EvidenceReference {
+                            evidence_type: EvidenceType::CommandOutput,
+                            digest: output_digest,
+                            locator: Some("gaap:record/verification".into()),
+                        },
+                        EvidenceReference {
+                            evidence_type: EvidenceType::Artifact,
+                            digest: observed_digest,
+                            locator: Some("gaap:record/after".into()),
+                        },
+                    ],
+                },
+                usage: resources(start.elapsed().as_millis() as u64, 1),
+            })
+        })();
+        result.map_err(RuntimePortError::new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn verifier_deadline_terminates_the_child() {
+        let started = Instant::now();
+        let report = evaluate_program(
+            &"x".repeat(32768),
+            "while True: pass",
+            Duration::from_millis(50),
+            "deadline-fixture",
+        )
+        .unwrap();
+        assert_eq!(report["passed"], false);
+        assert_eq!(report["reason"], "verifier time limit exceeded");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn dangerous_syntax_and_unbounded_integer_arithmetic_cannot_escape() {
+        for source in [
+            "import os\ndef shipping_quote(quantity, unit_price):\n    return 0\n",
+            "def shipping_quote(quantity, unit_price):\n    return ().__class__\n",
+            "def shipping_quote(quantity, unit_price):\n    return round.__globals__\n",
+            "def shipping_quote(quantity, unit_price):\n    while True: pass\n",
+            "def shipping_quote(quantity, unit_price):\n    return 2 ** 9999\n",
+        ] {
+            assert!(evaluate(source).unwrap()["validation_error"].is_string());
+        }
+        let source = concat!(
+            "def shipping_quote(quantity, unit_price):\n",
+            "    if quantity <= 0:\n",
+            "        raise ValueError\n",
+            "    return quantity * unit_price\n",
+        );
+        let report = evaluate(source).unwrap();
+        assert!(report["validation_error"].is_null());
+    }
+    #[test]
+    fn compiler_warnings_are_reported_without_failing_valid_code() {
+        let source = r"def shipping_quote(quantity, unit_price):
+    if quantity <= 0:
+        raise ValueError('bad\d')
+    subtotal = quantity * unit_price
+    if quantity >= 5:
+        subtotal *= 0.9
+    if subtotal < 100:
+        subtotal += 7
+    return round(subtotal, 2)
+";
+        // Expose older Python's normally hidden invalid-escape warning too.
+        let program = format!("import warnings\nwarnings.simplefilter('always')\n{PROGRAM}");
+        let report = evaluate_program(
+            source,
+            &program,
+            Duration::from_secs(5),
+            "compiler-warning-fixture",
+        )
+        .unwrap();
+        assert_eq!(report["passed"], true, "{report}");
+        assert!(!report["compiler_warnings"].as_array().unwrap().is_empty());
+        assert_eq!(report["cases"].as_array().unwrap().len(), 41);
+    }
+}
