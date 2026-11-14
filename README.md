@@ -9,6 +9,9 @@ contracts, and a deterministic Rust runtime that calls explicit adapter ports
 before protected effects. A separate MCP stdio client executes external tools through that runtime.
 A stable-v1 ACP client mediates delegated agent filesystem operations through the same runtime. A separate attestation adapter signs and verifies retained evidence. The Goose reference can select a local OCI profile for protected effects and independent verification. Provider-specific integrations, durable recovery and production isolation remain pending.
 
+Optional [run telemetry](./adapters/telemetry/README.md) projects sealed executions
+into bounded local OTLP export after the engine returns.
+
 ## Current Interfaces And Evidence
 
 | Path or interface | Current behavior | Developer use |
