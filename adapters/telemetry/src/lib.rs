@@ -65,13 +65,16 @@ fn number(key: &str, value: u64) -> Value {
     json!({"key":key,"value":{"intValue":value.to_string()}})
 }
 
-fn digest_attribute(attrs: &mut Vec<Value>, key: &str, value: &str) -> Result<(), ProjectionError> {
-    if value.len() != 71
-        || !value.starts_with("sha256:")
-        || !value.as_bytes()[7..]
+fn is_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value.as_bytes()[7..]
             .iter()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-    {
+}
+
+fn digest_attribute(attrs: &mut Vec<Value>, key: &str, value: &str) -> Result<(), ProjectionError> {
+    if !is_digest(value) {
         return Err(ProjectionError::InvalidDigest);
     }
     attrs.push(attribute(key, value));
@@ -204,6 +207,9 @@ pub fn project(
             .any(|e| e.body.effect_id.len() > MAX_ID_BYTES)
     {
         return Err(ProjectionError::TooLarge);
+    }
+    if !is_digest(&receipt.receipt_digest) {
+        return Err(ProjectionError::InvalidDigest);
     }
     let trace_id = identity("gaap.trace.receipt", &receipt.receipt_digest)[..32].to_owned();
     let span_id = identity("gaap.span.receipt", &receipt.receipt_digest)[..16].to_owned();
@@ -540,10 +546,27 @@ impl Telemetry {
             if !value.is_object() {
                 return Delivery::Failed;
             }
-            if value.get("partialSuccess").is_some() {
-                Delivery::Partial
-            } else {
-                Delivery::Delivered
+            match value.get("partialSuccess") {
+                None | Some(Value::Null) => Delivery::Delivered,
+                Some(Value::Object(partial)) => {
+                    let count = match partial.get("rejectedSpans") {
+                        None | Some(Value::Null) => Some(0),
+                        Some(Value::String(count)) => count.parse::<i64>().ok(),
+                        Some(Value::Number(count)) => count.as_i64(),
+                        Some(_) => None,
+                    };
+                    let message = match partial.get("errorMessage") {
+                        None | Some(Value::Null) => Some(""),
+                        Some(Value::String(message)) => Some(message.as_str()),
+                        Some(_) => None,
+                    };
+                    match (count, message) {
+                        (Some(0), Some("")) => Delivery::Delivered,
+                        (Some(count), Some(_)) if count >= 0 => Delivery::Partial,
+                        _ => Delivery::Failed,
+                    }
+                }
+                Some(_) => Delivery::Failed,
             }
         })
     }
@@ -556,6 +579,10 @@ impl Telemetry {
         let Some(sender) = &self.sender else {
             return Submission::Disconnected;
         };
+        if !is_digest(&execution.receipt.receipt_digest) {
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            return Submission::Invalid(ProjectionError::InvalidDigest);
+        }
         let sample = Sha256::digest(execution.receipt.receipt_digest.as_bytes());
         let number = u32::from_be_bytes(sample[..4].try_into().unwrap());
         if self.sample_every == 0 || number % self.sample_every != 0 {

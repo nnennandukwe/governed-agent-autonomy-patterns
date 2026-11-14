@@ -71,12 +71,16 @@ loopback socket address. IPv4 and IPv6 loopback are supported. Redirects and
 proxy routing are disabled; no DNS names, URL credentials, arbitrary paths or
 environment overrides are accepted. The total HTTP timeout must be greater
 than zero and at most five seconds. Responses must be HTTP 200 with a bounded
-JSON object; a `partialSuccess` response is counted separately and never retried.
-Other responses, refusal and timeout count as failed telemetry. Here, failed
-means delivery couldn't be confirmed within the response/time bounds; a consumer
-may already have accepted the batch. A `partialSuccess` object, including an
-empty object or a zero-rejection warning, records that protocol response rather
-than claiming a count of lost spans. There are no automatic retries. Re-observing the same sealed output retains its stable IDs.
+JSON object. An absent or null `partialSuccess`, or an empty message with zero
+rejections and no warning, counts as delivered. A positive rejection count or
+a nonempty warning counts as partial. Malformed message
+shapes or field types count as failed acknowledgements. This follows the
+[pinned trace-service response](https://github.com/open-telemetry/opentelemetry-proto/blob/v1.9.0/opentelemetry/proto/collector/trace/v1/trace_service.proto).
+Other responses, refusal and timeout also count as failed telemetry. Here,
+failed means delivery couldn't be confirmed within the response/time bounds;
+a consumer may already have accepted the batch. A partial result doesn't claim
+a count of lost spans. There are no automatic retries. Re-observing the same
+sealed output retains its stable IDs.
 
 This transport profile has no authentication headers. Use an explicitly
 configured local authenticated relay when ingestion requires credentials;
@@ -120,7 +124,7 @@ Prompts, constraints, repository contents, paths, tool payloads, output, actor
 names, credentials, free-text reasons and full canonical audit records are
 omitted by construction. Request/run/effect IDs are bounded and hashed with a
 field-specific namespace plus a zero byte before SHA-256. Already-authoritative
-content digests remain exact; the adapter rejects malformed digests. Hashes
+content digests remain exact; the adapter rejects malformed digests before sampling or identity hashing. Hashes
 aren't authentication or a claim that a supplied identity is trusted. Predictable
 raw IDs can be guessed by hashing candidate values; this mapping omits plaintext
 without claiming anonymity. Keep these correlation hashes within the telemetry

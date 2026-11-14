@@ -515,15 +515,69 @@ fn actual_otlp_http_success_failure_partial_rejection_and_slow_collector_are_iso
         (503, "{}", Duration::ZERO, Delivery::Failed),
         (
             200,
-            "{\"partialSuccess\":{}}",
+            "{\"partialSuccess\":{\"rejectedSpans\":null,\"errorMessage\":null}}",
+            Duration::ZERO,
+            Delivery::Delivered,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"rejectedSpans\":1}}",
             Duration::ZERO,
             Delivery::Partial,
         ),
         (
             200,
-            "{\"partialSuccess\":{\"rejectedSpans\":\"0\"}}",
+            "{\"partialSuccess\":{\"rejectedSpans\":\"0\",\"errorMessage\":\"fixture warning\"}}",
             Duration::ZERO,
             Delivery::Partial,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"rejectedSpans\":\"-1\"}}",
+            Duration::ZERO,
+            Delivery::Failed,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":false}",
+            Duration::ZERO,
+            Delivery::Failed,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":[]}",
+            Duration::ZERO,
+            Delivery::Failed,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":null}",
+            Duration::ZERO,
+            Delivery::Delivered,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"rejectedSpans\":false}}",
+            Duration::ZERO,
+            Delivery::Failed,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"errorMessage\":[]}}",
+            Duration::ZERO,
+            Delivery::Failed,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{}}",
+            Duration::ZERO,
+            Delivery::Delivered,
+        ),
+        (
+            200,
+            "{\"partialSuccess\":{\"rejectedSpans\":\"0\"}}",
+            Duration::ZERO,
+            Delivery::Delivered,
         ),
         (
             200,
@@ -803,4 +857,28 @@ fn print_sanitized_recorded_fixtures() {
             String::from_utf8(bytes).unwrap()
         );
     }
+}
+
+#[test]
+fn malformed_receipt_digest_is_rejected_before_sampling() {
+    let (mut execution, _) = run(Scenario::Completed);
+    execution.receipt.receipt_digest = "x".repeat(262_144);
+    let mut telemetry = Telemetry::with_sink(
+        QueueConfig {
+            capacity: 1,
+            sample_every: 0,
+        },
+        |_| panic!("invalid input must never reach the sink"),
+    )
+    .unwrap();
+    assert_eq!(
+        telemetry.observe(&execution, &Correlation::default()),
+        Submission::Invalid(ProjectionError::InvalidDigest)
+    );
+    assert_eq!(telemetry.statistics().dropped, 1);
+    assert_eq!(telemetry.statistics().sampled_out, 0);
+    assert_eq!(
+        telemetry.shutdown(Duration::from_secs(2)),
+        Shutdown::Complete
+    );
 }
