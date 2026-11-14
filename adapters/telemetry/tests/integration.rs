@@ -670,3 +670,125 @@ fn malformed_or_oversized_inputs_and_unsafe_configuration_never_start_export() {
         Err(ConfigError::Timeout)
     ));
 }
+
+#[test]
+fn concurrent_producers_drop_at_the_bound_while_engine_execution_continues() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let telemetry = Arc::new(
+        Telemetry::with_sink(
+            QueueConfig {
+                capacity: 2,
+                sample_every: 1,
+            },
+            move |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Delivery::Delivered
+            },
+        )
+        .unwrap(),
+    );
+    let (execution, _) = run(Scenario::Completed);
+    let execution = Arc::new(execution);
+    assert_eq!(
+        telemetry.observe(&execution, &Correlation::default()),
+        Submission::Queued
+    );
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let producers: Vec<_> = (0..8)
+        .map(|_| {
+            let telemetry = telemetry.clone();
+            let execution = execution.clone();
+            thread::spawn(move || {
+                (0..4)
+                    .map(|_| telemetry.observe(&execution, &Correlation::default()))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let results: Vec<_> = producers
+        .into_iter()
+        .flat_map(|p| p.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| **r == Submission::Queued).count(),
+        2
+    );
+    assert_eq!(
+        results.iter().filter(|r| **r == Submission::Full).count(),
+        30
+    );
+    let (baseline, baseline_calls) = run(Scenario::Ask);
+    let (active, active_calls) = run(Scenario::Ask);
+    assert_eq!(active, baseline);
+    assert_eq!(active_calls, baseline_calls);
+    assert!(active_calls.is_empty());
+    let mut telemetry = Arc::try_unwrap(telemetry).ok().unwrap();
+    assert_eq!(telemetry.statistics().queued, 3);
+    assert_eq!(telemetry.statistics().dropped, 30);
+    assert_eq!(telemetry.shutdown(Duration::ZERO), Shutdown::TimedOut);
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        telemetry.shutdown(Duration::from_secs(2)),
+        Shutdown::Complete
+    );
+}
+
+#[test]
+fn nonzero_fractional_sampling_is_stable_for_the_same_receipt() {
+    use sha2::{Digest, Sha256};
+    let mut telemetry = Telemetry::with_sink(
+        QueueConfig {
+            capacity: 256,
+            sample_every: 3,
+        },
+        |_| Delivery::Delivered,
+    )
+    .unwrap();
+    let mut selected = 0;
+    for scenario in SCENARIOS {
+        let (execution, _) = run(scenario);
+        let hash = Sha256::digest(execution.receipt.receipt_digest.as_bytes());
+        let sample = u32::from_be_bytes(hash[..4].try_into().unwrap());
+        let expected = if sample % 3 == 0 {
+            selected += 1;
+            Submission::Queued
+        } else {
+            Submission::SampledOut
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                telemetry.observe(&execution, &Correlation::default()),
+                expected
+            );
+        }
+    }
+    assert!(selected > 0 && selected < SCENARIOS.len());
+    assert_eq!(
+        telemetry.shutdown(Duration::from_secs(2)),
+        Shutdown::Complete
+    );
+    assert_eq!(telemetry.statistics().queued, selected as u64 * 2);
+    assert_eq!(
+        telemetry.statistics().sampled_out,
+        (SCENARIOS.len() - selected) as u64 * 2
+    );
+}
+
+#[test]
+#[ignore = "prints sanitized recorded fixtures for explicit offline protocol/viewer checks"]
+fn print_sanitized_recorded_fixtures() {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    for scenario in SCENARIOS {
+        let (execution, _) = run(scenario);
+        let bytes = project(&execution, &Correlation::default(), timestamp).unwrap();
+        println!(
+            "OTLP_FIXTURE\t{scenario:?}\t{}",
+            String::from_utf8(bytes).unwrap()
+        );
+    }
+}

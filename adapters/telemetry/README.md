@@ -171,3 +171,15 @@ bytes and executor calls across disabled/sampled/full-queue modes, hold a sink
 behind a deterministic barrier, and exercise actual HTTP success, rejection,
 partial rejection, slowness, malformed response, missing collector and restart.
 A separate test checks nonblocking drop while the sink is held.
+
+The explicit fixture recorder prints only sanitized projections to stdout:
+
+```bash
+cargo test --manifest-path adapters/telemetry/Cargo.toml --locked --test integration print_sanitized_recorded_fixtures -- --ignored --nocapture
+```
+
+Normal test runs skip this output helper; it isn't a required acceptance check.
+The concurrency test holds one sink call while eight producers fill a two-batch
+queue, checks that excess batches drop, and runs an authority-required engine
+case while export is blocked. Fractional sampling is checked separately for
+stable inclusion of the same receipt.
