@@ -38,7 +38,7 @@ class Submission:
     run: str
     attempt: str
     effect: str
-    proposal: str
+    request_id: str
     authority: str
     subject: str
     replacement: str
@@ -48,7 +48,8 @@ class Submission:
 
     def binding(self, caller):
         """Bind the authenticated caller and every proposal field to one byte string."""
-        return encode({"caller": caller, **asdict(self)})
+        proposal_bytes = encode({"subject": self.subject, "replacement": self.replacement})
+        return encode({"caller": caller, "proposal_digest": digest(proposal_bytes), **asdict(self)})
 
 
 class Target:
@@ -78,11 +79,11 @@ class Target:
             self.scratch.add(binding)
             if fail or digest(self.content) != request.subject:
                 self.intervals[binding] = "failed"
-                return "failed"
+                return "failed", None
             self.content = request.replacement
             self.commits.append(binding)
             self.intervals[binding] = "executed"
-            return "executed"
+            return "executed", digest(self.content)
 
     def fence(self, binding):
         """Close a registered interval and certify its outcome against later writes."""
@@ -107,10 +108,12 @@ def inspect(root):
     return snapshot
 
 
-def publish(root, snapshot):
+def publish(root, snapshot, *, receipt_cut=None):
     """Replace a fixture snapshot as a unit; the cut model assumes completed writes survive."""
     staged = root / "journal.next"
     staged.write_text(encode(snapshot), encoding="utf-8")
+    if receipt_cut is not None:
+        receipt_cut("during_receipt")
     staged.replace(root / "journal.json")
 
 
@@ -176,12 +179,13 @@ class Host:
                     raise Refusal("Workspace unresolved; admit independent evidence")
                 original = json.loads(previous["binding"])
                 if any(original[field] == getattr(request, field)
-                       for field in ("run", "attempt", "effect", "proposal", "authority")):
+                       for field in ("request_id", "run", "attempt", "effect", "authority")):
                     raise Refusal("Use fresh identities and fresh authority")
             at("before_intent")
             record = dict(caller=caller, key=request.key, binding=binding, stage="intent",
-                          effect="not_executed", verification=None, receipt=None,
-                          charged_dispatches=0, ruling=None)
+                          effect="not_executed", observed_subject=None, verified_subject=None,
+                          verification=None, receipt=None,
+                          reserved_dispatches=0, ruling=None)
             snapshot["records"].append(record)
             publish(self.root, snapshot)
             at("before_dispatch")
@@ -192,10 +196,12 @@ class Host:
                 terminal, reason = "interrupted", "cancelled"
             else:
                 terminal, reason = self.dispatch(snapshot, record, request, script, at)
-            at("during_receipt")
+            at("before_seal")
+            if terminal == "completed" and not self.verification_current(record, request):
+                terminal, reason = "blocked", "stale_verification"
             record.update(stage="published", receipt={"status": terminal, "reason": reason,
                                                       "effect": record["effect"]})
-            publish(self.root, snapshot)
+            publish(self.root, snapshot, receipt_cut=at)
             try:
                 at("during_cleanup")
                 self.target.scratch.discard(binding)
@@ -207,25 +213,37 @@ class Host:
     def dispatch(self, snapshot, record, request, script, at):
         """Cross the dispatch fence once and order independent observation before verification."""
         binding = record["binding"]
-        record.update(stage="dispatch", effect="unknown", charged_dispatches=1)
+        record.update(stage="dispatch", effect="unknown", reserved_dispatches=1)
         publish(self.root, snapshot)
         self.target.open_interval(binding)
         at("before_effect")
-        outcome = self.target.invoke(binding, request, script == "executor_failure")
+        refusal = self.gate(binding, request)
+        if refusal or script == "cancel_before_effect":
+            witness = self.target.fence(binding)
+            record.update(stage="observed", effect=witness["outcome"])
+            publish(self.root, snapshot)
+            return ("blocked", refusal) if refusal else ("interrupted", "cancelled")
+        outcome, observed_subject = self.target.invoke(binding, request, script == "executor_failure")
         at("after_effect")
         if script == "unknown_report":
             return "failed", "unknown_outcome"
-        record.update(stage="observed", effect=outcome)
+        record.update(stage="observed", effect=outcome, observed_subject=observed_subject)
         publish(self.root, snapshot)
         if outcome == "failed":
             return "failed", "executor_failure"
         if script == "cancel_after_effect":
             return "interrupted", "cancelled"
         at("during_verification")
-        passed = script != "verification_failure"
+        record["verified_subject"] = digest(self.target.content)
+        passed = script != "verification_failure" and self.verification_current(record, request)
         record.update(stage="verified", verification="passed" if passed else "failed")
         publish(self.root, snapshot)
         return ("completed", "verified") if passed else ("blocked", "verification_failed")
+
+    def verification_current(self, record, request):
+        """Require the trusted verifier and the same observed, verified and current output."""
+        return (request.verifier == self.verifier and record["observed_subject"]
+                == record["verified_subject"] == digest(self.target.content))
 
     def admit(self, actor, caller, request, witness):
         """Append one host ruling for an unresolved invocation after its target fences it."""

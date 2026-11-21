@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
+import json
 
 from recovery_model import Cut, Host, Refusal, Submission, Target, digest, initialize, inspect, publish
 
@@ -38,7 +39,7 @@ class RecoveryTests(unittest.TestCase):
     def fresh(self, suffix):
         """Construct a separately identified request for the currently observed input."""
         return Submission(key="key-" + suffix, run="run-" + suffix, attempt="attempt-" + suffix,
-                          effect="effect-" + suffix, proposal="proposal-" + suffix,
+                          effect="effect-" + suffix, request_id="request-" + suffix,
                           authority="grant-" + suffix, subject=digest(self.target.content),
                           replacement="replacement-" + suffix)
 
@@ -73,6 +74,9 @@ class RecoveryTests(unittest.TestCase):
                 value = self.request.replacement if count else "original"
                 self.observed(count, value)
                 image = (self.root / "journal.json").read_bytes()
+                if cut == "during_receipt":
+                    staged = json.loads((self.root / "journal.next").read_text(encoding="utf-8"))
+                    self.assertEqual(staged["records"][0]["receipt"]["status"], "completed")
                 if stage == "dispatch":
                     dispatch_images.append(image)
                 # Reopening the host loses in-memory grants. Historical lookup needs no grant.
@@ -88,7 +92,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual((record["stage"], record["effect"], record["verification"]),
                                  (stage, effect, verification))
                 self.assertEqual(record["receipt"] and record["receipt"]["status"], status)
-                self.assertEqual(record["charged_dispatches"], int(stage != "intent"))
+                self.assertEqual(record["reserved_dispatches"], int(stage != "intent"))
                 self.assertEqual(self.send(), record)
                 self.assertEqual((self.root / "journal.json").read_bytes(), image)
                 self.observed(count, value)
@@ -128,7 +132,7 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(Refusal, "fresh identities"):
             self.host.submit("client-2", self.request)
         fresh = self.fresh("two")
-        for name in ("run", "attempt", "effect", "proposal", "authority"):
+        for name in ("request_id", "run", "attempt", "effect", "authority"):
             with self.subTest(reused=name), self.assertRaisesRegex(Refusal, "fresh identities"):
                 self.host.submit(self.caller, replace(fresh, **{name: getattr(self.request, name)}))
         self.assertEqual(self.send(), original)
@@ -222,9 +226,56 @@ class RecoveryTests(unittest.TestCase):
 
                 record = self.send(at=change_after_intent)
                 self.assertEqual(record["receipt"]["status"], "blocked")
-                self.assertEqual(record["charged_dispatches"], 0)
+                self.assertEqual(record["reserved_dispatches"], 0)
                 self.assertEqual(self.send(), record)
                 self.observed(0, "outside edit" if drift == "subject" else "original")
+
+    def test_drift_after_dispatch_but_before_target_commit(self):
+        """A durable dispatch can't authorize a write after a relevant binding changes."""
+        for drift in ("revoked", "capability", "policy", "subject", "cancel"):
+            with self.subTest(drift=drift):
+                self.prepare()
+
+                def change_before_replace(point):
+                    """Change one trusted precondition after the durable fence."""
+                    if point != "before_effect":
+                        return
+                    if drift == "revoked":
+                        self.host.grants[self.request.authority] = (
+                            self.request.binding(self.caller), "revoked"
+                        )
+                    elif drift == "subject":
+                        self.target.content = "outside edit"
+                    elif drift != "cancel":
+                        setattr(self.host, drift, "version-2")
+
+                script = "cancel_before_effect" if drift == "cancel" else "normal"
+                record = self.send(at=change_before_replace, script=script)
+                self.assertEqual(record["effect"], "not_executed")
+                self.assertEqual(record["receipt"]["status"],
+                                 "interrupted" if drift == "cancel" else "blocked")
+                self.assertEqual(record["reserved_dispatches"], 1)
+                self.assertEqual(self.send(), record)
+                self.observed(0, "outside edit" if drift == "subject" else "original")
+
+    def test_verifier_binds_latest_observed_subject_through_sealing(self):
+        """A verifier or caller can't complete a run against a superseded output."""
+        for window, verdict in (("during_verification", "failed"), ("before_seal", "passed")):
+            with self.subTest(window=window):
+                self.prepare()
+
+                def change_output(point):
+                    """Replace the observed output before the verdict or before sealing."""
+                    if point == window:
+                        self.target.content = "later outside edit"
+
+                record = self.send(at=change_output)
+                self.assertEqual(record["effect"], "executed")
+                self.assertEqual(record["observed_subject"], digest(self.request.replacement))
+                self.assertEqual(record["verification"], verdict)
+                self.assertEqual(record["receipt"]["status"], "blocked")
+                self.assertEqual(self.send(), record)
+                self.observed(1, "later outside edit")
 
     def test_one_shot_approval_and_history_during_uncertainty(self):
         """A new grant needs fresh identities; uncertainty elsewhere can't hide a known receipt."""
@@ -234,7 +285,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(sealed["receipt"]["reason"], "authority_missing")
         self.host.grant(self.caller, self.request)
         self.assertEqual(self.send(), sealed)
-        fresh = self.fresh("two")
+        fresh = replace(self.fresh("two"), replacement=self.request.replacement)
+        old_proposal = json.loads(self.request.binding(self.caller))["proposal_digest"]
+        self.assertEqual(json.loads(fresh.binding(self.caller))["proposal_digest"], old_proposal)
         self.host.grant(self.caller, fresh)
         with self.assertRaises(Cut):
             self.host.submit(self.caller, fresh, at=stop_at("after_effect"))
