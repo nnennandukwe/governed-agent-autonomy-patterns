@@ -11,8 +11,43 @@ fn print(value: impl serde::Serialize) -> Result<(), String> {
     );
     Ok(())
 }
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if args.as_slice() == ["__journal-witness"] {
+        if gaap_journal::live::witness_main().is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let [command, key] = args.as_slice()
+        && command == "journal-submit"
+    {
+        #[cfg(target_os = "linux")]
+        match gaap_submitted_proposal_reference::coding::journal::submit(key) {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("{}", serde_json::json!(error));
+                std::process::exit(1);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = key;
+            eprintln!(
+                "{}",
+                serde_json::json!({"status":"unsupported_storage","reason":"requires_linux_ext4"})
+            );
+            std::process::exit(1);
+        }
+        #[cfg(target_os = "linux")]
+        return;
+    }
+    legacy_main();
+}
+
 #[tokio::main]
-async fn main() {
+async fn legacy_main() {
     if let Err(error) = run().await {
         eprintln!("gaap-submitted-proposal-reference: {error}");
         std::process::exit(1);
@@ -24,7 +59,7 @@ async fn run() -> Result<(), String> {
     match args.as_slice() {
         [] | ["--help"] | ["-h"] => {
             println!(
-                "GAAP submitted-proposal reference\n\n  coding-init ROOT\n  coding-inspect ROOT\n  coding-submit ROOT (JSON on stdin)\n  coding-serve ROOT (MCP stdio)\n\nCreate a fresh ROOT; existing sessions stay intact."
+                "GAAP submitted-proposal reference\n\n  coding-init ROOT\n  coding-inspect ROOT\n  coding-submit ROOT (JSON on stdin)\n  coding-serve ROOT (MCP stdio)\n  journal-submit KEY (Linux, enrolled workspace, trusted descriptors 3 and 4, JSON on stdin)\n\nCreate a fresh ROOT; existing sessions stay intact."
             );
             Ok(())
         }

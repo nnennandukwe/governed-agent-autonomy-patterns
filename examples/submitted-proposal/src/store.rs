@@ -17,9 +17,9 @@ fn err(e: impl std::fmt::Display) -> String {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Identity {
-    device: u64,
-    inode: u64,
-    mode: u32,
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) mode: u32,
 }
 pub(crate) fn identity(path: &Path, directory: bool) -> Result<Identity> {
     let metadata = fs::symlink_metadata(path).map_err(err)?;

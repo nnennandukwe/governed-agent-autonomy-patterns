@@ -242,13 +242,15 @@ jobs:
           cargo build --locked --manifest-path adapters/journal/Cargo.toml --features qualification
           cargo --config 'profile.dev.package.gaap-submitted-proposal-reference.debug="line-tables-only"' \
             build --locked --manifest-path examples/submitted-proposal/Cargo.toml
+          cp "$CARGO_TARGET_DIR/debug/gaap-submitted-proposal-reference" "$RUNNER_TEMP/reference-production"
+          cargo build --locked --manifest-path examples/submitted-proposal/Cargo.toml --features qualification
 
-      - name: Qualify journal enrollment and lookup on local ext4
+      - name: Qualify journal enrollment, lookup and shipping submission on local ext4
         run: |
           bash adapters/journal/qualify-ext4.sh "$RUNNER_TEMP/gaap-journal-production" \
             "$RUNNER_TEMP/journal-target/debug/gaap-journal" \
-            "$RUNNER_TEMP/journal-target/debug/gaap-submitted-proposal-reference" \
-            "$RUNNER_TEMP/journal-evidence"
+            "$RUNNER_TEMP/reference-production" "$RUNNER_TEMP/journal-evidence" \
+            "$RUNNER_TEMP/journal-target/debug/gaap-submitted-proposal-reference"
 
       - name: Audit the journal dependency lockfile
         run: |

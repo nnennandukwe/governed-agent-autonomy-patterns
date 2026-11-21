@@ -1,6 +1,6 @@
 # Local journal enrollment and lookup
 
-A trusted host can enroll one private workspace and read a previous submission after losing a response. Enrollment creates generation zero. A lookup can return the caller's original sealed receipt, its partial evidence, a conflict, or confirmed absence. A workspace hold applies across all callers. The service has no command to dispatch an effect or append an attempt. [Accepted storage contract](../../docs/contracts/journal-enrollment-v0.1.md) · [Recovery decisions](../../docs/adr/0009-durable-agent-run-reconciliation.md)
+A trusted host can enroll one private workspace and read a previous submission after losing a response. Enrollment creates generation zero. A lookup can return the caller's original sealed receipt, its partial evidence, a conflict, or confirmed absence. A workspace hold applies across all callers. The separate shipping reference can submit one foreground file replacement under the same journal lock. [Accepted storage contract](../../docs/contracts/journal-enrollment-v0.1.md) · [Recovery decisions](../../docs/adr/0009-durable-agent-run-reconciliation.md)
 
 ## Build and run
 
@@ -62,9 +62,28 @@ def launch(config_path, health_path, executable, args):
 | `unconfirmed`, `invalid_store`, `unsupported_storage`, `unavailable` | Preserve the files. Inspect the host binding, volume health or archived evidence before any recovery decision. |
 | `forbidden`, `busy`, `capacity`, `invalid_request` | Use the current authorized principal, wait for the writer to exit, check limits or correct the input as indicated by `reason`. |
 
+## Submit a journal-bound shipping proposal
+
+The shipping reference's `journal-submit KEY` command consumes the complete local-file proposal on stdin. An authenticated supervisor launches it on Linux with the same fd 3 configuration and fd 4 health descriptor as the reader. The caller supplies only the key and proposal. Read the result through `gaap-journal lookup KEY` in a new process, including after the original connection closes. [Shipping reference](../../examples/submitted-proposal/) · [Execution and recovery plan](../../docs/plans/issue-32-journal-executor.md)
+
+1. Provision a dedicated shipping workspace. Its three fixture files are `shipping.py`, `TASK.md` and `deployment.json`. Use the subject digest of their shipping snapshot, including each file's identity. Keep this workspace outside the legacy session layout. Include the current principal and read permission in the normal configuration.
+2. In the optional `live` configuration, set `can_submit` and pin three identities. The `authority` directory and its permanent empty 0600 `authority_lock` file reside on separate host storage from the journal volume. The independent 0700 `archive` directory resides on the qualified volume outside the workspace, control and journal directories. An inspector can read this archive with `can_submit` set to false.
+3. The trusted grant issuer binds the current slot, principal, key, proposal digest, subject, budget and validity interval in a private canonical `authority.json`. Before setting `allow_retention`, the issuer checks that the exact proposal can be stored without retaining credentials. A different proposal digest or a missing retention grant stops admission. Its grant names the `filesystem.write:shipping.py` scope and includes the original approval evidence. The issuer takes the permanent authority lock exclusively before replacing the record. It syncs the file and directory before acknowledging an update. The worker checks the source under a shared lock and holds it through the target rename. Withdraw a damaged or unconfirmed source until the issuer establishes its state. [Authority record and checks](src/live/authority.rs)
+4. Launch the production shipping reference using that trusted handoff. A fresh authorized request records intent, then records the actual engine's dispatch gates before staging the target. The live witness observes the move and binds it to the staged inode under sole-writer exclusion. Actual verifier evidence and original sealed outputs remain separate from the target operation. The worker archives evidence before publishing references to it.
+5. If the process exits without a reply, start the ordinary journal reader with current read rights and the original archive. An identical retry returns the saved facts. A changed proposal for the same key returns `conflict`. A different key on a workspace with an unresolved effect returns `workspace_held` on fresh submission. Preserve that workspace for operator review.
+
+The private archive contains bounded, immutable records for the original grant, observed effect, executor and verifier. Each history read loads the archive under the journal lock. Keep the archive with the enrolled slot. Its evidence can explain a visible write even when the original run failed verification. Only the original live engine can produce the terminal receipt. After interruption, an unsealed history stays unsealed.
+
+The [disposable Linux host fixture](tests/qual_submit_host.py) shows how to build the three-file subject, bind a real approval and launch both commands with independent descriptors. In a provisioned supervisor, a normal submission and read use these arguments.
+
+```sh
+gaap-submitted-proposal-reference journal-submit repair-shipping < proposal.json
+gaap-journal lookup repair-shipping
+```
+
 ## Reproduce qualification
 
-The required journal CI job compiles the normal binary and a separate `qualification` binary with test-only fault hooks. On a disposable ordinary-user Ubuntu runner it mounts a fresh ext4 image, then runs the actual CLI with independent readers, writers and observers. The job retains platform and binary identities, syscall ordering, per-case receipts and independent file measurements. Run the same [qualification entry point](qualify-ext4.sh) with the normal binary, instrumented binary, submitted-proposal reference binary and an evidence directory. Its elevated operations mount and unmount the disposable test disk. The service processes run as the ordinary account.
+The required journal CI job compiles the normal binary and a separate `qualification` binary with test-only fault hooks. On a disposable ordinary-user Ubuntu runner it mounts a fresh ext4 image, then runs the actual CLI with independent readers, writers and observers. The job retains platform and binary identities, syscall ordering, per-case receipts and independent file measurements. Run the same [qualification entry point](qualify-ext4.sh) with the normal binary, instrumented binary, submitted-proposal reference binary and an evidence directory. Supply the qualification shipping binary as the fifth argument to run the integrated submission cases. Its elevated operations mount and unmount the disposable test disk. The service processes run as the ordinary account.
 
 These tests cover process death, duplicate enrollment, lost delivery, faults around sync and publication, damaged and full histories, and read-only return of existing receipts. Process termination leaves the kernel running. Hardware power-loss behavior requires separate storage qualification. The production binary excludes the fault hooks.
 

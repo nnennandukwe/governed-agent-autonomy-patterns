@@ -3,6 +3,10 @@ mod contracts;
 pub mod mcp;
 pub mod transport;
 mod verify;
+mod workspace;
+use workspace::{LegacyWorkspace, ShippingWorkspace};
+#[cfg(target_os = "linux")]
+pub mod journal;
 use crate::store::{Identity, digest, directory, identity, open_regular, read, trusted_parent};
 use contracts::*;
 use gaap::{contracts::*, runtime::*};
@@ -502,21 +506,23 @@ impl CodingStore {
         let start = Instant::now();
         let report = Rc::new(RefCell::new(Value::Null));
         let evidence = Rc::new(RefCell::new(Value::Null));
+        let workspace = LegacyWorkspace {
+            store: self,
+            state: &state,
+        };
         let mut engine = AgentRunEngine::new(
             runtime_support(&change, &state.trusted_schema),
             config(),
             adapter,
             FileExecutor {
-                store: self.clone(),
-                state: &state,
+                store: &workspace,
                 before: before.clone(),
                 change: change.clone(),
                 evidence: evidence.clone(),
                 control: control.clone(),
             },
             verify::ShippingVerifier {
-                store: self.clone(),
-                state: &state,
+                store: &workspace,
                 report: report.clone(),
             },
         );
@@ -555,74 +561,79 @@ impl CodingStore {
     }
 }
 
-struct FileExecutor<'a> {
-    store: CodingStore,
-    state: &'a State,
+struct FileExecutor<'a, W: ShippingWorkspace> {
+    store: &'a W,
     before: Snapshot,
     change: Change,
     evidence: Rc<RefCell<Value>>,
     control: RunControl,
 }
-impl FileExecutor<'_> {
+impl<W: ShippingWorkspace> FileExecutor<'_, W> {
     fn commit(&self) -> std::result::Result<Snapshot, (bool, String)> {
         let prepare = (|| -> Result<_> {
             if self.change.path != "shipping.py" {
                 return Err("executor scope refused".into());
             }
-            if self.store.snapshot(self.state)? != self.before {
+            if self.store.snapshot()? != self.before {
                 return Err("workspace changed before execution".into());
             }
-            self.store.hit("target_create")?;
-            let mut staged = tempfile::NamedTempFile::new_in(self.store.workspace())
-                .map_err(|e| e.to_string())?;
-            self.store.hit("target_write")?;
-            staged
-                .write_all(self.change.content.as_bytes())
-                .map_err(|e| e.to_string())?;
-            self.store.hit("target_mode")?;
-            staged
-                .as_file()
-                .set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(|e| e.to_string())?;
-            self.store.hit("target_flush")?;
-            staged.flush().map_err(|e| e.to_string())?;
-            self.store.hit("target_sync")?;
-            staged.as_file().sync_all().map_err(|e| e.to_string())?;
-            #[cfg(test)]
-            if self.store.fault == Some("concurrent_edit") {
-                fs::write(
-                    self.store.workspace().join("shipping.py"),
-                    "concurrent work\n",
-                )
-                .map_err(|e| e.to_string())?;
+            let mut stage = self.store.stage(&self.change.content)?;
+            let commit = (|| {
+                #[cfg(test)]
+                self.store
+                    .inject_edit("concurrent_edit", "concurrent work\n")?;
+                if self.store.snapshot()? != self.before {
+                    return Err("workspace changed before commit; concurrent work preserved".into());
+                }
+                if self.control.cancellation().is_some() {
+                    return Err("proposal cancelled before file commit; no write dispatched".into());
+                }
+                self.store.hit("target_rename")?;
+                self.store.replace(&mut stage, &self.before, &self.control)
+            })();
+            if let Err(primary) = commit {
+                return Err(self.store.abandon(stage, primary));
             }
-            // External writers must use the same admission/snapshot locks.
-            // An ordinary editor can race this check and the rename; see TRANSACTION.md.
-            if self.store.snapshot(self.state)? != self.before {
-                return Err("workspace changed before commit; concurrent work preserved".into());
-            }
-            if self.control.cancellation().is_some() {
-                return Err("proposal cancelled before file commit; no write dispatched".into());
-            }
-            self.store.hit("target_rename")?;
-            staged
-                .persist(self.store.workspace().join("shipping.py"))
-                .map_err(|e| e.to_string())?;
             Ok(())
         })();
         prepare.map_err(|e| (false, e))?;
         self.store.hit("postcommit").map_err(|e| (true, e))?;
-        let after = self.store.snapshot(self.state).map_err(|e| (true, e))?;
+        let after = self.store.snapshot().map_err(|e| (true, e))?;
         if after["shipping.py"].content != self.change.content {
             return Err((true, "postcommit content differs".into()));
         }
-        File::open(self.store.workspace())
-            .and_then(|f| f.sync_all())
-            .map_err(|e| (true, e.to_string()))?;
+        self.store.sync_workspace().map_err(|e| (true, e))?;
         Ok(after)
     }
 }
-impl ExecutorPort for FileExecutor<'_> {
+impl<W: ShippingWorkspace> ExecutorPort for FileExecutor<'_, W> {
+    fn confirm_dispatch(
+        &mut self,
+        request: &ProtectedEffectRequest,
+        events: &[RunEvent],
+        usage: &ResourceUsage,
+        reserved: &EffectUsage,
+    ) -> std::result::Result<(), RuntimeError> {
+        self.store
+            .confirm_dispatch(request, events, usage, reserved)
+    }
+    fn confirm_effect(
+        &mut self,
+        result: &ProtectedEffectResult,
+        usage: &ResourceUsage,
+    ) -> std::result::Result<(), RuntimeError> {
+        self.store
+            .confirm_effect(result, usage, &self.evidence.borrow())
+    }
+    fn claim_completion(&mut self) -> std::result::Result<Option<Cancellation>, RuntimePortError> {
+        if let Some(cancelled) = self.control.cancellation() {
+            return Ok(Some(cancelled));
+        }
+        self.store
+            .claim_completion()
+            .map_err(RuntimePortError::new)?;
+        Ok(None)
+    }
     fn cancellation(&self) -> Option<Cancellation> {
         self.control.cancellation()
     }
@@ -643,7 +654,7 @@ impl ExecutorPort for FileExecutor<'_> {
                 if committed {
                     None
                 } else {
-                    self.store.snapshot(self.state).ok()
+                    self.store.snapshot().ok()
                 },
                 Some(e),
             ),
@@ -675,7 +686,7 @@ impl ExecutorPort for FileExecutor<'_> {
             execution_status: status,
             observed_post_effect_subject: after
                 .as_ref()
-                .map(|s| subject(&self.store, s))
+                .map(|s| subject_at(&self.store.path(), s))
                 .transpose()
                 .map_err(RuntimePortError::new)?,
             exit: None,
@@ -943,6 +954,10 @@ mod tests {
         let mut request = request(&store, 1, &change, &before).unwrap();
         request.resource_budget.max_tool_calls = 0;
         let effect = effect(&request, &change).unwrap();
+        let workspace = LegacyWorkspace {
+            store: &store,
+            state: &state,
+        };
         let mut engine = AgentRunEngine::new(
             runtime_support(&change, &mcp::capability_digest()),
             config(),
@@ -955,16 +970,14 @@ mod tests {
             )
             .unwrap(),
             FileExecutor {
-                store: store.clone(),
-                state: &state,
+                store: &workspace,
                 before,
                 change,
                 evidence: Rc::new(RefCell::new(Value::Null)),
                 control: RunControl::new(std::time::Duration::from_secs(10)),
             },
             verify::ShippingVerifier {
-                store: store.clone(),
-                state: &state,
+                store: &workspace,
                 report: Rc::new(RefCell::new(Value::Null)),
             },
         );

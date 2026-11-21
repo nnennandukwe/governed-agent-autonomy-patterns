@@ -12,6 +12,8 @@ pub(super) enum Stage {
     Reserve,
     Journal,
     Activate,
+    Append(&'static str),
+    Confirm(&'static str),
 }
 
 impl Stage {
@@ -20,6 +22,8 @@ impl Stage {
             Self::Reserve => ("reserve", ".gaap-stage-reserve", ANCHOR),
             Self::Journal => ("journal", ".gaap-stage-journal", JOURNAL),
             Self::Activate => ("activate", ".gaap-stage-activate", ANCHOR),
+            Self::Append(phase) => (phase, ".gaap-stage-append", JOURNAL),
+            Self::Confirm(phase) => (phase, ".gaap-stage-confirm", ANCHOR),
         }
     }
 }
@@ -41,7 +45,7 @@ pub(super) fn stop_after_eio() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn point(_volume: &Volume<'_>, _stage: &str, _operation: &str) -> Result<()> {
+pub(crate) fn point(_volume: &Volume<'_>, _stage: &str, _operation: &str) -> Result<()> {
     #[cfg(feature = "qualification")]
     if let Some(action) = selected(_stage, _operation) {
         let failure = match action.as_str() {
@@ -76,7 +80,7 @@ impl SlotOperation<'_> {
     ) -> Result<()> {
         let volume = &self.volume;
         let (step, staging, target) = stage.names();
-        let dir = if matches!(stage, Stage::Journal) {
+        let dir = if matches!(stage, Stage::Journal | Stage::Append(_)) {
             &self.handles.store
         } else {
             &self.handles.control
@@ -174,7 +178,8 @@ impl SlotOperation<'_> {
             match stage {
                 Stage::Reserve => self.entries(&[])?,
                 Stage::Journal => self.entries(&[staging])?,
-                Stage::Activate => self.entries(&[JOURNAL])?,
+                Stage::Append(_) => self.entries(&[JOURNAL, staging])?,
+                Stage::Activate | Stage::Confirm(_) => self.entries(&[JOURNAL])?,
             }
             {
                 use std::io::Read;

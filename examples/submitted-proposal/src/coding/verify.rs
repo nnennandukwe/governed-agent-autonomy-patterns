@@ -118,12 +118,31 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
     )
 }
 
-pub struct ShippingVerifier<'a> {
-    pub store: CodingStore,
-    pub state: &'a State,
+pub(super) struct ShippingVerifier<'a, W: ShippingWorkspace> {
+    pub store: &'a W,
     pub report: Rc<RefCell<Value>>,
 }
-impl VerifierPort for ShippingVerifier<'_> {
+impl<W: ShippingWorkspace> VerifierPort for ShippingVerifier<'_, W> {
+    fn confirm_verification(
+        &mut self,
+        event: &RunEvent,
+        usage: &ResourceUsage,
+    ) -> std::result::Result<(), RuntimeError> {
+        self.store
+            .confirm_verification(event, usage, &self.report.borrow())
+    }
+    fn completion_check(
+        &mut self,
+        context: VerificationContext<'_>,
+    ) -> std::result::Result<PortObservation<()>, RuntimePortError> {
+        self.store
+            .check_completion(context.current_subject, context.usage)
+            .map_err(RuntimePortError::new)?;
+        Ok(PortObservation {
+            value: (),
+            usage: resources(0, 0),
+        })
+    }
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
@@ -131,25 +150,21 @@ impl VerifierPort for ShippingVerifier<'_> {
         let start = Instant::now();
         let result = (|| -> Result<_> {
             // Both snapshots are after the executor has finished the file change.
-            let before_verification = self.store.snapshot(self.state)?;
+            let before_verification = self.store.snapshot()?;
             let observed_digest = snapshot_digest(&before_verification)?;
             let seed = validate_request(context.request, &support()).map_err(|e| e.to_string())?;
             let mut report = evaluate_seed(&before_verification["shipping.py"].content, &seed)?;
             #[cfg(test)]
-            if self.store.fault == Some("verification_drift") {
-                fs::write(
-                    self.store.workspace().join("shipping.py"),
-                    "operator edit during verification\n",
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            let after_verification = self.store.snapshot(self.state)?;
+            self.store
+                .inject_edit("verification_drift", "operator edit during verification\n")?;
+            let after_verification = self.store.snapshot()?;
             let fresh = before_verification == after_verification
                 && observed_digest == context.current_subject.digest;
             report["subject_digest"] = json!(observed_digest);
             report["fresh"] = json!(fresh);
             report["passed"] = json!(report["passed"] == true && fresh);
             let output_digest = hash_json(&report)?;
+            self.store.verifier_snapshot(&before_verification)?;
             *self.report.borrow_mut() = report.clone();
             Ok(PortObservation {
                 value: VerificationReport {

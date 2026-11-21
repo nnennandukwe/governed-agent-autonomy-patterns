@@ -1,6 +1,7 @@
 //! Enrollment owns three publications. The reader takes the same lock and never publishes.
-mod linux;
-mod publication;
+pub(crate) mod linux;
+pub(crate) mod publication;
+pub mod writer;
 
 use crate::{ANCHOR_LIMIT, Error, Host, JOURNAL_LIMIT, MAX_SAFE, Request, Result};
 use linux::{Handles, Volume};
@@ -178,6 +179,36 @@ impl SlotOperation<'_> {
         }
     }
 
+    fn interpret(&self, bytes: &[u8], request: &Request) -> Result<(u64, crate::Lookup)> {
+        if self.host.live.is_none() {
+            return crate::interpret(self.host, bytes, request);
+        }
+        let archive = crate::live::refresh_archive(self.host, &self.volume)?;
+        crate::interpret_with_archive(self.host, &archive, bytes, request)
+    }
+
+    fn confirmed(
+        &self,
+        saved: &Snapshot,
+        generation: u64,
+        expected_digest: &str,
+        request: &Request,
+    ) -> Result<(Snapshot, crate::Lookup)> {
+        self.entries(&[JOURNAL])?;
+        let journal = self
+            .journal()?
+            .ok_or_else(|| Error::invalid("active_journal_missing"))?;
+        let (observed, lookup) = self.interpret(&journal.bytes, request)?;
+        self.recheck(saved, Some(&journal))?;
+        if observed == generation + 1 {
+            return Err(Error::new("unconfirmed", "journal_ahead_of_anchor"));
+        }
+        if observed != generation || crate::digest(&journal.bytes) != expected_digest {
+            return Err(Error::invalid("journal_confirmation_mismatch"));
+        }
+        Ok((journal, lookup))
+    }
+
     fn enrolled(&self, generation: u64) -> Result<Value> {
         self.volume.healthy()?;
         publication::point(&self.volume, "enroll", "before_response")?;
@@ -187,13 +218,17 @@ impl SlotOperation<'_> {
     }
 
     fn enroll_empty(&self, unused: Snapshot) -> Result<Value> {
+        let empty = crate::empty_journal(self.host)?;
+        // A provisioned live archive must be available before reserving a new slot.
+        if self.host.live.is_some() {
+            self.interpret(&empty, &Request::Enroll)?;
+        }
         let reserved = crate::canonical(&anchor(self.host, "reserved", Value::Null, Value::Null))?;
         self.publish(publication::Stage::Reserve, &reserved, &unused, None)?;
         let confirmed = self.read_anchor()?;
         if confirmed.bytes != reserved {
             return Err(Error::invalid("reservation_changed"));
         }
-        let empty = crate::empty_journal(self.host)?;
         self.publish(publication::Stage::Journal, &empty, &confirmed, None)?;
         publication::point(&self.volume, "journal", "reread")?;
         let saved = self
@@ -247,18 +282,7 @@ impl SlotOperation<'_> {
                 Err(Error::new("incomplete_enrollment", "stopped_reservation"))
             }
             Phase::Active { generation, digest } => {
-                self.entries(&[JOURNAL])?;
-                let journal = self
-                    .journal()?
-                    .ok_or_else(|| Error::invalid("active_journal_missing"))?;
-                let (observed, lookup) = crate::interpret(self.host, &journal.bytes, request)?;
-                self.recheck(&saved, Some(&journal))?;
-                if observed == generation + 1 {
-                    return Err(Error::new("unconfirmed", "journal_ahead_of_anchor"));
-                }
-                if observed != generation || crate::digest(&journal.bytes) != digest {
-                    return Err(Error::invalid("journal_confirmation_mismatch"));
-                }
+                let (journal, lookup) = self.confirmed(&saved, generation, &digest, request)?;
                 match request {
                     Request::Enroll => {
                         self.volume
@@ -268,12 +292,7 @@ impl SlotOperation<'_> {
                         self.recheck(&saved, Some(&journal))?;
                         self.enrolled(generation)
                     }
-                    Request::Lookup { .. } => {
-                        let mut answer = serde_json::to_value(lookup)
-                            .map_err(|_| Error::invalid("lookup_encoding"))?;
-                        answer["generation"] = json!(generation);
-                        Ok(answer)
-                    }
+                    Request::Lookup { .. } => lookup.at_generation(generation),
                 }
             }
         }
@@ -281,21 +300,30 @@ impl SlotOperation<'_> {
 }
 
 pub fn run(host: &Host, health: &File, request: &Request) -> Result<Value> {
+    with_slot(host, health, matches!(request, Request::Enroll), |slot| {
+        slot.process(request)
+    })
+}
+
+fn with_slot<'a, T>(
+    host: &'a Host,
+    health: &'a File,
+    writer: bool,
+    operation: impl FnOnce(SlotOperation<'a>) -> Result<T>,
+) -> Result<T> {
     let volume = Volume {
         health,
         slot: &host.slot,
     };
-    let writer = matches!(request, Request::Enroll);
     let _health_lock = volume.lock_health(writer)?;
     let handles = Handles::open(host, &volume)?;
     publication::point(&volume, "slot", "before_lock")?;
     handles.acquire(writer, &volume)?;
     publication::point(&volume, "slot", "after_lock")?;
     handles.recheck(host, &volume)?;
-    SlotOperation {
+    operation(SlotOperation {
         host,
         volume,
         handles,
-    }
-    .process(request)
+    })
 }
