@@ -1,0 +1,18 @@
+[package]
+name = "gaap-telemetry"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+ureq = { version = "=3.4.3", default-features = false }
+
+[dev-dependencies]
+serde_jcs = "=0.2.0"

@@ -175,3 +175,19 @@ cargo audit --file adapters/cedar/Cargo.lock
 ```
 
 The required `cedar` lane also tests Rust 1.89. Its deterministic stdio fixture uses Python 3. Changes to the provider-neutral policy port require the core runtime and state-machine checks too. Keep both policy/schema pins in existing request policies and retain the returned evaluation records beside effect evidence. The adapter guide explains explicit host activation and unsupported schema semantics.
+
+## Optional Telemetry Adapter
+
+Verify the separate read-only exporter with:
+
+```bash
+cargo fmt --manifest-path adapters/telemetry/Cargo.toml --check
+cargo clippy --manifest-path adapters/telemetry/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path adapters/telemetry/Cargo.toml --locked
+cargo build --manifest-path adapters/telemetry/Cargo.toml --locked
+```
+
+Its deterministic tests use actual engine runs and local HTTP sinks. They don't
+need a viewer, a collector, model calls or credentials. Keep frozen contract
+bytes outside the telemetry mapping; signed evidence verification belongs to
+`adapters/attestation`.
