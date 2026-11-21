@@ -180,7 +180,9 @@ def main():
         (attempt_key, attempt, [paired_root["traceId"]]),
     ]:
         result = query("trace-summaries", {**bounds, "query.attributes": json.dumps({key: value})})
-        found = sorted(item["traceId"] for item in result.get("summaries", []))
+        if not isinstance(result, dict) or "error" in result or not isinstance(result.get("summaries"), list):
+            raise ValueError("Jaeger search didn't return a summaries array without an error")
+        found = sorted(item["traceId"] for item in result["summaries"])
         if found != sorted(expected):
             raise ValueError(f"Search mismatch for {key}")
         searches.append({"attribute": key, "value": value, "matches": len(found)})
