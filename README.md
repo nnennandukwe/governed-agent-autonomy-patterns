@@ -37,6 +37,8 @@ GAAP doesn't import or vendor RunInvariant.
 
 ## Status
 
+The [program checklist](docs/plans/gaap-program.md) traces the ThreadLoop-to-GAAP reference run and records the decisions still open on recovery, research and evaluation.
+
 Implemented and tested now:
 
 - a Rust `RunCoordinator` with one public evaluation interface;

@@ -1,6 +1,6 @@
 # Governed Goose reference profile
 
-Status: implemented reference, pending CI and review.
+The controlled reference merged in [PR #36](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/pull/36) after its checks passed. The [program checklist](../plans/gaap-program.md#reference-runtime-acceptance) links later signing, isolation and controller evidence.
 
 Issue: #14. Dependencies: official MCP #13 and ACP #12.
 
