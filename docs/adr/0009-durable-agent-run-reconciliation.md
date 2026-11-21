@@ -1,10 +1,12 @@
 # ADR 0009 — Recovering evidence after an Agent Run stops
 
-**Status: Proposed.** GAAP's maintainers have accepted this question for design. Adopting a persistence profile or building one requires a separate decision. [Design issue #32](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/32) · [Design mandate #29](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29)
+**Accepted on November 21, 2026.** The maintainer accepted this design as proposed, including its single-host cooperating-writer profile, evidence admission rules and deferral of approval continuation. The [first storage contract](../contracts/journal-enrollment-v0.1.md) remains a proposal. Production implementation requires separate authorization. [Maintainer decision in #32](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/32#issuecomment-7068733430) · [Design mandate #29](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29)
 
-A caller can lose its connection after GAAP changes a file but before it receives a receipt. Running the request again could overwrite a later edit. We propose that the host first read an intact local journal. It can return a published receipt, report a known effect without a receipt, or report an unresolved attempt. Only independently attributable evidence can resolve uncertainty after dispatch.
+A caller can lose its connection after GAAP changes a file but before it receives a receipt. Running the request again could overwrite a later edit. The host must first read an intact local journal. It can return a published receipt, report a known effect without a receipt, or report an unresolved attempt. Only independently attributable evidence can resolve uncertainty after dispatch.
 
-## Proposed profile and ownership
+<a id="proposed-profile-and-ownership"></a>
+
+## Accepted profile and ownership
 
 Start with one host, one private workspace, cooperating writers and one synchronous local file replacement per attempt. All admissions, cancellations that stop dispatch, reconciliation decisions and publications for that workspace serialize through one host-owned lock. Hold it from admission through the last possible effect and journal publication. Recover it only when the old writer and any executor capable of committing the effect have stopped. Losing a socket, expiring a lease or obtaining a host lock while a child can still write doesn't meet that condition. Refuse asynchronous providers, detached writers, external effects and distributed takeover in this profile.
 
@@ -80,7 +82,7 @@ A fresh attempt requires an explicit caller request with a new submission key an
 
 Use an explicitly initialized, owner-private local directory outside the mutable workspace. Anchor it to the workspace's enrolled identity. Serialize cooperating writers with a stable lock independent of the file being replaced. Each journal update writes a bounded complete snapshot to a same-directory temporary file, flushes and syncs it, renames it and syncs the parent directory. Set byte, record and retention limits at enrollment. Refuse admission before exhaustion where possible. Preserve the prior valid snapshot on a failed write. A store at capacity after a mutation must retain its dispatch or observed record and refuse replay. Reclaiming historical identities would reopen duplicate execution, so this profile refuses eviction and online migration.
 
-Readers validate the expected format, references and canonical sealed objects against their original policy bindings. Unknown format, conflicting records, missing evidence needed for interpretation, unsafe links, relocation, or an unconfirmed generation require preserving the store for diagnosis. Never initialize over it or fall back to an older copy to authorize execution. Recognized historical records can be read under their original policy bindings after a policy change. A fresh dispatch requires an accepted current profile and an explicit re-enrollment procedure that preserves all outstanding holds. This proposal defers in-place policy migration.
+Readers validate the expected format, references and canonical sealed objects against their original policy bindings. Unknown format, conflicting records, missing evidence needed for interpretation, unsafe links, relocation, or an unconfirmed generation require preserving the store for diagnosis. Never initialize over it or fall back to an older copy to authorize execution. Recognized historical records can be read under their original policy bindings after a policy change. A fresh dispatch requires an accepted current profile and an explicit re-enrollment procedure that preserves all outstanding holds. This profile defers in-place policy migration.
 
 A local digest detects changed bytes only relative to a trusted reference. Filesystem ownership, private modes, link checks and identity checks reduce accidental interference within the cooperating-writer profile. An editor that ignores locks can race a target check and rename. A hostile same-user process can replace the journal, its witnesses or the workspace. Restoring an earlier internally valid snapshot can hide a later admission. This profile assumes intact storage and has no external rollback detector. Store only bounded non-secret inputs and references with restricted read access. Refuse inputs that require storing credentials. Power-loss ordering, producer authentication and protection from hostile local writers require their own implementation evidence. [Existing local commit and recovery behavior](../../examples/submitted-proposal/TRANSACTION.md)
 
@@ -107,11 +109,11 @@ The fixture replaces a temporary journal and runs a scripted target with its own
 | 9. Deterministic failures and drift | Executable model for races, drift, stale subjects and restart |
 | 10. Inspector restart | Read-only historical lookup with no execution transition |
 | 11. Storage, versioning and security | Separate local format, refusal rules and local trust limits |
-| 12. Bounded follow-ups | Proposed slices below, pending maintainer acceptance |
+| 12. Bounded follow-ups | Ordered slices and their separate prerequisites below |
 
 ## Decision requested and follow-ups
 
-The GAAP maintainer can accept, revise or decline the single-host profile, evidence admission rules and approval deferral in #32. Merging a proposed ADR publishes the design for that decision. After express acceptance, consider these slices in order.
+The maintainer accepted the recovery design and requested the first storage contract. The next decision covers the [proposed enrollment and lookup format](../contracts/journal-enrollment-v0.1.md). The following implementation slices retain their prerequisites and order.
 
 1. **Journal enrollment and historical lookup.** Select supported filesystems, bounds, canonical encodings and compatibility policy. Implement an independent read path only after the storage contract is accepted. Test missing, full, incompatible and damaged stores without recreating them.
 2. **One local executor and two commit points.** Require the first slice plus a demonstrated cooperating-writer and quiescence mechanism. Bind actual engine dispatch and sealed receipts to the journal. Test process termination, directory-sync failures, duplicate delivery and restart with files observed independently of host records.
