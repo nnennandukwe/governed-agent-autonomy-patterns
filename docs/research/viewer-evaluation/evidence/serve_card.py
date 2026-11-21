@@ -10,10 +10,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 def escape(value):
+    """Escape a fixture value before placing it in HTML."""
     return html.escape(str(value))
 
 
 def render_card(run):
+    """Render the applied shipping diff and verifier observations for one native run."""
     effect, = run["protected_effect_results"]
     report = run["verification"]
     cases = report["cases"]
@@ -44,20 +46,21 @@ code{{overflow-wrap:anywhere}} pre{{padding:.9rem 1rem;background:#f2f5f7;overfl
 dl{{display:grid;grid-template-columns:max-content auto;gap:.2rem 1.2rem}} dd{{margin:0}} dt{{font-weight:600}}
 table{{border-collapse:collapse;width:100%}} th,td{{padding:.35rem .5rem;text-align:left;border-bottom:1px solid #d8dfe3}}
 caption{{text-align:left}} th{{background:#edf2f5}} body>p:first-child{{color:#52616c}}
-</style><body><p>GAAP · Synthetic coding session</p><h1>Shipping quote verification</h1>
+</style><body><p>GAAP &middot; Synthetic coding session</p><h1>Shipping quote verification</h1>
 <p>Receipt <code>{escape(run["receipt"]["receipt_digest"])}</code></p>
 <dl><dt>Agent Run</dt><dd>{escape(run["receipt"]["body"]["terminal_status"])}</dd>
-<dt>Protected effect</dt><dd>{escape(effect["body"]["decision"]["decision"]["outcome"])} decision · {escape(effect["body"]["execution_status"])}</dd>
+<dt>Protected effect</dt><dd>{escape(effect["body"]["decision"]["decision"]["outcome"])} decision &middot; {escape(effect["body"]["execution_status"])}</dd>
 <dt>Integrity</dt><dd>Native receipt and effect digests validated by coding-inspect</dd>
 <dt>Signer authentication</dt><dd>No signature verification in this fixture</dd>
 <dt>Model tokens and cost</dt><dd>Unavailable</dd></dl>
 <h2>Applied change</h2><pre>{escape(chr(10).join(diff))}</pre>
-<h2>Verification cases</h2><p>{passed} of {len(cases)} passed · {report["fixed_case_count"]} fixed cases and {report["sample_count"]} seeded cases</p>
+<h2>Verification cases</h2><p>{passed} of {len(cases)} passed &middot; {report["fixed_case_count"]} fixed cases and {report["sample_count"]} seeded cases</p>
 <table><thead><tr><th>Case</th><th>Quantity</th><th>Unit price</th><th>Expected</th><th>Observed</th><th>Result</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table></body></html>""".encode()
 
 
 def main():
+    """Bind the fixture card to loopback at the supplied receipt digest."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("digest", help="Exact sha256 receipt digest for this fixture")
     args = parser.parse_args()
@@ -71,6 +74,7 @@ def main():
 
     class CardHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            """Return the card for its exact host and receipt path, or respond with 404."""
             if self.headers.get("Host") != "127.0.0.1:19490" or self.path != route:
                 self.send_error(404)
                 return

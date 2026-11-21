@@ -9,10 +9,12 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 def attributes(record):
+    """Index OTLP attributes by key while preserving their typed values."""
     return {item["key"]: item["value"] for item in record.get("attributes", [])}
 
 
 def check_fields(source, returned):
+    """Check that stored attributes retain their values and GAAP correlation keys."""
     actual = attributes(returned)
     expected = attributes(source)
     for key, value in expected.items():
@@ -24,6 +26,7 @@ def check_fields(source, returned):
 
 
 def query(path, params=None):
+    """Read a JSON response from the loopback Jaeger v3 query endpoint."""
     url = f"http://127.0.0.1:19471/api/v3/{path}"
     if params:
         url += "?" + urlencode(params)
@@ -33,6 +36,7 @@ def query(path, params=None):
 
 
 def inspect_case(scenario, payload):
+    """Compare a recorded trace with its stored spans, events and resource fields."""
     source = payload["resourceSpans"][0]
     trace_id = source["scopeSpans"][0]["spans"][0]["traceId"]
     stored = query("traces/" + trace_id)["result"]["resourceSpans"][0]
@@ -62,6 +66,7 @@ def inspect_case(scenario, payload):
             raise ValueError("Event count changed")
 
         def sequence(event):
+            """Read the GAAP ledger sequence number for an OTLP event."""
             return int(attributes(event)["gaap.event.sequence"]["intValue"])
 
         query_event_order.extend(sequence(event) for event in stored_events)
@@ -85,6 +90,7 @@ def inspect_case(scenario, payload):
 
 
 def main():
+    """Optionally replay the fixtures, verify their traces and check attribute searches."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replay", action="store_true", help="Post the nine fixtures before checking them")
     replay = parser.parse_args().replay

@@ -6,7 +6,7 @@ GAAP can export a trace after it seals an Agent Run. An operator investigating a
 
 ## What the operator saw
 
-The three blocked runs had different outcomes. GAAP denied one effect before dispatch, asked for authority on another, and executed the third. In that third run the verifier reported a pass against an earlier subject digest. GAAP sealed the run as blocked with `verification.stale_subject`. The trace contains the verifier's subject and the resulting subject, so an operator can check the mismatch.
+The three blocked runs had different outcomes. GAAP denied one effect before dispatch, asked for authority on another, and executed the third. In that third run the verifier reported a pass against a different subject digest. GAAP sealed the run as blocked with `verification.stale_subject`. The trace contains the verifier's subject and the resulting subject, so an operator can check the mismatch.
 
 | Recorded case | Terminal status | Effect decision | Effect status | Verification event |
 |---|---|---|---|---|

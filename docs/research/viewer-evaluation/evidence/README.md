@@ -50,13 +50,13 @@ PY
 "$host" coding-inspect "$scratch/session" > "$scratch/inspected.json"
 ```
 
-Build the fixture projector with the adapter's locked dependencies. The
+Build the fixture projector with the exact dependency lockfile used for the measured run. The
 standalone scratch crate keeps this research helper outside the GAAP build.
 
 ```bash
 mkdir -p "$scratch/project/src"
 cp "$evidence/project-paired.rs" "$scratch/project/src/main.rs"
-cp adapters/telemetry/Cargo.lock "$scratch/project/Cargo.lock"
+cp "$evidence/projector.lock" "$scratch/project/Cargo.lock"
 cat > "$scratch/project/Cargo.toml" <<TOML
 [package]
 name = "gaap-viewer-fixture"
@@ -71,7 +71,7 @@ serde_jcs = "=0.2.0"
 sha2 = "=0.10.9"
 [workspace]
 TOML
-cargo build --manifest-path "$scratch/project/Cargo.toml"
+cargo build --locked --manifest-path "$scratch/project/Cargo.toml"
 projector="$CARGO_TARGET_DIR/debug/gaap-viewer-fixture"
 "$projector" < "$scratch/inspected.json" > "$scratch/paired.json"
 ```
