@@ -40,3 +40,5 @@ sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$volume/qualification"
 python3 -B "$script_dir/tests/qualify.py" --release "$release" --qualification "$qualification" \
   --reference "$reference" --root "$volume/qualification" --health-root "$health" \
   --evidence "$evidence" 2>&1 | tee "$evidence/process-tests.log"
+python3 -B "$script_dir/tests/qual_executor_quiescence.py" --reference "$reference" \
+  --root "$volume/qualification" --evidence "$evidence"
