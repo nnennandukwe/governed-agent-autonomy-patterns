@@ -1,6 +1,6 @@
 # ADR 0009 — Recovering evidence after an Agent Run stops
 
-**Accepted on November 21, 2026.** The maintainer accepted this design as proposed, including its single-host cooperating-writer profile, evidence admission rules and deferral of approval continuation. The [first storage contract](../contracts/journal-enrollment-v0.1.md) remains a proposal. Production implementation requires separate authorization. [Maintainer decision in #32](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/32#issuecomment-7068733430) · [Design mandate #29](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29)
+**Accepted on November 21, 2026.** The maintainer accepted this design as proposed, including its single-host cooperating-writer profile, evidence admission rules and deferral of approval continuation. The maintainer subsequently accepted the [first storage contract](../contracts/journal-enrollment-v0.1.md) and authorized slice 1. [Maintainer decision in #32](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/32#issuecomment-7068733430) · [Design mandate #29](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29)
 
 A caller can lose its connection after GAAP changes a file but before it receives a receipt. Running the request again could overwrite a later edit. The host must first read an intact local journal. It can return a published receipt, report a known effect without a receipt, or report an unresolved attempt. Only independently attributable evidence can resolve uncertainty after dispatch.
 
@@ -113,7 +113,7 @@ The fixture replaces a temporary journal and runs a scripted target with its own
 
 ## Decision requested and follow-ups
 
-The maintainer accepted the recovery design and requested the first storage contract. The next decision covers the [proposed enrollment and lookup format](../contracts/journal-enrollment-v0.1.md). The following implementation slices retain their prerequisites and order.
+The maintainer accepted the recovery design and requested the first storage contract. The maintainer also accepted the [enrollment and lookup format](../contracts/journal-enrollment-v0.1.md) and authorized its implementation. The following implementation slices retain their prerequisites and order.
 
 1. **Journal enrollment and historical lookup.** Select supported filesystems, bounds, canonical encodings and compatibility policy. Implement an independent read path only after the storage contract is accepted. Test missing, full, incompatible and damaged stores without recreating them.
 2. **One local executor and two commit points.** Require the first slice plus a demonstrated cooperating-writer and quiescence mechanism. Bind actual engine dispatch and sealed receipts to the journal. Test process termination, directory-sync failures, duplicate delivery and restart with files observed independently of host records.

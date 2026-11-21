@@ -1,0 +1,23 @@
+[package]
+name = "gaap-journal"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[features]
+qualification = []
+
+[dependencies]
+gaap = { path = "../..", version = "=0.1.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+serde_jcs = "=0.2.0"
+sha2 = "=0.10.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.191"
+rustix = { version = "=1.1.6", features = ["fs", "process", "try_close"] }

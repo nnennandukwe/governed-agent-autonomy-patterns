@@ -191,3 +191,13 @@ Its deterministic tests use actual engine runs and local HTTP sinks. They don't
 need a viewer, a collector, model calls or credentials. Keep frozen contract
 bytes outside the telemetry mapping; signed evidence verification belongs to
 `adapters/attestation`.
+
+## Journal enrollment and lookup
+
+Run the journal crate's locked tests, formatting and Clippy checks. The required journal CI job uses an isolated ext4 mount to test process death, read-only lookup, concurrent enrollment and storage faults. It retains the platform, binary hashes and observations as the journal-process-evidence artifact. [Journal guide and qualification command](adapters/journal/README.md#reproduce-qualification)
+
+```sh
+cargo fmt --manifest-path adapters/journal/Cargo.toml --check
+cargo clippy --locked --manifest-path adapters/journal/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path adapters/journal/Cargo.toml
+```
