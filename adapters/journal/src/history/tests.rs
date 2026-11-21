@@ -264,3 +264,93 @@ fn lookup_rejects_valid_individual_frozen_objects_from_another_admission() {
     s.append("published", json!({"receipt":receipt,"result":result}));
     assert!(s.own().is_err());
 }
+
+#[test]
+fn workflow_decision_ids_do_not_select_completion_or_change_its_digest_domain() {
+    use gaap::contracts::{
+        AgentRunRequest, AgentRunStatus, RunEvent, TerminalRunReceipt, seal_terminal_receipt,
+        verify_terminal_receipt,
+    };
+    use gaap::{Gate, Outcome};
+
+    let original: TerminalRunReceipt = serde_json::from_str(include_str!(
+        "../../../../examples/contracts/v0.1.0/completed.json"
+    ))
+    .unwrap();
+    let request: AgentRunRequest = serde_json::from_str(include_str!(
+        "../../../../examples/contracts/v0.1.0/agent-run-request.json"
+    ))
+    .unwrap();
+    let support = ContractSupport::new(request.policies.clone());
+    let mut body = original.body;
+    let mut effect_hash = String::new();
+    for event in &mut body.events {
+        match event {
+            RunEvent::ProtectedEffectDecision {
+                gate: Gate::Workflow,
+                protected_effect_digest,
+                decision_id,
+                decision,
+                ..
+            } if decision.code == "workflow.mutation_authorized" => {
+                effect_hash.clone_from(protected_effect_digest);
+                *decision_id = "decision-completion".into();
+            }
+            RunEvent::Mutation { decision_id, .. } => *decision_id = "decision-completion".into(),
+            RunEvent::ProtectedEffectDecision {
+                gate: Gate::Workflow,
+                decision_id,
+                decision,
+                ..
+            } if decision.code == "workflow.completion_authorized" => {
+                *decision_id = "opaque-final-id".into()
+            }
+            _ => {}
+        }
+    }
+    let completed = seal_terminal_receipt(&request, &support, body.clone()).unwrap();
+    verify_terminal_receipt(&request, &support, &completed).unwrap();
+    assert!(super::publication::validate_decision_targets(&completed.body, &effect_hash).unwrap());
+
+    let denial = "workflow.completion_refused";
+    body.terminal_status = AgentRunStatus::Blocked;
+    body.terminal_reason = denial.into();
+    for event in &mut body.events {
+        match event {
+            RunEvent::ProtectedEffectDecision { decision, .. }
+                if decision.code == "workflow.completion_authorized" =>
+            {
+                decision.outcome = Outcome::Block;
+                decision.code = denial.into();
+                decision.effects.clear();
+            }
+            RunEvent::StatusTransition { to, reason, .. } if *to == AgentRunStatus::Completed => {
+                *to = AgentRunStatus::Blocked;
+                *reason = Some(denial.into());
+            }
+            _ => {}
+        }
+    }
+    let refused = seal_terminal_receipt(&request, &support, body.clone()).unwrap();
+    verify_terminal_receipt(&request, &support, &refused).unwrap();
+    assert!(super::publication::validate_decision_targets(&refused.body, &effect_hash).unwrap());
+    let event = body
+        .events
+        .iter_mut()
+        .find(|event| {
+            matches!(event,
+        RunEvent::ProtectedEffectDecision { decision, .. } if decision.code == denial)
+        })
+        .unwrap();
+    if let RunEvent::ProtectedEffectDecision {
+        protected_effect_digest,
+        ..
+    } = event
+    {
+        protected_effect_digest.clone_from(&effect_hash);
+    }
+    let wrong_target = seal_terminal_receipt(&request, &support, body).unwrap();
+    assert!(
+        super::publication::validate_decision_targets(&wrong_target.body, &effect_hash).is_err()
+    );
+}

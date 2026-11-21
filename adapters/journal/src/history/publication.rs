@@ -1,9 +1,9 @@
-use gaap::Gate;
 use gaap::contracts::{
     AgentRunStatus, ContractSupport, EffectEvidenceType, EffectExecutionStatus, EvidenceType,
-    ProtectedEffectResult, ResourceUsage, RunEvent, VerificationVerdict,
+    ProtectedEffectResult, ResourceUsage, RunEvent, TerminalRunReceiptBody, VerificationVerdict,
     validate_protected_effect_request, verify_protected_effect_result, verify_terminal_receipt,
 };
+use gaap::{Gate, Outcome};
 
 use super::evidence::Index;
 use super::facts::usage_at_least;
@@ -29,34 +29,9 @@ pub(super) fn validate(
     let mut executions = vec![];
     let mut mutations = vec![];
     let mut verified = vec![];
-    let mut has_effect_decision = false;
+    let has_effect_decision = validate_decision_targets(receipt, &effect_hash)?;
     for event in events {
         match event {
-            RunEvent::ProtectedEffectDecision {
-                gate,
-                decision_id,
-                protected_effect_digest,
-                decision,
-                ..
-            } => {
-                // Completion uses the final subject digest as its authority input. Every
-                // decision selecting an effect in this single-effect profile uses the request.
-                if *gate == Gate::Workflow
-                    && (decision.code == "workflow.completion_authorized"
-                        || decision_id == "decision-completion")
-                {
-                    require(
-                        protected_effect_digest == &receipt.resulting_subject_digest,
-                        "completion decision targets a different subject",
-                    )?;
-                } else {
-                    require(
-                        protected_effect_digest == &effect_hash,
-                        "receipt describes another effect",
-                    )?;
-                    has_effect_decision = true;
-                }
-            }
             RunEvent::ToolExecution { .. } => executions.push(event),
             RunEvent::Mutation { .. } => mutations.push(event),
             RunEvent::Verification { .. } => verified.push(event),
@@ -212,6 +187,48 @@ pub(super) fn validate(
         )?;
     }
     Ok(())
+}
+
+/// During execution a workflow decision targets the effect. During verification it
+/// targets the final subject, including when the coordinator refuses completion.
+/// The frozen receipt validator separately checks passing verification before an allow.
+pub(super) fn validate_decision_targets(
+    body: &TerminalRunReceiptBody,
+    effect_hash: &str,
+) -> Result<bool> {
+    let mut phase = AgentRunStatus::Accepted;
+    let mut has_effect_decision = false;
+    for event in &body.events {
+        match event {
+            RunEvent::StatusTransition { to, .. } => phase = *to,
+            RunEvent::ProtectedEffectDecision {
+                gate,
+                protected_effect_digest,
+                decision,
+                subject_digest,
+                ..
+            } => {
+                if *gate == Gate::Workflow && phase == AgentRunStatus::Verifying {
+                    require(
+                        subject_digest == &body.resulting_subject_digest
+                            && protected_effect_digest == subject_digest
+                            && (decision.outcome != Outcome::Allow
+                                || decision.code == "workflow.completion_authorized"),
+                        "completion decision differs from the final subject or authorization",
+                    )?;
+                } else {
+                    require(
+                        protected_effect_digest == effect_hash
+                            && decision.code != "workflow.completion_authorized",
+                        "receipt describes another effect or an out-of-phase completion",
+                    )?;
+                    has_effect_decision = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(has_effect_decision)
 }
 
 fn bound_execution(event: &RunEvent, result: &ProtectedEffectResult, a: &Attempt) -> bool {
