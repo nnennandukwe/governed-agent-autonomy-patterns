@@ -20,9 +20,20 @@ import time
 from qual_history import GOOD, reference
 from qual_host import canonical, digest, observe_tree
 
-SOURCE = Path(__file__).resolve().parents[3] / "examples/submitted-proposal/src/coding/mod.rs"
-CUTS = {"before-rename": 'self.store.hit("target_rename")?;',
-        "after-rename": 'self.store.hit("postcommit").map_err(|e| (true, e))?;'}
+SOURCE_SUFFIX = "src/coding/workspace.rs"
+SOURCE = Path(__file__).resolve().parents[3] / "examples/submitted-proposal" / SOURCE_SUFFIX
+CUTS = ("before-rename", "after-rename")
+
+
+def source_line(label):
+    """Locate the stage handoff before persist and its successful return in this source revision."""
+    sequence = ['.take()', '.ok_or("shipping stage already consumed")?',
+                '.persist(self.path().join("shipping.py"))', '.map_err(|e| e.to_string())?;', 'Ok(())']
+    lines = [line.strip() for line in SOURCE.read_text().splitlines()]
+    starts = [i for i in range(len(lines)) if lines[i:i + len(sequence)] == sequence]
+    if label not in CUTS or len(starts) != 1:
+        raise AssertionError(("legacy target replacement changed", label, starts))
+    return starts[0] + (1 if label == "before-rename" else len(sequence))
 
 
 def record_file(path):
@@ -88,9 +99,9 @@ def interrupt_at_source(lldb, debugger, case, binary, line, relay_fd):
     root = case / "session"
     debugger.SetAsync(False)
     target = debugger.CreateTarget(str(binary))
-    breakpoint = target.BreakpointCreateByLocation("src/coding/mod.rs", line)
+    breakpoint = target.BreakpointCreateByLocation(SOURCE_SUFFIX, line)
     if breakpoint.GetNumLocations() < 1:
-        raise AssertionError(f"no reference line table at src/coding/mod.rs:{line}")
+        raise AssertionError(f"no reference line table at {SOURCE_SUFFIX}:{line}")
     launch = lldb.SBLaunchInfo(["coding-submit", str(root)])
     launch.SetLaunchFlags(launch.GetLaunchFlags() & ~lldb.eLaunchFlagDisableASLR)
     launch.AddOpenFileAction(0, str(case / "proposal.json"), True, False)
@@ -100,11 +111,14 @@ def interrupt_at_source(lldb, debugger, case, binary, line, relay_fd):
     process = target.Launch(launch, error)
     try:
         if not error.Success() or process.GetState() != lldb.eStateStopped:
-            raise AssertionError(("reference didn't stop", str(error), process.GetState()))
+            reason = (case / "child.stderr").read_bytes()[:4096]
+            response = (case / "child.stdout").read_bytes()[:512]
+            raise AssertionError(("reference didn't stop", str(error), process.GetState(), process.GetExitStatus(),
+                                  process.GetExitDescription(), reason, response, str(breakpoint)))
         thread = next(t for t in process if t.GetStopReason() == lldb.eStopReasonBreakpoint
                       and t.GetStopReasonDataAtIndex(0) == breakpoint.GetID())
         location = thread.GetFrameAtIndex(0).GetLineEntry()
-        if location.GetLine() != line or not str(location.GetFileSpec()).endswith("src/coding/mod.rs"):
+        if location.GetLine() != line or not str(location.GetFileSpec()).endswith(SOURCE_SUFFIX):
             raise AssertionError(("wrong source breakpoint", str(location)))
         pid = process.GetProcessID()
         # No worker process can inherit this invocation's ability to replace the target.
@@ -138,7 +152,8 @@ def interrupt_at_source(lldb, debugger, case, binary, line, relay_fd):
                 if remaining <= 0:
                     raise AssertionError(("debugger hasn't reported executor exit", terminal))
                 time.sleep(min(0.05, remaining))
-            result = {"line": line, "breakpoint_id": breakpoint.GetID(), "kernel_tasks": len(tasks),
+            result = {"source_file": str(location.GetFileSpec()), "line": line,
+                      "breakpoint_id": breakpoint.GetID(), "kernel_tasks": len(tasks),
                       "pid": pid, "signal": "SIGKILL",
                       "debugger_state": lldb.SBDebugger.StateAsCString(terminal),
                       "debugger_exit": process.GetExitStatus(), "exit_description": process.GetExitDescription(),
@@ -282,11 +297,8 @@ def qualify_case(label, case, binary, lldb, evidence):
                 raise AssertionError("uninterrupted submission didn't complete")
             result = {"receipt": run["receipt"]["receipt_digest"]}
         else:
-            matches = [i for i, text in enumerate(SOURCE.read_text().splitlines(), 1)
-                       if text.strip() == CUTS[label]]
-            if len(matches) != 1:
-                raise AssertionError(("target source marker changed", label, matches))
-            result = debugger_cut(case, binary, lldb, matches[0], evidence / f"executor-{label}-lldb.log")
+            result = debugger_cut(case, binary, lldb, source_line(label),
+                                  evidence / f"executor-{label}-lldb.log")
             result["locks_after_death"] = probe_locks(root, "acquired")
             if result["locks_while_stopped"] != locks or result["locks_after_death"] != locks:
                 raise AssertionError("writer or snapshot lock inode changed")

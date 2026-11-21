@@ -114,16 +114,35 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
         }
     }
     Ok(
-        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":"independent-shipping-oracle","execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
+        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":VERIFIER_ID,"execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
     )
 }
 
-pub struct ShippingVerifier<'a> {
-    pub store: CodingStore,
-    pub state: &'a State,
+pub(super) struct ShippingVerifier<'a, W: ShippingWorkspace> {
+    pub store: &'a W,
     pub report: Rc<RefCell<Value>>,
 }
-impl VerifierPort for ShippingVerifier<'_> {
+impl<W: ShippingWorkspace> VerifierPort for ShippingVerifier<'_, W> {
+    fn confirm_verification(
+        &mut self,
+        event: &RunEvent,
+        usage: &ResourceUsage,
+    ) -> std::result::Result<(), RuntimeError> {
+        self.store
+            .confirm_verification(event, usage, &self.report.borrow())
+    }
+    fn completion_check(
+        &mut self,
+        context: VerificationContext<'_>,
+    ) -> std::result::Result<PortObservation<()>, RuntimePortError> {
+        self.store
+            .check_completion(context.current_subject, context.usage)
+            .map_err(RuntimePortError::new)?;
+        Ok(PortObservation {
+            value: (),
+            usage: resources(0, 0),
+        })
+    }
     fn verify(
         &mut self,
         context: VerificationContext<'_>,
@@ -131,30 +150,26 @@ impl VerifierPort for ShippingVerifier<'_> {
         let start = Instant::now();
         let result = (|| -> Result<_> {
             // Both snapshots are after the executor has finished the file change.
-            let before_verification = self.store.snapshot(self.state)?;
+            let before_verification = self.store.snapshot()?;
             let observed_digest = snapshot_digest(&before_verification)?;
             let seed = validate_request(context.request, &support()).map_err(|e| e.to_string())?;
             let mut report = evaluate_seed(&before_verification["shipping.py"].content, &seed)?;
             #[cfg(test)]
-            if self.store.fault == Some("verification_drift") {
-                fs::write(
-                    self.store.workspace().join("shipping.py"),
-                    "operator edit during verification\n",
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            let after_verification = self.store.snapshot(self.state)?;
+            self.store
+                .inject_edit("verification_drift", "operator edit during verification\n")?;
+            let after_verification = self.store.snapshot()?;
             let fresh = before_verification == after_verification
                 && observed_digest == context.current_subject.digest;
             report["subject_digest"] = json!(observed_digest);
             report["fresh"] = json!(fresh);
             report["passed"] = json!(report["passed"] == true && fresh);
             let output_digest = hash_json(&report)?;
+            self.store.verifier_snapshot(&before_verification)?;
             *self.report.borrow_mut() = report.clone();
             Ok(PortObservation {
                 value: VerificationReport {
                     subject_digest: observed_digest.clone(),
-                    verifier_id: "independent-shipping-oracle".into(),
+                    verifier_id: VERIFIER_ID.into(),
                     verdict: if report["passed"] == true {
                         VerificationVerdict::Pass
                     } else {

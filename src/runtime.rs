@@ -277,6 +277,27 @@ pub trait AgentAdapter {
 
 /// Narrow executor port used only after all mutation gates allow.
 pub trait ExecutorPort {
+    /// Confirm the original decisions and reservation before entering this invocation.
+    /// A failed checkpoint leaves the run unsealed and prevents executor entry.
+    fn confirm_dispatch(
+        &mut self,
+        _request: &ProtectedEffectRequest,
+        _events: &[RunEvent],
+        _usage: &ResourceUsage,
+        _reservation: &EffectUsage,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    /// Retain an attempted execution's sealed result and the engine's cumulative usage floor.
+    fn confirm_effect(
+        &mut self,
+        _result: &ProtectedEffectResult,
+        _usage: &ResourceUsage,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Atomically claim completion against asynchronous cancellation when supported.
     fn claim_completion(&mut self) -> Result<Option<Cancellation>, RuntimePortError> {
         Ok(self.cancellation())
@@ -295,6 +316,15 @@ pub trait ExecutorPort {
 
 /// Narrow verifier port used before the terminal completion decision.
 pub trait VerifierPort {
+    /// Retain the receipt-safe event with its original sequence before the completion gate.
+    fn confirm_verification(
+        &mut self,
+        _event: &RunEvent,
+        _usage: &ResourceUsage,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Recheck host-owned completion conditions after successful verification.
     /// Existing deterministic verifiers have no asynchronous subject to observe.
     fn completion_check(
@@ -379,6 +409,7 @@ impl Error for RuntimePortError {}
 pub enum RuntimeError {
     Contract(ContractError),
     InvalidConfig(String),
+    Checkpoint(String),
     Receipt(ContractError),
     ProtectedEffectResult(ContractError),
 }
@@ -387,6 +418,7 @@ impl Display for RuntimeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Contract(error) => write!(formatter, "contract validation failed: {error}"),
+            Self::Checkpoint(message) => write!(formatter, "run checkpoint failed: {message}"),
             Self::InvalidConfig(message) => write!(formatter, "invalid runtime config: {message}"),
             Self::Receipt(error) => write!(formatter, "could not seal terminal receipt: {error}"),
             Self::ProtectedEffectResult(error) => {
@@ -402,7 +434,7 @@ impl Error for RuntimeError {
             Self::Contract(error) | Self::Receipt(error) | Self::ProtectedEffectResult(error) => {
                 Some(error)
             }
-            Self::InvalidConfig(_) => None,
+            Self::InvalidConfig(_) | Self::Checkpoint(_) => None,
         }
     }
 }
@@ -550,6 +582,7 @@ where
         mut ledger: Ledger,
         proposal: ProtectedEffectProposal,
     ) -> Result<EffectHandling, RuntimeError> {
+        let first_event = ledger.events.len();
         let effect_digest = match validate_protected_effect_request(
             &ledger.request,
             self.support.contract_support(),
@@ -808,6 +841,12 @@ where
                 None
             };
 
+        self.executor.confirm_dispatch(
+            &proposal.request,
+            &ledger.events[first_event..],
+            &ledger.usage,
+            &self.support.protected_effect_usage_estimate,
+        )?;
         let mut observation = match self.executor.execute(&proposal.request) {
             Ok(observation) => observation,
             Err(error) if error.was_not_dispatched() => {
@@ -847,6 +886,7 @@ where
                     &result,
                 );
                 let usage_reason = ledger.record_effect_usage(&result.body.usage);
+                self.executor.confirm_effect(&result, &ledger.usage)?;
                 ledger.effect_results.push(result);
                 if let Some(reason) = usage_reason {
                     return self
@@ -938,6 +978,8 @@ where
                 }
             }
             let _usage_reason = ledger.record_effect_usage(&effect_result.body.usage);
+            self.executor
+                .confirm_effect(&effect_result, &ledger.usage)?;
             ledger.effect_results.push(effect_result);
             return self
                 .finish(ledger, AgentRunStatus::Failed, untrusted_reason)
@@ -978,6 +1020,8 @@ where
             }
         }
         let usage_reason = ledger.record_effect_usage(&effect_result.body.usage);
+        self.executor
+            .confirm_effect(&effect_result, &ledger.usage)?;
 
         let mut terminal = match effect_result.body.execution_status {
             EffectExecutionStatus::Executed => None,
@@ -1153,6 +1197,10 @@ where
         }
         if report_is_receipt_safe {
             ledger.verification(&self.config.implementer_id, &report);
+            self.verifier.confirm_verification(
+                ledger.events.last().expect("verification just appended"),
+                &ledger.usage,
+            )?;
         }
         if verification_decision.outcome != Outcome::Allow {
             return self.finish(ledger, AgentRunStatus::Blocked, verification_decision.code);

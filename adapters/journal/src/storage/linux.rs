@@ -14,7 +14,7 @@ const READ: OFlags = OFlags::RDONLY
     .union(OFlags::NONBLOCK);
 const DIRECTORY: OFlags = READ.union(OFlags::DIRECTORY);
 
-pub(super) struct Volume<'a> {
+pub(crate) struct Volume<'a> {
     pub health: &'a File,
     pub slot: &'a crate::Slot,
 }
@@ -272,7 +272,7 @@ fn capacity_error(error: &io::Error) -> bool {
     })
 }
 
-fn open_directory(name: &Path) -> rustix::io::Result<File> {
+pub(crate) fn open_directory(name: &Path) -> rustix::io::Result<File> {
     if !name.is_absolute() || name.components().collect::<PathBuf>().as_os_str() != name.as_os_str()
     {
         return Err(rustix::io::Errno::INVAL);
@@ -288,7 +288,7 @@ fn open_directory(name: &Path) -> rustix::io::Result<File> {
     Ok(fd.into())
 }
 
-fn identity_matches(stat: &Metadata, pin: &Identity) -> bool {
+pub(crate) fn identity_matches(stat: &Metadata, pin: &Identity) -> bool {
     stat.dev().to_string() == pin.dev
         && stat.ino().to_string() == pin.ino
         && stat.uid() == pin.uid
@@ -384,7 +384,7 @@ impl Handles {
     }
 }
 
-fn bounded_flock(file: &File, writer: bool) -> rustix::io::Result<()> {
+pub(crate) fn bounded_flock(file: &File, writer: bool) -> rustix::io::Result<()> {
     let operation = if writer {
         FlockOperation::NonBlockingLockExclusive
     } else {

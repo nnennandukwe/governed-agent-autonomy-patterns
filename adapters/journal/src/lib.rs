@@ -1,4 +1,9 @@
+#[cfg(target_os = "linux")]
+pub mod handoff;
 pub mod history;
+pub mod live;
+#[cfg(target_os = "linux")]
+pub use storage::writer;
 mod json;
 #[cfg(target_os = "linux")]
 mod storage;
@@ -30,6 +35,15 @@ impl Error {
             reason,
             warning: None,
         }
+    }
+    /// A pending, quarantined or unavailable health authority forbids further storage writes.
+    pub fn health_hold(&self) -> bool {
+        matches!(
+            self.reason,
+            "volume_quarantined"
+                | "volume_operation_unconfirmed"
+                | "health_authority_failed_withdraw_volume"
+        )
     }
     pub fn with_warning(mut self, warning: &'static str) -> Self {
         self.warning = Some(warning);
@@ -79,6 +93,8 @@ pub struct Host {
     pub can_read: bool,
     pub profile: history::HistoricalProfile,
     pub archive: history::EvidenceArchive,
+    #[serde(default)]
+    pub live: Option<live::LiveBinding>,
 }
 
 #[derive(Debug)]
@@ -96,6 +112,16 @@ pub struct Lookup {
     pub workspace_hold: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Value>,
+}
+
+impl Lookup {
+    #[cfg(target_os = "linux")]
+    fn at_generation(self, generation: u64) -> Result<Value> {
+        let mut answer =
+            serde_json::to_value(self).map_err(|_| Error::invalid("lookup_encoding"))?;
+        answer["generation"] = json!(generation);
+        Ok(answer)
+    }
 }
 
 pub fn token(s: &str) -> bool {
@@ -164,6 +190,15 @@ pub fn empty_journal(host: &Host) -> Result<Vec<u8>> {
 }
 
 pub fn interpret(host: &Host, bytes: &[u8], request: &Request) -> Result<(u64, Lookup)> {
+    interpret_with_archive(host, &host.archive, bytes, request)
+}
+
+fn interpret_with_archive(
+    host: &Host,
+    archive: &history::EvidenceArchive,
+    bytes: &[u8],
+    request: &Request,
+) -> Result<(u64, Lookup)> {
     if bytes.len() > JOURNAL_LIMIT {
         return Err(Error::invalid("journal exceeds enrolled capacity"));
     }
@@ -194,7 +229,7 @@ pub fn interpret(host: &Host, bytes: &[u8], request: &Request) -> Result<(u64, L
         profile_digest: &host.slot.profile_digest,
         workspace: &host.slot.workspace,
         profile: &host.profile,
-        archive: &host.archive,
+        archive,
     };
     let (key, proposal) = match request {
         Request::Enroll => ("enrollment-check", None),
@@ -217,19 +252,25 @@ pub fn execute(host: &Host, health: &std::fs::File, request: &Request) -> Result
     }
     host.validate()?;
     if let Request::Lookup { key, proposal } = request {
-        if !token(key) {
-            return Err(Error::new("invalid_request", "invalid submission key"));
-        }
-        if let Some(proposal) = proposal {
-            history::validate_proposal(proposal)
-                .map_err(|_| Error::new("invalid_request", "invalid local file proposal"))?;
-            if canonical(proposal)?.len() > PROPOSAL_LIMIT {
-                return Err(Error::new(
-                    "capacity",
-                    "proposal exceeds its enrolled byte limit",
-                ));
-            }
-        }
+        validate_key_and_proposal(key, proposal.as_ref())?;
     }
     storage::run(host, health, request)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_key_and_proposal(key: &str, proposal: Option<&Value>) -> Result<()> {
+    if !token(key) {
+        return Err(Error::new("invalid_request", "invalid submission key"));
+    }
+    if let Some(proposal) = proposal {
+        history::validate_proposal(proposal)
+            .map_err(|_| Error::new("invalid_request", "invalid local file proposal"))?;
+        if canonical(proposal)?.len() > PROPOSAL_LIMIT {
+            return Err(Error::new(
+                "capacity",
+                "proposal exceeds its enrolled byte limit",
+            ));
+        }
+    }
+    Ok(())
 }

@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const VERIFIER_ID: &str = "independent-shipping-oracle";
+
 pub fn policy() -> PolicyIdentity {
     PolicyIdentity {
         name: "shipping-demo-policy".into(),
@@ -47,10 +49,10 @@ pub fn effect_usage(elapsed_ms: u64, tool_calls: u64) -> EffectUsage {
         tool_calls,
     }
 }
-pub fn subject(store: &CodingStore, snapshot: &Snapshot) -> Result<Subject> {
+pub(super) fn subject_at(workspace: &Path, snapshot: &Snapshot) -> Result<Subject> {
     Ok(Subject {
         kind: SubjectKind::Repository,
-        locator: store.workspace().display().to_string(),
+        locator: workspace.display().to_string(),
         digest: snapshot_digest(snapshot)?,
     })
 }
@@ -61,18 +63,49 @@ pub fn request(
     change: &Change,
     before: &Snapshot,
 ) -> Result<AgentRunRequest> {
-    let subject = subject(store, before)?;
+    let subject = subject_at(&store.workspace(), before)?;
+    let nonce = nonce()?;
+    let approval = ApprovalReference {
+        approval_id: format!("host-policy-{nonce}"),
+        actor_id: "local-demo-policy".into(),
+        scope: "bounded workspace task under shipping-demo-policy; production writes denied".into(),
+        subject_digest: subject.digest.clone(),
+        evidence: EvidenceReference {
+            evidence_type: EvidenceType::Approval,
+            digest: policy().digest,
+            locator: Some("gaap:session/policy".into()),
+        },
+    };
+    let budget = ResourceBudget {
+        max_cost_micros: 1_000_000,
+        max_model_tokens: 100_000,
+        max_elapsed_ms: 10_000,
+        max_tool_calls: 2,
+    };
+    Ok(bound_request(change, subject, &nonce, approval, budget))
+}
+
+pub(super) fn nonce() -> Result<String> {
     let mut random = [0u8; 32];
     std::io::Read::read_exact(
         &mut File::open("/dev/urandom").map_err(|e| e.to_string())?,
         &mut random,
     )
     .map_err(|e| e.to_string())?;
-    let nonce = random
+    Ok(random
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(AgentRunRequest {
+        .collect::<String>())
+}
+
+pub(super) fn bound_request(
+    change: &Change,
+    subject: Subject,
+    nonce: &str,
+    approval: ApprovalReference,
+    budget: ResourceBudget,
+) -> AgentRunRequest {
+    AgentRunRequest {
         schema_version: AGENT_RUN_REQUEST_SCHEMA.into(),
         request_id: format!("proposal-request-{nonce}"),
         run_id: format!("proposal-run-{nonce}"),
@@ -83,29 +116,13 @@ pub fn request(
             constraints: vec![POLICY.into()],
         },
         policies: vec![policy()],
-        resource_budget: ResourceBudget {
-            max_cost_micros: 1_000_000,
-            max_model_tokens: 100_000,
-            max_elapsed_ms: 10_000,
-            max_tool_calls: 2,
-        },
-        approval_context: vec![ApprovalReference {
-            approval_id: format!("host-policy-{nonce}"),
-            actor_id: "local-demo-policy".into(),
-            scope: "bounded workspace task under shipping-demo-policy; production writes denied"
-                .into(),
-            subject_digest: subject.digest,
-            evidence: EvidenceReference {
-                evidence_type: EvidenceType::Approval,
-                digest: policy().digest,
-                locator: Some("gaap:session/policy".into()),
-            },
-        }],
+        resource_budget: budget,
+        approval_context: vec![approval],
         required_verification: VerificationRequirement {
             independence: VerificationIndependence::DifferentActor,
             evidence_types: vec![EvidenceType::CommandOutput, EvidenceType::Artifact],
         },
-    })
+    }
 }
 pub fn effect(request: &AgentRunRequest, change: &Change) -> Result<ProtectedEffectRequest> {
     let mut subject = request.subject.clone();
@@ -158,7 +175,7 @@ pub fn runtime_support(change: &Change, trusted_schema: &str) -> RuntimeSupport 
         },
         effect_usage(1, 1),
         vec![],
-        vec!["independent-shipping-oracle".into()],
+        vec![VERIFIER_ID.into()],
     )
 }
 pub fn config() -> RuntimeConfig {

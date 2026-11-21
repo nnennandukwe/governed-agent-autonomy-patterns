@@ -8,14 +8,20 @@ publish = false
 # Keep protocol dependencies out of GAAP's provider-neutral core.
 [workspace]
 
+[features]
+qualification = ["gaap-journal/qualification"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gaap-journal = { path = "../../adapters/journal", version = "=0.1.0" }
+
 [dependencies]
 gaap = { path = "../..", version = "=0.1.0" }
 gaap-submitted-proposal = { path = "../../adapters/submitted-proposal", version = "=0.1.0" }
 rmcp = { version = "=3.9.0", features = ["server", "transport-io"] }
-rustix = { version = "=1.1.6", features = ["fs", "process"] }
+rustix = { version = "=1.1.6", features = ["fs", "process", "try_close"] }
 schemars = "=1.2.2"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
+serde_json = "=1.0.154"
 serde_jcs = "=0.2.0"
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"

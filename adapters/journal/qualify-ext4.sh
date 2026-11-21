@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Qualify against a new disposable filesystem on the GitHub-hosted Linux runner.
 set -euo pipefail
-if [[ $# != 4 || ${GITHUB_ACTIONS:-} != true || $(uname -s) != Linux || $(id -u) == 0 ]]; then
-  echo 'Run on an ordinary-user Linux Actions job: qualify-ext4.sh RELEASE QUALIFICATION REFERENCE EVIDENCE_DIR' >&2
+if [[ ( $# != 4 && $# != 5 ) || ${GITHUB_ACTIONS:-} != true || $(uname -s) != Linux || $(id -u) == 0 ]]; then
+  echo 'Run on an ordinary-user Linux Actions job: qualify-ext4.sh RELEASE QUALIFICATION REFERENCE EVIDENCE_DIR [QUALIFIED_REFERENCE]' >&2
   exit 2
 fi
 release=$(realpath "$1")
@@ -10,6 +10,8 @@ qualification=$(realpath "$2")
 reference=$(realpath "$3")
 mkdir -p -- "$4"
 evidence=$(realpath "$4")
+fault_reference=
+if [[ $# == 5 ]]; then fault_reference=$(realpath "$5"); fi
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 for tool in mkfs.ext4 mount umount findmnt strace node; do
   command -v "$tool" > /dev/null
@@ -35,6 +37,7 @@ sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$volume/qualification"
   findmnt --target "$volume" -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN
   findmnt --target "$health" -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN
   sha256sum -- "$release" "$qualification" "$reference"
+  if [[ -n $fault_reference ]]; then sha256sum -- "$fault_reference"; fi
   git -C "$script_dir" rev-parse HEAD
 } > "$evidence/platform.txt"
 python3 -B "$script_dir/tests/qualify.py" --release "$release" --qualification "$qualification" \
@@ -42,3 +45,9 @@ python3 -B "$script_dir/tests/qualify.py" --release "$release" --qualification "
   --evidence "$evidence" 2>&1 | tee "$evidence/process-tests.log"
 python3 -B "$script_dir/tests/qual_executor_quiescence.py" --reference "$reference" \
   --root "$volume/qualification" --evidence "$evidence"
+
+if [[ -n $fault_reference ]]; then
+  python3 -B "$script_dir/tests/qual_journal_submit.py" --release "$release" --qualification "$qualification" \
+    --reference "$reference" --fault-reference "$fault_reference" --root "$volume/qualification" \
+    --health-root "$health" --evidence "$evidence" 2>&1 | tee "$evidence/shipping-journal-tests.log"
+fi
