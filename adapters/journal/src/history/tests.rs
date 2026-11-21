@@ -6,7 +6,6 @@ use super::*;
 
 const WORKSPACE_ID: &str = "11111111111111111111111111111111";
 const STORE_ID: &str = "22222222222222222222222222222222";
-const ATTEMPT: &str = "33333333333333333333333333333333";
 
 fn hash(value: &Value) -> String {
     digest(&canonical(value).unwrap())
@@ -25,6 +24,11 @@ struct Sample {
 
 impl Sample {
     fn new() -> Self {
+        Self::admission("alice", "k", 1)
+    }
+
+    fn admission(principal: &str, key: &str, number: u32) -> Self {
+        let attempt_id = format!("{number:032x}");
         let mut run: Value = serde_json::from_str(include_str!(
             "../../../../examples/contracts/v0.1.0/agent-run-request.json"
         ))
@@ -34,6 +38,11 @@ impl Sample {
         ))
         .unwrap();
         let proposal = json!({"path":"example.txt","content":"hello\n","plan":run["task"]["instructions"],"base_digest":run["subject"]["digest"]});
+        run["request_id"] = json!(format!("request-{number:03}"));
+        run["run_id"] = json!(format!("run-{number:03}"));
+        effect["effect_id"] = json!(format!("effect-{number:03}"));
+        effect["run_id"] = run["run_id"].clone();
+        effect["idempotency_key"] = json!(format!("run-{number:03}/effect-{number:03}"));
         run["subject"]["locator"] = json!("/workspace");
         run["approval_context"] = json!([]);
         effect["agent_run_request_digest"] = json!(hash(&run));
@@ -56,16 +65,16 @@ impl Sample {
             WORKSPACE_ID,
             STORE_ID,
             digest(&canonical(&profile).unwrap()),
-            "alice",
-            "k",
-            ATTEMPT,
+            principal,
+            key,
+            attempt_id,
             hash(&proposal),
             hash(&run),
             hash(&effect)
         ]));
         let intent = json!({"tag":"intent","binding":binding,"payload":{"run_request_digest":hash(&run),
             "effect_request_digest":hash(&effect),"proposed_artifact_digest":digest(b"hello\n")}});
-        let row = json!({"principal":"alice","key":"k","attempt_id":ATTEMPT,"proposal":proposal,
+        let row = json!({"principal":principal,"key":key,"attempt_id":attempt_id,"proposal":proposal,
             "proposal_digest":hash(&proposal),"run_request":run,"effect_request":effect,"facts":[intent]});
         Self {
             workspace: Identity {
@@ -96,7 +105,13 @@ impl Sample {
             profile: &self.profile,
             archive: &self.archive,
         };
-        lookup(records, &context, principal, "k", proposal)
+        lookup(
+            records,
+            &context,
+            principal,
+            self.row["key"].as_str().unwrap(),
+            proposal,
+        )
     }
 
     fn own(&self) -> Result<Lookup> {
@@ -206,6 +221,63 @@ fn dispatch_and_unresolved_observation_hold_every_namespace() {
         s.lookup(&[s.row.clone(), Sample::new().row], "bob", None)
             .is_err()
     );
+}
+
+#[test]
+fn a_hold_permits_reading_later_undispatched_history_but_rejects_another_dispatch() {
+    let mut first = Sample::new();
+    first.dispatch();
+    first.append(
+        "observed",
+        json!({"after":null,"source":null,"disposition":"unresolved","usage_floor":usage(0)}),
+    );
+    let mut later = Sample::admission("bob", "second", 2);
+    let intent = later.row.clone();
+    let rows = [first.row.clone(), intent.clone()];
+    let reply = later.lookup(&rows, "bob", None).unwrap();
+    assert_eq!(reply.status, "partial");
+    assert!(reply.workspace_hold);
+    assert_eq!(reply.attempt, Some(intent.clone()));
+
+    let run = &later.row["run_request"];
+    let refused = json!({"schema_version":"gaap.terminal-run-receipt/0.1.0",
+        "request_id":run["request_id"],"run_id":run["run_id"],"request_digest":hash(run),
+        "initial_subject_digest":run["subject"]["digest"],"resulting_subject_digest":run["subject"]["digest"],
+        "terminal_status":"blocked","terminal_reason":"workspace.hold","usage":usage(0),
+        "events":[{"event_type":"usage","sequence":1,"usage":usage(0)},
+                  {"event_type":"status_transition","sequence":2,"from":"accepted","to":"blocked","reason":"workspace.hold"}]});
+    later.append(
+        "published",
+        json!({"receipt":{"receipt_digest":hash(&refused),"body":refused},"result":null}),
+    );
+    let rows = [first.row.clone(), later.row.clone()];
+    let reply = later.lookup(&rows, "bob", None).unwrap();
+    assert_eq!(reply.status, "published");
+    assert!(reply.workspace_hold);
+    assert_eq!(reply.attempt, Some(later.row.clone()));
+    let absent = later.lookup(&rows, "unrelated", None).unwrap();
+    assert_eq!(absent.status, "absent");
+    assert!(absent.workspace_hold && absent.attempt.is_none());
+
+    later.row["facts"][1]["payload"]["receipt"]["body"]["terminal_reason"] = json!("tampered");
+    assert!(
+        first
+            .lookup(&[first.row.clone(), later.row.clone()], "alice", None)
+            .is_err()
+    );
+    later.row = intent;
+    later.dispatch();
+    later.observe_negative(true);
+    assert!(
+        !later
+            .lookup(slice::from_ref(&later.row), "bob", None)
+            .unwrap()
+            .workspace_hold
+    );
+    let rejected = later
+        .lookup(&[first.row, later.row.clone()], "bob", None)
+        .unwrap_err();
+    assert_eq!(rejected.status, "invalid_store");
 }
 
 #[test]

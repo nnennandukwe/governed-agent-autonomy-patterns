@@ -318,6 +318,48 @@ def exercise_histories(case, executable, evidence_dir):
         slot.call("lookup", "missing", expected=("invalid_store", "capacity"))
         case.assertEqual(snapshot(slot.journal), previous)
 
+    slot.host["principal"] = "bob"
+    later = historical_attempt(slot, "later", failed_proposal, failed_run, failed_obs)
+    denial = historical_attempt(slot, "denial", refused_proposal, refused_run)
+    slot.configure()
+    exercise_held_lookups(case, slot, good, later, denial)
+
+
+def exercise_held_lookups(case, slot, first, later, denial):
+    """Keep an earlier dispatch held across another caller's intent and direct refusal."""
+    unknown = {**first, "facts": first["facts"][:2]}
+    intent = {**later, "facts": later["facts"][:1]}
+    dispatch = {**later, "facts": later["facts"][:2]}
+    slot.install_history([dispatch], generation=2)
+    case.assertEqual(slot.call("lookup", later["key"], expected="partial")["attempt"], dispatch)
+
+    slot.install_history([unknown, intent, denial], generation=5)
+    before = snapshot(slot.anchor), snapshot(slot.journal), observe_tree(slot.workspace)
+    for principal, key, status, visible in [
+        ("bob", later["key"], "partial", intent), ("bob", denial["key"], "published", denial),
+        ("bob", first["key"], "absent", None), ("alice", first["key"], "partial", unknown),
+        ("alice", later["key"], "absent", None),
+    ]:
+        slot.host["principal"] = principal
+        slot.configure()
+        reply = slot.call("lookup", key, expected=status)
+        case.assertEqual(reply["generation"], 5)
+        case.assertTrue(reply["workspace_hold"])
+        if visible is None:
+            case.assertNotIn("attempt", reply)
+        else:
+            case.assertEqual(reply["attempt"], visible)
+    case.assertEqual((snapshot(slot.anchor), snapshot(slot.journal), observe_tree(slot.workspace)), before)
+    case.record(slot, "unresolved-with-later-intent-and-refusal", {"workspace_hold": True})
+
+    slot.install_history([unknown, dispatch], generation=4)
+    before = snapshot(slot.anchor), snapshot(slot.journal), observe_tree(slot.workspace)
+    rejected = slot.call("lookup", first["key"], expected="invalid_store")
+    case.assertNotIn("attempt", rejected)
+    case.assertEqual((snapshot(slot.anchor), snapshot(slot.journal), observe_tree(slot.workspace)), before)
+    case.record(slot, "later-dispatch-under-hold", rejected)
+
+
 def exercise_unknown(case, executable, evidence_dir):
     """Return an actual unknown-effect receipt after injected post-rename fsync failure."""
     root = case.root / "fault-reference"

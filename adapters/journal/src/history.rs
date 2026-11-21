@@ -157,10 +157,6 @@ pub fn lookup(
     let mut keys = BTreeSet::new();
     let mut identities = BTreeSet::new();
     for raw in attempts {
-        require(
-            !lookup.workspace_hold,
-            "later admission crosses a workspace hold",
-        )?;
         let attempt: Attempt = closed(raw)?;
         require(
             keys.insert((attempt.principal.clone(), attempt.key.clone()))
@@ -177,6 +173,10 @@ pub fn lookup(
             "duplicate historical admission identity",
         )?;
         let (status, hold) = inspect(&attempt, ctx, &support, &archive)?;
+        require(
+            !lookup.workspace_hold || !attempt.facts.iter().any(|fact| fact.tag == "dispatch"),
+            "later dispatch crosses a workspace hold",
+        )?;
         lookup.workspace_hold |= hold;
         if attempt.principal == principal && attempt.key == key {
             if let Some(candidate) = &supplied
