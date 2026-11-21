@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 import unittest
 import json
 
@@ -24,13 +25,13 @@ def stop_at(cut):
 class RecoveryTests(unittest.TestCase):
     """Use an independent target and a fresh journal for each scenario."""
 
-    def prepare(self):
+    def prepare(self, store_id="store-A", target_id="workspace-A"):
         """Create a new single-workspace model and issue the first exact grant."""
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        initialize(self.root)
-        self.target = Target()
+        self.target = Target(self.root, store_id, target_id)
+        initialize(self.root, self.target)
         self.host = Host(self.root, self.target)
         self.caller = "client-1"
         self.request = self.fresh("one")
@@ -153,7 +154,7 @@ class RecoveryTests(unittest.TestCase):
                 self.host.grant(self.caller, fresh)
                 with self.assertRaisesRegex(Refusal, "Workspace unresolved"):
                     self.host.submit(self.caller, fresh)
-                binding = self.request.binding(self.caller)
+                binding = self.request.binding(self.caller, self.target.enrollment)
                 args = ("host-reconciler", self.caller, self.request)
                 with self.assertRaisesRegex(Refusal, "final independent witness"):
                     self.host.admit(*args, {"binding": binding, "outcome": expected})
@@ -177,13 +178,108 @@ class RecoveryTests(unittest.TestCase):
                                  "completed")
                 self.observed(count + 1, fresh.replacement)
 
+    def test_failed_executor_report_needs_an_independent_witness(self):
+        """An executor can report failure both before and after a committed write."""
+        for committed in (False, True):
+            for witness_available in (False, True):
+                with self.subTest(committed=committed, witness_available=witness_available):
+                    self.prepare()
+                    invoke = self.target.invoke
+                    fence = self.target.fence
+
+                    def report_failure(binding, request, fail):
+                        """Report the same failure for two different target histories."""
+                        invoke(binding, request, fail=not committed)
+                        return "failed"
+
+                    def observe(binding):
+                        """Make the independent final observation available only in selected cases."""
+                        return fence(binding) if witness_available else None
+
+                    with patch.object(self.target, "invoke", report_failure), \
+                            patch.object(self.target, "fence", observe):
+                        record = self.send()
+                    known = "executed" if committed else "failed"
+                    self.assertEqual(record["effect"], known if witness_available else "unknown")
+                    self.assertEqual(record["receipt"]["status"], "failed")
+                    self.assertIsNone(record["verification"])
+                    self.observed(int(committed), self.request.replacement if committed else "original")
+                    if not witness_available:
+                        with self.assertRaisesRegex(Refusal, "Workspace unresolved"):
+                            self.host.submit(self.caller, self.fresh("two"))
+                        witness = fence(record["binding"])
+                        ruled = self.host.admit("host-reconciler", self.caller, self.request, witness)
+                        self.assertEqual(ruled["ruling"]["outcome"], known)
+                        self.assertEqual(ruled["receipt"], record["receipt"])
+
+    def test_target_checks_the_original_invocation_and_output_subject(self):
+        """A changed payload can't use a registered invocation or fabricate output evidence."""
+        self.prepare()
+        with self.assertRaises(Cut):
+            self.send(at=stop_at("before_effect"))
+        binding = self.send()["binding"]
+        altered = replace(self.request, replacement="unapproved bytes")
+        with self.assertRaisesRegex(Refusal, "Invocation bytes conflict"):
+            self.target.invoke(binding, altered, False)
+        self.observed(0, "original")
+        self.target.invoke(binding, self.request, False)
+        witness = self.target.fence(binding)
+        self.assertEqual(witness["output_subject"], digest(self.request.replacement))
+        wrong_subject = {**witness, "output_subject": digest("unapproved bytes")}
+        with self.assertRaisesRegex(Refusal, "final independent witness"):
+            self.host.admit("host-reconciler", self.caller, self.request, wrong_subject)
+        # Even a configured witness source must attest to the authorized output.
+        with patch.dict(self.target.witnesses, {binding: wrong_subject}):
+            with self.assertRaisesRegex(Refusal, "final independent witness"):
+                self.host.admit("host-reconciler", self.caller, self.request, wrong_subject)
+        ruled = self.host.admit("host-reconciler", self.caller, self.request, witness)
+        self.assertEqual(ruled["ruling"]["output_subject"], digest(self.target.content))
+        self.observed(1, self.request.replacement)
+
+    def test_cross_enrollment_evidence_and_reopen_are_refused(self):
+        """Bind otherwise identical requests and observations to their enrolled store and target."""
+        self.prepare()
+        with self.assertRaises(Cut):
+            self.send(at=stop_at("after_effect"))
+        foreign_target = self.target
+        foreign_witness = foreign_target.fence(self.send()["binding"])
+        for store_id, target_id in (("store-B", "workspace-A"), ("store-A", "workspace-B")):
+            with self.subTest(store_id=store_id, target_id=target_id):
+                self.prepare(store_id, target_id)
+                with self.assertRaises(Cut):
+                    self.send(at=stop_at("after_effect"))
+                local_witness = self.target.fence(self.send()["binding"])
+                image = (self.root / "journal.json").read_bytes()
+                with self.assertRaisesRegex(Refusal, "enrollment mismatch"):
+                    Host(self.root, foreign_target)
+                with self.assertRaisesRegex(Refusal, "final independent witness"):
+                    self.host.admit("host-reconciler", self.caller, self.request, foreign_witness)
+                self.assertEqual((self.root / "journal.json").read_bytes(), image)
+                self.assertEqual(local_witness["output_subject"], foreign_witness["output_subject"])
+                self.assertEqual(self.host.admit("host-reconciler", self.caller, self.request,
+                                                 local_witness)["ruling"]["outcome"], "executed")
+                self.observed(1, self.request.replacement)
+
+    def test_reused_identity_conflicts_during_an_unresolved_attempt(self):
+        """Reject reused host identities before evaluating the workspace-wide hold."""
+        self.prepare()
+        with self.assertRaises(Cut):
+            self.send(at=stop_at("before_effect"))
+        fresh = self.fresh("two")
+        for field in ("run", "attempt", "effect", "request_id", "authority"):
+            with self.subTest(field=field), self.assertRaisesRegex(Refusal, "Identity conflict"):
+                self.host.submit(self.caller, replace(fresh, **{field: getattr(self.request, field)}))
+        with self.assertRaisesRegex(Refusal, "Workspace unresolved"):
+            self.host.submit(self.caller, fresh)
+        self.observed(0, "original")
+
     def test_failed_sealed_receipt_survives_later_ruling(self):
         """A later positive witness can explain an unknown effect in a sealed failed run."""
         self.prepare()
         sealed = self.send(script="unknown_report")
         self.assertEqual(sealed["receipt"], {"status": "failed", "reason": "unknown_outcome",
                                              "effect": "unknown"})
-        witness = self.target.fence(self.request.binding(self.caller))
+        witness = self.target.fence(self.request.binding(self.caller, self.target.enrollment))
         ruled = self.host.admit("host-reconciler", self.caller, self.request, witness)
         self.assertEqual(ruled["ruling"]["outcome"], "executed")
         self.assertEqual(self.send()["receipt"], sealed["receipt"])
@@ -217,7 +313,7 @@ class RecoveryTests(unittest.TestCase):
                         return
                     if drift in ("expired", "revoked"):
                         self.host.grants[self.request.authority] = (
-                            self.request.binding(self.caller), drift
+                            self.request.binding(self.caller, self.target.enrollment), drift
                         )
                     elif drift == "subject":
                         self.target.content = "outside edit"
@@ -242,7 +338,7 @@ class RecoveryTests(unittest.TestCase):
                         return
                     if drift == "revoked":
                         self.host.grants[self.request.authority] = (
-                            self.request.binding(self.caller), "revoked"
+                            self.request.binding(self.caller, self.target.enrollment), "revoked"
                         )
                     elif drift == "subject":
                         self.target.content = "outside edit"
@@ -286,8 +382,8 @@ class RecoveryTests(unittest.TestCase):
         self.host.grant(self.caller, self.request)
         self.assertEqual(self.send(), sealed)
         fresh = replace(self.fresh("two"), replacement=self.request.replacement)
-        old_proposal = json.loads(self.request.binding(self.caller))["proposal_digest"]
-        self.assertEqual(json.loads(fresh.binding(self.caller))["proposal_digest"], old_proposal)
+        old_proposal = json.loads(self.request.binding(self.caller, self.target.enrollment))["proposal_digest"]
+        self.assertEqual(json.loads(fresh.binding(self.caller, self.target.enrollment))["proposal_digest"], old_proposal)
         self.host.grant(self.caller, fresh)
         with self.assertRaises(Cut):
             self.host.submit(self.caller, fresh, at=stop_at("after_effect"))
@@ -301,15 +397,17 @@ class RecoveryTests(unittest.TestCase):
         """Refuse interpretation or replacement of an unsupported saved generation."""
         self.prepare()
         snapshot = inspect(self.root)
-        snapshot["version"] = 2
-        publish(self.root, snapshot)
-        image = (self.root / "journal.json").read_bytes()
-        with self.assertRaisesRegex(Refusal, "Unsupported journal version"):
-            inspect(self.root)
-        with self.assertRaisesRegex(Refusal, "Unsupported journal version"):
-            self.send()
-        self.assertEqual((self.root / "journal.json").read_bytes(), image)
-        self.observed(0, "original")
+        for version in (2, True, 1.0, "1"):
+            with self.subTest(version=repr(version)):
+                snapshot["version"] = version
+                publish(self.root, snapshot)
+                image = (self.root / "journal.json").read_bytes()
+                with self.assertRaisesRegex(Refusal, "Unsupported journal version"):
+                    inspect(self.root)
+                with self.assertRaisesRegex(Refusal, "Unsupported journal version"):
+                    self.send()
+                self.assertEqual((self.root / "journal.json").read_bytes(), image)
+                self.observed(0, "original")
 
     def test_cleanup_warning_preserves_receipt_and_unowned_state(self):
         """Failure to clean owned scratch leaves the known outcome and other owners intact."""
@@ -326,7 +424,7 @@ class RecoveryTests(unittest.TestCase):
         stable = self.send()
         self.assertEqual(stable["receipt"], reply["receipt"])
         self.assertNotIn("warning", stable)
-        self.assertEqual(self.target.scratch, {"other owner's stage", self.request.binding(self.caller)})
+        self.assertEqual(self.target.scratch, {"other owner's stage", self.request.binding(self.caller, self.target.enrollment)})
         self.observed(1, self.request.replacement)
 
 
