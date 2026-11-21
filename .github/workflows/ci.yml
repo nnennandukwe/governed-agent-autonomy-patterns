@@ -249,6 +249,11 @@ jobs:
             "$RUNNER_TEMP/journal-target/debug/gaap-submitted-proposal-reference" \
             "$RUNNER_TEMP/journal-evidence"
 
+      - name: Audit the journal dependency lockfile
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked --root "$RUNNER_TEMP/journal-tools"
+          "$RUNNER_TEMP/journal-tools/bin/cargo-audit" audit --file adapters/journal/Cargo.lock
+
       - name: Retain ext4 process observations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

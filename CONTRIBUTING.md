@@ -194,7 +194,7 @@ bytes outside the telemetry mapping; signed evidence verification belongs to
 
 ## Journal enrollment and lookup
 
-Run the journal crate's locked tests, formatting and Clippy checks. The required journal CI job uses an isolated ext4 mount to test process death, read-only lookup, concurrent enrollment and storage faults. It retains the platform, binary hashes and observations as the journal-process-evidence artifact. [Journal guide and qualification command](adapters/journal/README.md#reproduce-qualification)
+Run the journal crate's locked tests, formatting and Clippy checks. The required journal CI job audits the adapter's dependency lockfile and uses an isolated ext4 mount to test process death, read-only lookup, concurrent enrollment and storage faults. It retains the platform, binary hashes and observations as the journal-process-evidence artifact. [Journal guide and qualification command](adapters/journal/README.md#reproduce-qualification)
 
 ```sh
 cargo fmt --manifest-path adapters/journal/Cargo.toml --check
