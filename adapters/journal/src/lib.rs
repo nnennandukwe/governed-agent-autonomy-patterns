@@ -182,7 +182,7 @@ pub fn interpret(host: &Host, bytes: &[u8], request: &Request) -> Result<(u64, L
         || journal.profile_digest != host.slot.profile_digest
         || journal.attempts.len() > ATTEMPT_LIMIT
         || journal.generation > MAX_SAFE
-        || (journal.generation == 0 && !journal.attempts.is_empty())
+        || (journal.generation == 0) != journal.attempts.is_empty()
     {
         return Err(Error::invalid(
             "invalid journal identity, generation or capacity",

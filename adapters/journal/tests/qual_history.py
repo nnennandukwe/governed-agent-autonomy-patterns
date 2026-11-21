@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from qual_host import LIMITS, canonical, digest, identity, observe_tree, snapshot
+from qual_host import LIMITS, canonical, digest, identity, observe_tree, snapshot, write_private
 
 # Use the shipping reference's own known-good input.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples/submitted-proposal/tests"))
@@ -233,6 +233,19 @@ def exercise_histories(case, executable, evidence_dir):
     case.assertEqual(observe_tree(slot.workspace), expected_tree)
     refused = historical_attempt(slot, "refused", refused_proposal, refused_run)
     slot.configure()
+    # Retain the actual enrollment anchor while the fixture producer publishes later facts.
+    empty = slot.journal.read_bytes()
+    for generation, status, reason in [(1, "unconfirmed", "journal_ahead_of_anchor"),
+                                       (2, "invalid_store", "journal_confirmation_mismatch")]:
+        prefix = {**good, "facts": good["facts"][:generation]}
+        ahead = {**json.loads(empty), "generation": generation, "attempts": [prefix]}
+        write_private(slot.journal, canonical(ahead))
+        retained = snapshot(slot.anchor), snapshot(slot.journal)
+        failure = slot.call("lookup", "success", expected=status)
+        case.assertEqual(failure["reason"], reason)
+        case.assertNotIn("attempt", failure)
+        case.assertEqual((snapshot(slot.anchor), snapshot(slot.journal)), retained)
+        case.record(slot, "populated-generation-gap-" + str(generation), failure)
     attempts = [good, failed, refused]
     slot.install_history(attempts)
     # Preserve the actual frozen tuples, retained witness bytes and independent inode/hash observations.

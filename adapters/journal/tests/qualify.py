@@ -332,8 +332,6 @@ class JournalQualification(unittest.TestCase):
         slot.host["can_read"] = True
         slot.configure()
         for case, data, status in [
-            ("newer", canonical({**original_journal, "generation": 1}), "unconfirmed"),
-            ("gap", canonical({**original_journal, "generation": 2}), "invalid_store"),
             ("different-id", canonical({**original_journal, "store_id": "a" * 32}), "invalid_store"),
             ("malformed", b"{", "invalid_store"),
         ]:
@@ -344,6 +342,16 @@ class JournalQualification(unittest.TestCase):
                 self.assertEqual(snapshot(slot.journal), prior)
                 if case != "malformed":
                     self.record(slot, case, reply)
+        slot.install_history([], generation=1)
+        anchor = json.loads(slot.anchor.read_bytes())
+        self.assertEqual(anchor["journal_digest"], digest(slot.journal.read_bytes()))
+        retained = snapshot(slot.anchor), snapshot(slot.journal)
+        failure = slot.call("lookup", "missing", expected="invalid_store")
+        self.assertNotIn("attempt", failure)
+        slot.call("enroll", expected="invalid_store")
+        self.assertEqual((snapshot(slot.anchor), snapshot(slot.journal)), retained)
+        self.assertEqual(observe_tree(slot.workspace), initial)
+        self.record(slot, "confirmed-empty-positive-generation", failure)
         slot.journal.unlink()
         slot.call("lookup", "never", expected="invalid_store")
         slot.call("enroll", expected="invalid_store")
