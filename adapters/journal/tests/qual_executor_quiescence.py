@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import socket
 import stat
 import struct
 import subprocess
@@ -81,8 +82,9 @@ def watch_target(workspace):
         os.close(fd)
 
 
-def interrupt_at_source(lldb, debugger, case, binary, line):
-    """Run inside LLDB's native interpreter and retain evidence only after the child is reaped."""
+def interrupt_at_source(lldb, debugger, case, binary, line, relay_fd):
+    """Stop the writer in LLDB and hand its kernel identity to the outer observer."""
+    os.set_inheritable(relay_fd, False)
     root = case / "session"
     debugger.SetAsync(False)
     target = debugger.CreateTarget(str(binary))
@@ -111,6 +113,8 @@ def interrupt_at_source(lldb, debugger, case, binary, line):
             raise AssertionError("unexpected subprocess at the target rename")
         pidfd = os.pidfd_open(pid)
         try:
+            with socket.socket(fileno=relay_fd) as relay:
+                socket.send_fds(relay, [str(pid).encode()], [pidfd])
             locks = probe_locks(root, "blocked")
             stopped_file = record_file(root / "workspace/shipping.py")
             state_path = root / "operator/state.json"
@@ -126,20 +130,16 @@ def interrupt_at_source(lldb, debugger, case, binary, line):
             poller.register(pidfd, select.POLLIN)
             if not poller.poll(5000):
                 raise AssertionError(("executor didn't exit", process.GetState()))
-            # The pidfd stays bound to this invocation. Linux prints -1 once its task is reaped.
-            info = Path(f"/proc/self/fdinfo/{pidfd}")
             while True:
-                fields = dict(row.split(":", 1) for row in info.read_text().splitlines())
-                bound_pid = int(fields["Pid"])
                 terminal = process.GetState()
-                if bound_pid == -1 and terminal == lldb.eStateExited:
+                if terminal == lldb.eStateExited:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise AssertionError(("executor hasn't been reaped", bound_pid, terminal))
+                    raise AssertionError(("debugger hasn't reported executor exit", terminal))
                 time.sleep(min(0.05, remaining))
             result = {"line": line, "breakpoint_id": breakpoint.GetID(), "kernel_tasks": len(tasks),
-                      "pid": pid, "signal": "SIGKILL", "pidfd_final_pid": bound_pid,
+                      "pid": pid, "signal": "SIGKILL",
                       "debugger_state": lldb.SBDebugger.StateAsCString(terminal),
                       "debugger_exit": process.GetExitStatus(), "exit_description": process.GetExitDescription(),
                       "locks_while_stopped": locks,
@@ -178,7 +178,7 @@ def reap_debugger_children(children):
         time.sleep(0.01)
 
 
-def supervise_debugger(arguments, trace):
+def supervise_debugger(arguments, trace, relay_fd):
     """Own one debugger tree, including detached descendants that never reached a breakpoint."""
     supervisor = os.fork()
     if supervisor:
@@ -195,7 +195,7 @@ def supervise_debugger(arguments, trace):
         children.read_text()  # Require kernel child enumeration before starting LLDB.
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         try:
-            child = subprocess.Popen(arguments, stdout=trace, stderr=subprocess.STDOUT,
+            child = subprocess.Popen(arguments, stdout=trace, stderr=subprocess.STDOUT, pass_fds=(relay_fd,),
                                      start_new_session=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
             result = child.wait(timeout=45)
         finally:
@@ -210,17 +210,34 @@ def supervise_debugger(arguments, trace):
 def debugger_cut(case, binary, lldb, line, log_path):
     """Launch only this fixture under LLDB, with a deadline for the complete cut."""
     module_dir = str(Path(__file__).resolve().parent)
-    command = (f"script import sys; sys.path.insert(0, {module_dir!r}); "
-               f"import qual_executor_quiescence as q; q.interrupt_at_source(lldb, lldb.debugger, "
-               f"q.Path({str(case)!r}), q.Path({str(binary)!r}), {line})")
-    with (case / "lldb.log").open("w+b") as trace:
-        returncode = supervise_debugger([str(lldb), "--no-lldbinit", "--batch", "-o", command], trace)
+    receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    with receiver, sender, (case / "lldb.log").open("w+b") as trace:
+        command = (f"script import sys; sys.path.insert(0, {module_dir!r}); "
+                   f"import qual_executor_quiescence as q; q.interrupt_at_source(lldb, lldb.debugger, "
+                   f"q.Path({str(case)!r}), q.Path({str(binary)!r}), {line}, {sender.fileno()})")
+        arguments = [str(lldb), "--no-lldbinit", "--batch", "-o", command]
+        returncode = supervise_debugger(arguments, trace, sender.fileno())
         trace.seek(max(0, trace.seek(0, os.SEEK_END) - 8192))
         log = trace.read(8192)
         log_path.write_bytes(log)
-    if returncode or not (case / "cut.json").is_file():
-        raise AssertionError(log.decode(errors="replace")[-4000:])
-    return json.loads((case / "cut.json").read_bytes())
+        if returncode or not (case / "cut.json").is_file():
+            raise AssertionError(log.decode(errors="replace")[-4000:])
+        result = json.loads((case / "cut.json").read_bytes())
+        # LLDB can report exit before its parent reaps the task. The supervisor has now
+        # drained the debugger tree. Check the same pidfd that signalled the stopped writer.
+        receiver.setblocking(False)
+        payload, fds, flags, _ = socket.recv_fds(receiver, 32, 1)
+        try:
+            if len(fds) != 1 or flags & socket.MSG_CTRUNC or payload != str(result["pid"]).encode():
+                raise AssertionError("missing or mismatched executor pidfd")
+            info = Path(f"/proc/self/fdinfo/{fds[0]}").read_text()
+            result["pidfd_final_pid"] = int(dict(row.split(":", 1) for row in info.splitlines())["Pid"])
+            if result["pidfd_final_pid"] != -1:
+                raise AssertionError(("executor hasn't been reaped", result["pidfd_final_pid"]))
+        finally:
+            for fd in fds:
+                os.close(fd)
+        return result
 
 
 def retained_stage(workspace, initial_entries, before_rename, proposed_digest):
