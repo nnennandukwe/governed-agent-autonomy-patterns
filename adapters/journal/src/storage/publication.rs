@@ -74,7 +74,7 @@ impl SlotOperation<'_> {
         anchor: &Snapshot,
         journal: Option<&Snapshot>,
     ) -> Result<()> {
-        let v = &self.volume;
+        let volume = &self.volume;
         let (step, staging, target) = stage.names();
         let dir = if matches!(stage, Stage::Journal) {
             &self.handles.store
@@ -82,10 +82,10 @@ impl SlotOperation<'_> {
             &self.handles.control
         };
         self.recheck(anchor, journal)?;
-        point(v, step, "create")?;
+        point(volume, step, "create")?;
         let flags =
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let fd = v
+        let fd = volume
             .mutation("create_stage", || {
                 match fs::openat(dir, staging, flags, Mode::RUSR | Mode::WUSR) {
                     Ok(fd) => Ok(Some(fd)),
@@ -96,7 +96,7 @@ impl SlotOperation<'_> {
             .ok_or_else(|| Error::invalid("stage_collision"))?;
         let mut file = File::from(fd);
         let stage_metadata = || -> Result<Metadata> {
-            let owned = v.io(file.metadata(), false, "stage_metadata")?;
+            let owned = volume.io(file.metadata(), false, "stage_metadata")?;
             if !owned.is_file()
                 || owned.uid() != self.host.slot.control.uid
                 || (owned.mode() & 0o7777) & !0o600 != 0
@@ -110,18 +110,18 @@ impl SlotOperation<'_> {
             let mut owned = stage_metadata()?;
             if owned.mode() & 0o7777 != 0o600 {
                 // umask can remove owner bits. Change only the inode this writer created.
-                v.same_entry(dir, staging, &owned)?;
-                v.mutation("set_stage_mode", || {
+                volume.same_entry(dir, staging, &owned)?;
+                volume.mutation("set_stage_mode", || {
                     fs::fchmod(&file, Mode::RUSR | Mode::WUSR).map_err(Into::into)
                 })?;
                 owned = stage_metadata()?;
             }
             // Keep an independent read pin across checked writer close, rename and cleanup.
-            let staged = v
+            let staged = volume
                 .existing(dir, staging, self.host.slot.control.uid)?
                 .ok_or_else(|| Error::invalid("stage_disappeared"))?;
-            v.same_entry(dir, staging, &owned)?;
-            let reader = v.io(staged.metadata(), false, "read_pin_metadata")?;
+            volume.same_entry(dir, staging, &owned)?;
+            let reader = volume.io(staged.metadata(), false, "read_pin_metadata")?;
             if reader.dev() != owned.dev() || reader.ino() != owned.ino() {
                 return Err(Error::invalid("entry_replaced"));
             }
@@ -133,26 +133,27 @@ impl SlotOperation<'_> {
             Err(primary) => {
                 let failure = self.cleanup_failed_stage(primary, dir, staging, stage_metadata());
                 if !health_hold(&failure) {
-                    v.writeback("close_stage", || {
-                        checked_close(file.into()).map_err(Into::into)
-                    })
-                    .map_err(|close_failure| close_failure.with_warning(failure.reason))?;
+                    volume
+                        .writeback("close_stage", || {
+                            checked_close(file.into()).map_err(Into::into)
+                        })
+                        .map_err(|close_failure| close_failure.with_warning(failure.reason))?;
                 }
                 return Err(failure);
             }
         };
         let prepared = (|| {
-            point(v, step, "write")?;
+            point(volume, step, "write")?;
             #[cfg(feature = "qualification")]
             if selected(step, "write").as_deref() == Some("short") {
-                v.mutation("short_write", || file.write_all(&bytes[..bytes.len() / 2]))?;
+                volume.mutation("short_write", || file.write_all(&bytes[..bytes.len() / 2]))?;
                 return Err(Error::unavailable("incomplete_stage_write"));
             }
-            v.mutation("write_stage", || file.write_all(bytes))?;
-            point(v, step, "flush")?;
-            v.mutation("flush_stage", || file.flush())?;
-            point(v, step, "file_sync")?;
-            v.writeback("sync_stage", || file.sync_all())
+            volume.mutation("write_stage", || file.write_all(bytes))?;
+            point(volume, step, "flush")?;
+            volume.mutation("flush_stage", || file.flush())?;
+            point(volume, step, "file_sync")?;
+            volume.writeback("sync_stage", || file.sync_all())
         })();
         // The host must withdraw after a health authority failure. Dropping the descriptor
         // here releases it without attempting a fresh durable maintenance operation.
@@ -160,15 +161,15 @@ impl SlotOperation<'_> {
             return prepared;
         }
         // Linux consumes the descriptor on close, including when an earlier write failed.
-        let closed = v.writeback("close_stage", || {
+        let closed = volume.writeback("close_stage", || {
             checked_close(file.into()).map_err(Into::into)
         });
         let mut renamed = false;
         let publication = (|| {
             closed?;
             prepared?;
-            point(v, step, "close")?;
-            point(v, step, "before_rename")?;
+            point(volume, step, "close")?;
+            point(volume, step, "before_rename")?;
             self.recheck(anchor, journal)?;
             match stage {
                 Stage::Reserve => self.entries(&[])?,
@@ -178,7 +179,7 @@ impl SlotOperation<'_> {
             {
                 use std::io::Read;
                 let mut persisted = Vec::with_capacity(bytes.len());
-                v.io(
+                volume.io(
                     (&staged)
                         .take(bytes.len() as u64 + 1)
                         .read_to_end(&mut persisted),
@@ -189,14 +190,14 @@ impl SlotOperation<'_> {
                     return Err(Error::invalid("staged_bytes_changed"));
                 }
             }
-            v.same_entry(dir, staging, &owned)?;
+            volume.same_entry(dir, staging, &owned)?;
             // No other entry can be adopted on the initial publication, even after an unexpected creation.
             let flags = if matches!(stage, Stage::Journal) {
                 RenameFlags::NOREPLACE
             } else {
                 RenameFlags::empty()
             };
-            let published = v.mutation("publish_stage", || {
+            let published = volume.mutation("publish_stage", || {
                 match fs::renameat_with(dir, staging, dir, target, flags) {
                     Ok(()) => Ok(true),
                     Err(rustix::io::Errno::EXIST) => Ok(false),
@@ -207,10 +208,10 @@ impl SlotOperation<'_> {
                 return Err(Error::invalid("journal_target_exists"));
             }
             renamed = true;
-            point(v, step, "after_rename")?;
-            point(v, step, "before_dir_sync")?;
-            v.writeback("sync_publication_directory", || dir.sync_all())?;
-            point(v, step, "after_dir_sync")
+            point(volume, step, "after_rename")?;
+            point(volume, step, "before_dir_sync")?;
+            volume.writeback("sync_publication_directory", || dir.sync_all())?;
+            point(volume, step, "after_dir_sync")
         })();
         match publication {
             Err(primary) if !renamed && !health_hold(&primary) => {
@@ -227,16 +228,16 @@ impl SlotOperation<'_> {
         staging: &str,
         pinned_metadata: Result<Metadata>,
     ) -> Error {
-        let v = &self.volume;
+        let volume = &self.volume;
         let cleanup = (|| {
             let owned = pinned_metadata?;
-            self.handles.recheck(self.host, v)?;
-            v.same_entry(dir, staging, &owned)?;
+            self.handles.recheck(self.host, volume)?;
+            volume.same_entry(dir, staging, &owned)?;
             #[cfg(feature = "qualification")]
             if std::env::var_os("GAAP_JOURNAL_CLEANUP_FAIL").is_some() {
                 return Err(Error::unavailable("remove_owned_stage"));
             }
-            v.mutation("remove_owned_stage", || {
+            volume.mutation("remove_owned_stage", || {
                 fs::unlinkat(dir, staging, fs::AtFlags::empty()).map_err(Into::into)
             })
         })();
