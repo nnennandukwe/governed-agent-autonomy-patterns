@@ -68,7 +68,7 @@ Bind every observation to the store, run, attempt, effect/invocation, canonical 
 | The invocation began and a trusted observation proves its specific failure before rename, termination and zero committed mutations. | Known failed with no committed mutation. A failure after a confirmed write preserves that write. |
 | Evidence is missing, unauthenticated, contradictory, doesn't cover the full interval, or leaves an executor able to commit. | Unresolved. Report the reason, preserve prior facts and refuse fresh dispatch for this workspace. |
 
-Reconciliation appends an effect ruling. It never reopens a sealed receipt, completes an unsealed run, grants an approval, or dispatches work. Repeating identical evidence returns the existing ruling. A conflicting claim requires separate investigation and can't overwrite history.
+Reconciliation appends an effect ruling. It never reopens a sealed receipt, completes an unsealed run, grants an approval, or dispatches work. Repeating identical evidence returns the existing ruling. An unauthenticated claim is refused. If a second validated witness contradicts an admitted ruling, retain both observations, flag the dispute and hold further dispatch for investigation. Reopening the journal preserves that hold. This profile has no operation to discard either observation or clear the dispute.
 
 ## Fresh attempts and approval
 

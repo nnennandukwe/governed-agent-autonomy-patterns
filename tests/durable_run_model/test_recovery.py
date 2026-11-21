@@ -273,6 +273,30 @@ class RecoveryTests(unittest.TestCase):
             self.host.submit(self.caller, fresh)
         self.observed(0, "original")
 
+    def test_conflicting_trusted_witnesses_hold_the_workspace(self):
+        """Keep both observations and the sealed receipt when a trusted source contradicts itself."""
+        self.prepare()
+        receipt = self.send(script="unknown_report")["receipt"]
+        binding = self.request.binding(self.caller, self.target.enrollment)
+        args = ("host-reconciler", self.caller, self.request)
+        original = self.target.fence(binding)
+        prior = self.host.admit(*args, original)
+        contrary = {**original, "outcome": "failed", "output_subject": None}
+        self.target.witnesses[binding] = contrary
+        for _ in range(2):
+            with self.assertRaisesRegex(Refusal, "Conflicting evidence"):
+                self.host.admit(*args, contrary)
+        self.host = Host(self.root, self.target)
+        saved = self.send()
+        self.assertEqual(saved["receipt"], receipt)
+        self.assertEqual(saved["ruling"], prior["ruling"])
+        self.assertEqual(saved["dispute"], {"actor": "host-reconciler", **contrary})
+        fresh = self.fresh("two")
+        self.host.grant(self.caller, fresh)
+        with self.assertRaisesRegex(Refusal, "Workspace unresolved"):
+            self.host.submit(self.caller, fresh)
+        self.observed(1, self.request.replacement)
+
     def test_failed_sealed_receipt_survives_later_ruling(self):
         """A later positive witness can explain an unknown effect in a sealed failed run."""
         self.prepare()
@@ -392,6 +416,69 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(inspect(self.root)["records"][0], sealed)
         self.assertEqual((self.root / "journal.json").read_bytes(), image)
         self.observed(1, fresh.replacement)
+
+    def test_malformed_binding_refuses_first_admission(self):
+        """An invalid caller or request can't publish an unreadable intent or change the target."""
+        self.prepare()
+        path = self.root / "journal.json"
+        intact = path.read_bytes()
+        for caller, request in [
+            (self.caller, replace(self.request, key="")),
+            (self.caller, replace(self.request, run=1)),
+            ("", self.request),
+        ]:
+            with self.subTest(caller=caller, key=request.key, run=request.run):
+                self.host.grant(caller, request)
+                with self.assertRaisesRegex(Refusal, "canonical binding"):
+                    self.host.submit(caller, request)
+                self.assertEqual(path.read_bytes(), intact)
+                self.assertEqual(inspect(self.root)["records"], [])
+                self.observed(0, "original")
+        self.host.grant(self.caller, self.request)
+        self.assertEqual(self.send()["receipt"]["status"], "completed")
+
+    def test_damaged_journal_refuses_history_and_fresh_dispatch(self):
+        """Keep the workspace closed when a surviving dispatch generation is damaged."""
+        from recovery_model import journal_bytes
+
+        self.prepare()
+        with self.assertRaises(Cut):
+            self.send(at=stop_at("after_effect"))
+        path = self.root / "journal.json"
+        intact = inspect(self.root)
+        fresh = self.fresh("two")
+        self.host.grant(self.caller, fresh)
+        erased = json.loads(path.read_text(encoding="utf-8"))
+        erased["records"] = []
+        bad_receipt = {"effect": "unknown", "status": "completed", "reason": "verified"}
+        cases = {
+            "checksum after erasing history": json.dumps(erased, separators=(",", ":"), sort_keys=True),
+            "malformed JSON": "{",
+            "wrong enrollment": journal_bytes({**intact, "enrollment": {}}),
+            "duplicate identity": journal_bytes({**intact, "records": intact["records"] * 2}),
+        }
+        for label, changes in [
+            ("unknown disposition", {"effect": "damaged"}),
+            ("impossible dispatch", {"effect": "failed"}),
+            ("unknown stage", {"stage": "resumed"}),
+            ("mismatched caller key", {"key": fresh.key}),
+            ("missing attempt binding", {"binding": "{}"}),
+            ("malformed reservation", {"reserved_dispatches": True}),
+            ("premature verdict", {"verification": "passed"}),
+            ("invented completion", {"stage": "published", "receipt": bad_receipt}),
+            ("unsupported ruling", {"ruling": {}}),
+        ]:
+            tampered = {**intact["records"][0], **changes}
+            cases[label] = journal_bytes({**intact, "records": [tampered]})
+        for label, image in cases.items():
+            with self.subTest(label=label):
+                path.write_text(image, encoding="utf-8")
+                with self.assertRaises(Refusal):
+                    inspect(self.root)
+                with self.assertRaises(Refusal):
+                    self.host.submit(self.caller, fresh)
+                self.assertEqual(path.read_text(encoding="utf-8"), image)
+                self.observed(1, self.request.replacement)
 
     def test_unsupported_schema_refuses_read_and_dispatch(self):
         """Refuse interpretation or replacement of an unsupported saved generation."""

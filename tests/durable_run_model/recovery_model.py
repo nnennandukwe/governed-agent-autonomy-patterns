@@ -102,25 +102,138 @@ class Target:
             return self.witnesses[binding].copy()
 
 
+def require_record(condition, field):
+    """Reject damaged fixture state before any lookup or dispatch decision."""
+    if not condition:
+        raise Refusal(f"Invalid journal {field}; preserve the store")
+
+
+def validate_ruling(ruling, record, enrollment, output):
+    """Check the saved reconciliation decision against its invocation and expected output."""
+    require_record(isinstance(ruling, dict) and set(ruling) == {
+        "actor", "binding", "store_id", "target_id", "outcome", "output_subject"
+    }, "ruling fields")
+    require_record(record["effect"] == "unknown" and ruling["actor"] == "host-reconciler"
+                   and ruling["binding"] == record["binding"]
+                   and all(ruling[key] == value for key, value in enrollment.items()), "ruling binding")
+    outcome = ruling["outcome"]
+    require_record(outcome in ("executed", "failed", "not_executed") and
+                   ruling["output_subject"] == (output if outcome == "executed" else None), "ruling outcome")
+
+
+def validate_receipt(record):
+    """Require receipt status, reason and effect to describe a reachable terminal decision."""
+    receipt = record["receipt"]
+    if record["stage"] != "published":
+        require_record(receipt is None, "unpublished receipt")
+        return
+    effect, verdict = record["effect"], record["verification"]
+    require_record(isinstance(receipt, dict) and set(receipt) == {"effect", "status", "reason"}
+                   and receipt["effect"] == effect, "published receipt")
+    status, reason = receipt["status"], receipt["reason"]
+    require_record(isinstance(reason, str) and isinstance(status, str), "receipt fields")
+    allowed = {
+        "completed": effect == "executed" and verdict == "passed" and reason == "verified",
+        "failed": record["reserved_dispatches"] == 1 and verdict is None and reason == ("unknown_outcome" if effect == "unknown"
+                                                 else "executor_failure"),
+        "interrupted": effect in ("executed", "not_executed") and verdict is None and reason == "cancelled",
+        "blocked": ((effect == "not_executed" and (reason.startswith("authority_") or
+                     reason in ("configuration_drift", "stale_subject"))) or
+                    (verdict, reason) in (("failed", "verification_failed"), ("passed", "stale_verification")))
+    }
+    require_record(allowed.get(status, False), "receipt outcome")
+
+
+def validate_record(record, enrollment):
+    """Check one miniature record and return its identity claims for cross-record checks."""
+    fields = {"caller", "key", "binding", "stage", "effect", "observed_subject", "verified_subject",
+              "verification", "receipt", "reserved_dispatches", "ruling"}
+    require_record(isinstance(record, dict) and set(record) - {"dispute"} == fields, "record fields")
+    identity = json.loads(record["binding"])
+    request = Submission(**{key: identity[key] for key in Submission.__dataclass_fields__})
+    require_record(all(isinstance(value, str) for value in identity.values()) and
+                   all(value for key, value in identity.items() if key != "replacement") and
+                   record["key"] == request.key and record["caller"] == identity["caller"] and
+                   record["binding"] == request.binding(record["caller"], enrollment), "canonical binding")
+
+    stage, effect, verdict = record["stage"], record["effect"], record["verification"]
+    allowed_effects = {
+        "intent": ("not_executed",), "dispatch": ("unknown",),
+        "observed": ("not_executed", "failed", "executed"), "verified": ("executed",),
+        "published": ("not_executed", "failed", "executed", "unknown")
+    }
+    require_record(effect in allowed_effects.get(stage, ()), "stage and effect")
+    reserved = record["reserved_dispatches"]
+    require_record(type(reserved) is int and reserved in (0, 1) and
+                   (stage == "published" or reserved == int(stage != "intent")) and
+                   (reserved == 1 or effect == "not_executed"), "dispatch reservation")
+    output = digest(request.replacement)
+    require_record(record["observed_subject"] == (output if effect == "executed" else None),
+                   "observed output")
+    if verdict is None:
+        require_record(stage != "verified" and record["verified_subject"] is None, "absent verdict")
+    else:
+        subject = record["verified_subject"]
+        require_record(stage in ("verified", "published") and effect == "executed" and
+                       verdict in ("passed", "failed") and isinstance(subject, str) and
+                       len(subject) == 64 and all(char in "0123456789abcdef" for char in subject)
+                       and (verdict != "passed" or subject == output), "verification")
+
+    validate_receipt(record)
+
+    ruling, dispute = record["ruling"], record.get("dispute")
+    if ruling is not None:
+        validate_ruling(ruling, record, enrollment, output)
+    if "dispute" in record:
+        require_record(ruling is not None, "dispute without ruling")
+        validate_ruling(dispute, record, enrollment, output)
+        require_record(ruling["outcome"] != dispute["outcome"], "conflicting evidence")
+    claims = {(field, identity[field]) for field in ("request_id", "run", "attempt", "effect", "authority")}
+    claims.add(("submission", record["caller"], record["key"]))
+    return claims
+
+
+def journal_bytes(snapshot):
+    """Bind the fixture generation to its bytes; this unkeyed checksum detects accidental damage."""
+    return encode({**snapshot, "checksum": digest(encode(snapshot))})
+
+
 def initialize(root, target):
     """Create a known empty fixture journal; opening an existing host never initializes it."""
     with (root / "journal.json").open("x", encoding="utf-8") as stream:
-        json.dump({"version": 1, "enrollment": target.enrollment, "records": []}, stream)
+        stream.write(journal_bytes({"version": 1, "enrollment": target.enrollment, "records": []}))
     (root / "lock").touch(exist_ok=False)
 
 
 def inspect(root):
-    """Read one published generation without acquiring execution authority or doing cleanup."""
-    snapshot = json.loads((root / "journal.json").read_text(encoding="utf-8"))
-    if type(snapshot["version"]) is not int or snapshot["version"] != 1:
-        raise Refusal("Unsupported journal version; preserve the store")
-    return snapshot
+    """Read and validate a complete published generation without acquiring execution authority."""
+    try:
+        raw = (root / "journal.json").read_text(encoding="utf-8")
+        snapshot = json.loads(raw)
+        require_record(isinstance(snapshot, dict), "format")
+        if type(snapshot.get("version")) is not int or snapshot["version"] != 1:
+            raise Refusal("Unsupported journal version; preserve the store")
+        require_record(set(snapshot) == {"version", "enrollment", "records", "checksum"}, "format")
+        del snapshot["checksum"]
+        require_record(raw == journal_bytes(snapshot), "checksum or encoding")
+        enrollment = snapshot["enrollment"]
+        require_record(isinstance(enrollment, dict) and set(enrollment) == {"store_id", "target_id"}
+                       and all(isinstance(value, str) and value for value in enrollment.values()), "enrollment")
+        require_record(isinstance(snapshot["records"], list), "record list")
+        seen = set()
+        for record in snapshot["records"]:
+            claims = validate_record(record, enrollment)
+            require_record(seen.isdisjoint(claims), "duplicate identity")
+            seen.update(claims)
+        return snapshot
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise Refusal("Unreadable or malformed journal; preserve the store") from error
 
 
 def publish(root, snapshot, *, receipt_cut=None):
     """Replace a fixture snapshot as a unit; the cut model assumes completed writes survive."""
     staged = root / "journal.next"
-    staged.write_text(encode(snapshot), encoding="utf-8")
+    staged.write_text(journal_bytes(snapshot), encoding="utf-8")
     if receipt_cut is not None:
         receipt_cut("during_receipt")
     staged.replace(root / "journal.json")
@@ -132,7 +245,7 @@ def uninterrupted(point):
 
 def unresolved(record):
     """Check whether this workspace still needs an independently admitted ruling."""
-    return record["effect"] == "unknown" and record["ruling"] is None
+    return record["effect"] == "unknown" and (record["ruling"] is None or "dispute" in record)
 
 
 class Host:
@@ -204,6 +317,7 @@ class Host:
                           effect="not_executed", observed_subject=None, verified_subject=None,
                           verification=None, receipt=None,
                           reserved_dispatches=0, ruling=None)
+            validate_record(record, snapshot["enrollment"])
             snapshot["records"].append(record)
             publish(self.root, snapshot)
             at("before_dispatch")
@@ -294,7 +408,14 @@ class Host:
                 raise Refusal("Only an unresolved dispatch can receive evidence")
             if not self.valid_witness(witness, binding, request):
                 raise Refusal("Supply a final independent witness for this invocation")
+            if "dispute" in record:
+                raise Refusal("Conflicting evidence; preserve the store for investigation")
+            ruling = {"actor": actor, **witness}
             if record["ruling"] is None:
-                record["ruling"] = {"actor": actor, **witness}
+                record["ruling"] = ruling
                 publish(self.root, snapshot)
+            elif ruling != record["ruling"]:
+                record["dispute"] = ruling
+                publish(self.root, snapshot)
+                raise Refusal("Conflicting evidence; preserve the store for investigation")
             return record
