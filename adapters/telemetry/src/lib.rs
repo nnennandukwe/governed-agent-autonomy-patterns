@@ -229,12 +229,19 @@ pub fn project(
         attribute(
             "gaap.run.reason",
             match body.terminal_reason.as_str() {
-                "verification.stale_subject" => "verification.stale_subject",
-                "workflow.completion_authorized" => "workflow.completion_authorized",
-                "permission.policy_requires_approval" => "permission.policy_requires_approval",
-                "permission.policy_denied" => "permission.policy_denied",
-                "permission.denied" => "permission.denied",
-                "runtime.interrupted" => "runtime.interrupted",
+                code @ ("permission.dangerous_requires_approval"
+                | "permission.denied"
+                | "permission.policy_denied"
+                | "permission.policy_requires_approval"
+                | "permission.unknown_action"
+                | "permission.wrapper_requires_approval"
+                | "protected_effect.failed"
+                | "protected_effect.interrupted"
+                | "protected_effect.unknown_outcome"
+                | "runtime.interrupted"
+                | "tool_trust.approval_required"
+                | "verification.stale_subject"
+                | "workflow.completion_authorized") => code,
                 _ => "other_omitted",
             },
         ),

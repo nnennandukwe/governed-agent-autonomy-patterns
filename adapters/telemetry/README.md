@@ -108,12 +108,13 @@ and native evidence bytes keep their existing versions and meaning.
 | Usage | Ledger events retain elapsed milliseconds and tool-call counts. Model token/cost values are omitted; `gaap.usage.model_scope=unavailable` preserves the absence of a complete model-usage observation. |
 | Protected Effect Results | Child spans retain exact decision and execution-status enums, result/request/capability/tool-schema/sandbox-profile digests when present. |
 
-Only allowlisted terminal reason codes are emitted; other free-text reasons
-become `other_omitted`. Stale verification remains explicitly identified by
-`verification.stale_subject`. Executed-but-unverified work remains an executed
-effect under its actual non-completed run status. No generic success/error
-translation flattens these outcomes: OTLP status remains UNSET (`0`), while
-`gaap.*` fields retain their separate meanings.
+The run span's `gaap.run.reason` carries an exact match from a fixed list.
+Operators can identify unknown actions, dangerous actions that need approval,
+wrapper chains that need approval and tools that lack approval. The list also
+covers failed, interrupted and unknown protected effects and stale verification.
+Free text and unlisted codes become `other_omitted`. Executed-but-unverified
+work retains its executed effect status and the run's actual terminal status.
+The OTLP status stays UNSET (`0`).
 
 The current ledger has neither agent-turn boundaries nor event wall-clock
 measurements. Turn/model spans and runtime latency metrics are deliberately

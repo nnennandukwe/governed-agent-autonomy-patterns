@@ -222,13 +222,40 @@ impl VerifierPort for Verifier {
         })
     }
 }
-fn run(scenario: Scenario) -> (AgentRunExecution, Vec<String>) {
+fn fixture_request() -> AgentRunRequest {
     let mut request: AgentRunRequest = serde_json::from_str(include_str!(
         "../../../examples/contracts/v0.1.0/agent-run-request.json"
     ))
     .unwrap();
     request.task.instructions = "secret prompt and repository contents".into();
     request.run_id = "/secret/run?token=secret".into();
+    request
+}
+
+fn permission(policy_decision: Option<PolicyDecision>) -> PermissionPolicy {
+    PermissionPolicy {
+        policy_decision,
+        risk_tags: vec![],
+        wrapper_chain: vec![],
+        approvals: vec![],
+    }
+}
+
+fn run(scenario: Scenario) -> (AgentRunExecution, Vec<String>) {
+    let policy = match scenario {
+        Scenario::Denied => PolicyDecision::Deny,
+        Scenario::Ask => PolicyDecision::Ask,
+        _ => PolicyDecision::Allow,
+    };
+    run_with_policy(scenario, permission(Some(policy)), true)
+}
+
+fn run_with_policy(
+    scenario: Scenario,
+    permission: PermissionPolicy,
+    trust_capability: bool,
+) -> (AgentRunExecution, Vec<String>) {
+    let request = fixture_request();
     let support = ContractSupport::new(request.policies.clone());
     let mut effect: ProtectedEffectRequest = serde_json::from_str(include_str!(
         "../../../examples/contracts/protected-effect/v0.1.0/protected-effect-request.json"
@@ -237,20 +264,15 @@ fn run(scenario: Scenario) -> (AgentRunExecution, Vec<String>) {
     effect.run_id = request.run_id.clone();
     effect.agent_run_request_digest = validate_request(&request, &support).unwrap();
     let calls = Rc::new(RefCell::new(Vec::new()));
-    let policy = match scenario {
-        Scenario::Denied => PolicyDecision::Deny,
-        Scenario::Ask => PolicyDecision::Ask,
-        _ => PolicyDecision::Allow,
+    let trusted = if trust_capability {
+        vec![request.requested_capability.clone()]
+    } else {
+        vec![]
     };
     let runtime_support = RuntimeSupport::new(
         support.clone(),
-        vec![request.requested_capability.clone()],
-        PermissionPolicy {
-            policy_decision: Some(policy),
-            risk_tags: vec![],
-            wrapper_chain: vec![],
-            approvals: vec![],
-        },
+        trusted,
+        permission,
         EffectUsage {
             cost_micros: 10,
             elapsed_ms: 1,
@@ -384,6 +406,77 @@ fn real_engine_outcomes_project_without_collapsing_authority_execution_or_verifi
             ),
         }
     }
+}
+
+#[test]
+fn sealed_terminal_reasons_keep_fixed_codes_and_omit_private_text() {
+    let allow = permission(Some(PolicyDecision::Allow));
+    let cases = [
+        (permission(None), true, "permission.unknown_action"),
+        (
+            PermissionPolicy {
+                risk_tags: vec!["destructive_flag".into()],
+                ..allow.clone()
+            },
+            true,
+            "permission.dangerous_requires_approval",
+        ),
+        (
+            PermissionPolicy {
+                wrapper_chain: vec!["fixture-wrapper".into()],
+                ..allow.clone()
+            },
+            true,
+            "permission.wrapper_requires_approval",
+        ),
+        (allow, false, "tool_trust.approval_required"),
+    ];
+    let assert_projection = |execution: &AgentRunExecution, expected: &str| {
+        let doc = document(execution);
+        let run = &doc["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert_eq!(
+            attributes(&run["attributes"])["gaap.run.reason"]["stringValue"],
+            expected
+        );
+        assert!(!doc.to_string().contains("secret"));
+    };
+    for (permission, trusted, expected) in cases {
+        let (execution, calls) = run_with_policy(Scenario::Completed, permission, trusted);
+        assert!(calls.is_empty());
+        assert_eq!(
+            execution.receipt.body.terminal_status,
+            AgentRunStatus::Blocked
+        );
+        assert_eq!(execution.receipt.body.terminal_reason, expected);
+        assert_projection(&execution, expected);
+    }
+    for (scenario, expected) in [
+        (Scenario::Failed, "protected_effect.failed"),
+        (Scenario::Interrupted, "protected_effect.interrupted"),
+        (Scenario::Unknown, "protected_effect.unknown_outcome"),
+    ] {
+        let (execution, _) = run(scenario);
+        assert_eq!(execution.receipt.body.terminal_reason, expected);
+        assert_projection(&execution, expected);
+    }
+    let (mut execution, _) = run(Scenario::Unverified);
+    assert_eq!(
+        execution.receipt.body.terminal_reason,
+        "verifier.failed: secret verifier output"
+    );
+    assert_projection(&execution, "other_omitted");
+
+    // Seal a valid fixture with free text that starts with an allowlisted code.
+    let request = fixture_request();
+    let support = ContractSupport::new(request.policies.clone());
+    let mut body = execution.receipt.body;
+    body.terminal_reason = "permission.unknown_action: secret request".into();
+    let Some(RunEvent::StatusTransition { reason, .. }) = body.events.last_mut() else {
+        panic!("the fixture must end in a terminal transition");
+    };
+    *reason = Some(body.terminal_reason.clone());
+    execution.receipt = seal_terminal_receipt(&request, &support, body).unwrap();
+    assert_projection(&execution, "other_omitted");
 }
 
 #[test]
