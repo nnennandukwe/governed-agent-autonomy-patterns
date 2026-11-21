@@ -4,6 +4,8 @@ GAAP can export a trace after it seals an Agent Run. An operator investigating a
 
 **Recommendation. Keep the native evidence inspector and defer adopting a viewer.** Both viewers made it easier to find three blocked runs among eight. The inspector supplied the applied diff, all 41 verifier cases and the receipt validation result for the paired session. For an occasional trace investigation, Jaeger offered the smaller measured process and a configurable evidence link. Aspire offered a tested persistence option when keeping trace history across restarts was the priority. GAAP can use either through the same OTLP endpoint. [Jaeger results](viewer-evaluation/jaeger/README.md) · [Aspire results](viewer-evaluation/aspire/README.md) · [Native evidence](viewer-evaluation/evidence/README.md)
 
+Issue #33 reserves Grafana and Tempo for a workload that needs broader operational dashboards or shared persistent history. Aspire retained this local trace set across restarts with its built-in Resume setting. This experiment found no additional storage or dashboard requirement to justify provisioning the larger stack. Grafana and Tempo received no hands-on compatibility or resource measurement here. [Evaluation scope](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/33)
+
 ## What the operator saw
 
 The three blocked runs had different outcomes. GAAP denied one effect before dispatch, asked for authority on another, and executed the third. In that third run the verifier reported a pass against a different subject digest. GAAP sealed the run as blocked with `verification.stale_subject`. The trace contains the verifier's subject and the resulting subject, so an operator can check the mismatch.
@@ -18,6 +20,8 @@ The three blocked runs had different outcomes. GAAP denied one effect before dis
 | Unknown effect | failed | allow | unknown_outcome | Absent |
 | Stale verification | blocked | allow | executed | Pass on a different subject |
 | Executed without verification | failed | allow | executed | Absent |
+
+The eight recorder scenarios use deterministic inputs. Some subject, capability, evidence and executor digests come from test fixtures, including repeated hex characters. The engine computes the receipt and effect-result digests over those records. The stale case checks a deliberate mismatch between fixture subject values. The ninth coding session supplies the separate native-file and receipt lookup evidence. [Recorder fixture source](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/blob/338298787d3277d526847a62920da2ec3cd94880/adapters/telemetry/tests/integration.rs#L112)
 
 All eight root spans omit a parent and upstream ThreadLoop identities. The paired session contains four explicitly supplied, hashed Workflow Run, Action Request, Execution Claim and Attempt identities. The receipt digest connects the run to its native record. Each effect has a stable span ID, a hashed effect ID and request and result digests. Complete model usage stays unavailable in every case. These are recorded fixtures with synthetic host correlation. [Eight OTLP requests](viewer-evaluation/recorded-runs.ndjson) · [Paired request](viewer-evaluation/paired.json)
 
@@ -72,14 +76,9 @@ cargo test --manifest-path adapters/telemetry/Cargo.toml --locked --test integra
   print_sanitized_recorded_fixtures -- --ignored --nocapture
 ```
 
-With the chosen viewer running locally, set `viewer_port` to its OTLP/HTTP port. This posts exactly the eight archived requests. Read each acknowledgement body for rejected spans or warnings. A 200 alone can't confirm full delivery. The separately recorded ninth request is in `paired.json`.
+With the chosen viewer running locally, use the measured OTLP/HTTP port. The command posts the eight archived requests and checks each HTTP status and OTLP acknowledgement. A partial rejection ends the replay with an error. The separately recorded ninth request is in `paired.json`.
 
 ```sh
-viewer_port=19473  # Jaeger. Use 19572 for the measured Aspire profile.
-jq -c .request docs/research/viewer-evaluation/recorded-runs.ndjson |
-  while IFS= read -r payload; do
-    printf '%s\n' "$payload" | curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-      -H 'Content-Type: application/json' --data-binary @- \
-      "http://127.0.0.1:$viewer_port/v1/traces" || exit 1
-  done
+python3 docs/research/viewer-evaluation/jaeger/readback.py --post-eight 19473
+# Use --post-eight 19572 for the measured Aspire profile.
 ```

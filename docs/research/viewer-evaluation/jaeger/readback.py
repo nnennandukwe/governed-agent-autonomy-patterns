@@ -2,10 +2,11 @@
 
 import argparse
 import json
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPConnection
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import ProxyHandler, Request, build_opener
 
 
 def attributes(record):
@@ -27,12 +28,15 @@ def check_fields(source, returned):
 
 def query(path, params=None):
     """Read a JSON response from the loopback Jaeger v3 query endpoint."""
-    url = f"http://127.0.0.1:19471/api/v3/{path}"
+    target = f"/api/v3/{path}"
     if params:
-        url += "?" + urlencode(params)
-    client = build_opener(ProxyHandler({}))
-    with client.open(url, timeout=5) as response:
-        return json.load(response)
+        target += "?" + urlencode(params)
+    with closing(HTTPConnection("127.0.0.1", 19471, timeout=5)) as connection:
+        connection.request("GET", target)
+        with connection.getresponse() as response:
+            if response.status != 200:
+                raise ValueError(f"Jaeger query returned HTTP {response.status}")
+            return json.load(response)
 
 
 def reject_nonfinite(token):
@@ -60,6 +64,15 @@ def check_acknowledgement(response):
     zero = count is None or (type(count) is int and count == 0) or count == "0"
     if not zero or partial.get("errorMessage") not in (None, ""):
         raise ValueError("OTLP receiver didn't confirm full acceptance")
+
+
+def post_fixture(payload, port):
+    """Post one projection directly to a loopback viewer and verify its reply."""
+    with closing(HTTPConnection("127.0.0.1", port, timeout=5)) as connection:
+        body = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+        connection.request("POST", "/v1/traces", body=body, headers={"Content-Type": "application/json"})
+        with connection.getresponse() as response:
+            check_acknowledgement(response)
 
 
 def inspect_case(scenario, payload):
@@ -127,22 +140,28 @@ def inspect_case(scenario, payload):
 def main():
     """Optionally replay the fixtures, verify their traces and check attribute searches."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--replay", action="store_true", help="Post the nine fixtures before checking them")
-    replay = parser.parse_args().replay
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--replay", action="store_true", help="Post the nine fixtures before checking Jaeger")
+    modes.add_argument("--post-eight", type=int, choices=(19473, 19572),
+                       help="Post only the eight archived runs to this loopback OTLP/HTTP port")
+    args = parser.parse_args()
     directory = Path(__file__).resolve().parents[1]
     fixtures = [json.loads(line) for line in (directory / "recorded-runs.ndjson").read_text().splitlines()]
+    if len(fixtures) != 8:
+        raise ValueError("Expected eight archived runs")
+    if args.post_eight:
+        for fixture in fixtures:
+            post_fixture(fixture["request"], args.post_eight)
+        print(f"Received eight full-success acknowledgements from 127.0.0.1:{args.post_eight}")
+        return
     pair = json.loads((directory / "paired.json").read_text())
     fixtures.append({"scenario": "Paired", "request": pair})
     checked = []
     times = []
-    client = build_opener(ProxyHandler({}))
     for fixture in fixtures:
         payload = fixture["request"]
-        if replay:
-            request = Request("http://127.0.0.1:19473/v1/traces", data=json.dumps(payload).encode(),
-                              headers={"Content-Type": "application/json"})
-            with client.open(request, timeout=5) as response:
-                check_acknowledgement(response)
+        if args.replay:
+            post_fixture(payload, 19473)
         checked.append(inspect_case(fixture["scenario"], payload))
         start = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["startTimeUnixNano"]
         times.append(datetime.fromtimestamp(int(start) / 1e9, timezone.utc))
