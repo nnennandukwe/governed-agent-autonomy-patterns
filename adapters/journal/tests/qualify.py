@@ -74,6 +74,45 @@ class JournalQualification(unittest.TestCase):
                 index += 1
         self.record(slot, "enroll-repeat-strace", reply)
 
+    def test_enrollment_under_restrictive_caller_umask(self):
+        """Publish private state under a restrictive child umask and reopen without scratch."""
+        slot = self.slot()
+        for directory in (slot.control, slot.store, slot.workspace):
+            self.assertEqual(identity(directory)["mode"], 0o700)
+        for path in (slot.config, slot.health, slot.lock, slot.anchor):
+            self.assertEqual(identity(path)["mode"], 0o600)
+        workspace = observe_tree(slot.workspace)
+        provisioned = observe_tree(slot.control), observe_tree(slot.store)
+        trace = SETTINGS.evidence / "reserve-stage-fchmod-eperm.log"
+        # Open the trace before passing the restrictive mask to strace and its child.
+        write_private(trace, b"")
+        failure = slot.call("enroll", expected="unavailable", child_umask=0o777,
+                            trace=trace, fail_stage_chmod=True)
+        self.assertTrue(any("fchmod(" in line and f"<{slot.control}/.gaap-stage-reserve>" in line
+                            and "EPERM" in line and "INJECTED" in line
+                            for line in trace.read_text().splitlines()))
+        self.assertEqual(failure["reason"], "set_stage_mode")
+        self.assertNotIn("warning", failure)
+        self.assertEqual(slot.health.read_bytes(), b"0")
+        self.assertEqual({p.name for p in slot.control.iterdir()}, {"anchor.json", "lock"})
+        self.assertEqual((observe_tree(slot.control), observe_tree(slot.store)), provisioned)
+        self.assertEqual(observe_tree(slot.workspace), workspace)
+        slot.call("lookup", "never", expected="not_enrolled")
+        self.record(slot, "reserve-stage-fchmod-eperm", failure)
+        reply = slot.call("enroll", expected="enrolled", child_umask=0o777)
+        self.assertEqual(reply["generation"], 0)
+        self.assertEqual({p.name for p in slot.control.iterdir()}, {"anchor.json", "lock"})
+        self.assertEqual({p.name for p in slot.store.iterdir()}, {"journal.json"})
+        for path in (slot.anchor, slot.journal, slot.lock):
+            self.assertEqual(identity(path)["mode"], 0o600)
+        retained = snapshot(slot.anchor), snapshot(slot.journal)
+        self.assertEqual(slot.call("enroll", expected="enrolled", child_umask=0o777), reply)
+        fresh = slot.call("lookup", "never", expected="absent")
+        self.assertEqual(fresh["generation"], 0)
+        self.assertEqual((snapshot(slot.anchor), snapshot(slot.journal)), retained)
+        self.assertEqual(observe_tree(slot.workspace), workspace)
+        self.record(slot, "restrictive-caller-umask", {"enrollment": reply, "lookup": fresh})
+
     def test_host_descriptor_access_and_read_only_lookup(self):
         """Reject invalid host descriptors and inspect the production reader's file opens."""
         slot = self.slot()

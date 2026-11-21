@@ -3,8 +3,9 @@ use super::linux::{Volume, checked_close};
 use super::{ANCHOR, JOURNAL, SlotOperation, Snapshot};
 use crate::{Error, Result};
 use rustix::fs::{self, Mode, OFlags, RenameFlags};
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 
 #[derive(Clone, Copy)]
 pub(super) enum Stage {
@@ -94,20 +95,53 @@ impl SlotOperation<'_> {
             })?
             .ok_or_else(|| Error::invalid("stage_collision"))?;
         let mut file = File::from(fd);
-        let owned = v.io(file.metadata(), false, "stage_metadata")?;
-        // Pin the staging inode through checked close, rename and conditional cleanup.
-        let staged = v
-            .existing(dir, staging, self.host.slot.control.uid)?
-            .ok_or_else(|| Error::invalid("stage_disappeared"))?;
-        v.same_entry(dir, staging, &owned)?;
-        let prepared = (|| {
-            use std::os::unix::fs::MetadataExt;
-            if owned.uid() != self.host.slot.control.uid
-                || owned.mode() & 0o7777 != 0o600
+        let stage_metadata = || -> Result<Metadata> {
+            let owned = v.io(file.metadata(), false, "stage_metadata")?;
+            if !owned.is_file()
+                || owned.uid() != self.host.slot.control.uid
+                || (owned.mode() & 0o7777) & !0o600 != 0
                 || owned.nlink() != 1
             {
                 return Err(Error::invalid("stage_mode_or_owner"));
             }
+            Ok(owned)
+        };
+        let pin_stage = (|| {
+            let mut owned = stage_metadata()?;
+            if owned.mode() & 0o7777 != 0o600 {
+                // umask can remove owner bits. Change only the inode this writer created.
+                v.same_entry(dir, staging, &owned)?;
+                v.mutation("set_stage_mode", || {
+                    fs::fchmod(&file, Mode::RUSR | Mode::WUSR).map_err(Into::into)
+                })?;
+                owned = stage_metadata()?;
+            }
+            // Keep an independent read pin across checked writer close, rename and cleanup.
+            let staged = v
+                .existing(dir, staging, self.host.slot.control.uid)?
+                .ok_or_else(|| Error::invalid("stage_disappeared"))?;
+            v.same_entry(dir, staging, &owned)?;
+            let reader = v.io(staged.metadata(), false, "read_pin_metadata")?;
+            if reader.dev() != owned.dev() || reader.ino() != owned.ino() {
+                return Err(Error::invalid("entry_replaced"));
+            }
+            Ok((staged, owned))
+        })();
+        let (staged, owned) = match pin_stage {
+            Ok(pin) => pin,
+            Err(primary) if health_hold(&primary) => return Err(primary),
+            Err(primary) => {
+                let failure = self.cleanup_failed_stage(primary, dir, staging, stage_metadata());
+                if !health_hold(&failure) {
+                    v.writeback("close_stage", || {
+                        checked_close(file.into()).map_err(Into::into)
+                    })
+                    .map_err(|close_failure| close_failure.with_warning(failure.reason))?;
+                }
+                return Err(failure);
+            }
+        };
+        let prepared = (|| {
             point(v, step, "write")?;
             #[cfg(feature = "qualification")]
             if selected(step, "write").as_deref() == Some("short") {
@@ -180,29 +214,39 @@ impl SlotOperation<'_> {
         })();
         match publication {
             Err(primary) if !renamed && !health_hold(&primary) => {
-                let cleanup = (|| {
-                    self.handles.recheck(self.host, v)?;
-                    v.same_entry(dir, staging, &owned)?;
-                    #[cfg(feature = "qualification")]
-                    if std::env::var_os("GAAP_JOURNAL_CLEANUP_FAIL").is_some() {
-                        return Err(Error::unavailable("remove_owned_stage"));
-                    }
-                    v.mutation("remove_owned_stage", || {
-                        fs::unlinkat(dir, staging, fs::AtFlags::empty()).map_err(Into::into)
-                    })
-                })();
-                match cleanup {
-                    Ok(()) => Err(primary),
-                    Err(secondary) if health_hold(&secondary) => {
-                        Err(secondary.with_warning(primary.reason))
-                    }
-                    Err(secondary) if secondary.reason == "remove_owned_stage" => {
-                        Err(primary.with_warning("owned_stage_cleanup_failed"))
-                    }
-                    Err(_) => Err(primary.with_warning("stage_ownership_unconfirmed")),
-                }
+                Err(self.cleanup_failed_stage(primary, dir, staging, Ok(owned)))
             }
             other => other,
+        }
+    }
+
+    fn cleanup_failed_stage(
+        &self,
+        primary: Error,
+        dir: &File,
+        staging: &str,
+        pinned_metadata: Result<Metadata>,
+    ) -> Error {
+        let v = &self.volume;
+        let cleanup = (|| {
+            let owned = pinned_metadata?;
+            self.handles.recheck(self.host, v)?;
+            v.same_entry(dir, staging, &owned)?;
+            #[cfg(feature = "qualification")]
+            if std::env::var_os("GAAP_JOURNAL_CLEANUP_FAIL").is_some() {
+                return Err(Error::unavailable("remove_owned_stage"));
+            }
+            v.mutation("remove_owned_stage", || {
+                fs::unlinkat(dir, staging, fs::AtFlags::empty()).map_err(Into::into)
+            })
+        })();
+        match cleanup {
+            Ok(()) => primary,
+            Err(secondary) if health_hold(&secondary) => secondary.with_warning(primary.reason),
+            Err(secondary) if secondary.reason == "remove_owned_stage" => {
+                primary.with_warning("owned_stage_cleanup_failed")
+            }
+            Err(_) => primary.with_warning("stage_ownership_unconfirmed"),
         }
     }
 }

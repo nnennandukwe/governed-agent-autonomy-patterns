@@ -149,7 +149,7 @@ class Slot:
 
     def start(self, args, *, point=None, action=None, trace=None, fail_cleanup=False,
               handoff="normal", fail_sync_ordinal=None, sync_errno="EIO", read_trace=None,
-              fail_read_ordinal=None):
+              fail_read_ordinal=None, child_umask=-1, fail_stage_chmod=False):
         """Launch an independent host process with the journal's real descriptor handoff."""
         binary = self.qualification if point else self.release
         command = [str(binary), *args]
@@ -168,7 +168,11 @@ class Slot:
             calls = "fsync,renameat,renameat2,rename"
             if args[0] == "lookup":
                 calls += ",openat,openat2,unlinkat,linkat,ftruncate,pwrite64"
+            if fail_stage_chmod:
+                calls = "fchmod"
             tracing = ["strace", "-qq", "-yy", "-o", str(trace), "-e", "trace=" + calls]
+            if fail_stage_chmod:
+                tracing += ["-e", "inject=fchmod:error=EPERM:when=1"]
             if fail_sync_ordinal is not None:
                 # -D keeps the tracee as our child for waitpid, SIGKILL and cleanup.
                 tracing += ["-D", "-e", f"inject=fsync:error={sync_errno}:when={fail_sync_ordinal}"]
@@ -181,7 +185,7 @@ class Slot:
         if fail_cleanup:
             env["GAAP_JOURNAL_CLEANUP_FAIL"] = "1"
         return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=env)
+                                stderr=subprocess.PIPE, env=env, umask=child_umask)
 
     def call(self, *args, expected, stdin=None, **options):
         """Check both the public JSON status and its matching process exit behavior."""
