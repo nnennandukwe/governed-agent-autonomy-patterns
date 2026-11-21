@@ -188,6 +188,46 @@ fn event_projection(event: &RunEvent, timestamp: &str) -> Result<Value, Projecti
     Ok(json!({"name":name,"timeUnixNano":timestamp,"attributes":attrs}))
 }
 
+// Fixed terminal codes emitted by AgentRunEngine. Port diagnostics can contain private text.
+fn terminal_reason(reason: &str) -> &str {
+    match reason {
+        "executor.awaiting_authority"
+        | "executor.denied"
+        | "executor.not_dispatched"
+        | "permission.dangerous_requires_approval"
+        | "permission.denied"
+        | "permission.policy_requires_approval"
+        | "permission.unknown_action"
+        | "permission.wrapper_requires_approval"
+        | "plan.approval_required"
+        | "plan.invalid_digest"
+        | "protected_effect.failed"
+        | "protected_effect.interrupted"
+        | "protected_effect.stale_subject"
+        | "protected_effect.unknown_outcome"
+        | "protected_effect.untrusted_executor"
+        | "protected_effect.untrusted_sandbox"
+        | "runtime.approval_required"
+        | "runtime.budget_exceeded"
+        | "runtime.duplicate_effect"
+        | "runtime.effect_sequence_invalid"
+        | "runtime.hard_stop"
+        | "runtime.interrupted"
+        | "runtime.invalid_budget"
+        | "runtime.max_effects_exhausted"
+        | "runtime.usage_overflow"
+        | "tool_trust.approval_required"
+        | "verification.evidence_required"
+        | "verification.independence_required"
+        | "verification.invalid_report"
+        | "verification.pass_required"
+        | "verification.stale_subject"
+        | "verification.untrusted_verifier"
+        | "workflow.completion_authorized" => reason,
+        _ => "other_omitted",
+    }
+}
+
 /// Build OTLP/HTTP JSON from a sealed execution without modifying its source.
 /// Timestamps describe projection time, never reconstructed runtime duration.
 pub fn project(
@@ -226,25 +266,7 @@ pub fn project(
         attribute("gaap.telemetry.timing", "projection_time_only"),
         attribute("gaap.telemetry.authority", "none"),
         attribute("gaap.usage.model_scope", "unavailable"),
-        attribute(
-            "gaap.run.reason",
-            match body.terminal_reason.as_str() {
-                code @ ("permission.dangerous_requires_approval"
-                | "permission.denied"
-                | "permission.policy_denied"
-                | "permission.policy_requires_approval"
-                | "permission.unknown_action"
-                | "permission.wrapper_requires_approval"
-                | "protected_effect.failed"
-                | "protected_effect.interrupted"
-                | "protected_effect.unknown_outcome"
-                | "runtime.interrupted"
-                | "tool_trust.approval_required"
-                | "verification.stale_subject"
-                | "workflow.completion_authorized") => code,
-                _ => "other_omitted",
-            },
-        ),
+        attribute("gaap.run.reason", terminal_reason(&body.terminal_reason)),
     ];
     digest_attribute(&mut attrs, "gaap.receipt.digest", &receipt.receipt_digest)?;
     digest_attribute(&mut attrs, "gaap.request.digest", &body.request_digest)?;

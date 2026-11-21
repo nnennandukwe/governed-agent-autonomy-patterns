@@ -69,6 +69,9 @@ enum Scenario {
     Unknown,
     Stale,
     Unverified,
+    HardStop,
+    ExecutorDenied,
+    ExecutorAsk,
 }
 const SCENARIOS: [Scenario; 8] = [
     Scenario::Completed,
@@ -142,6 +145,8 @@ impl ExecutorPort for Executor {
         let status = match self.scenario {
             Scenario::Failed => EffectExecutionStatus::Failed,
             Scenario::Interrupted => EffectExecutionStatus::Interrupted,
+            Scenario::ExecutorDenied => EffectExecutionStatus::Denied,
+            Scenario::ExecutorAsk => EffectExecutionStatus::AwaitingAuthority,
             _ => EffectExecutionStatus::Executed,
         };
         let mut evidence = vec![
@@ -274,7 +279,11 @@ fn run_with_policy(
         trusted,
         permission,
         EffectUsage {
-            cost_micros: 10,
+            cost_micros: if matches!(scenario, Scenario::HardStop) {
+                1_000_000
+            } else {
+                10
+            },
             elapsed_ms: 1,
             model_tokens: 0,
             tool_calls: 1,
@@ -343,7 +352,11 @@ fn document(execution: &AgentRunExecution) -> Value {
 
 #[test]
 fn real_engine_outcomes_project_without_collapsing_authority_execution_or_verification() {
-    for scenario in SCENARIOS {
+    for scenario in SCENARIOS.into_iter().chain([
+        Scenario::HardStop,
+        Scenario::ExecutorDenied,
+        Scenario::ExecutorAsk,
+    ]) {
         let (execution, calls) = run(scenario);
         let before = serde_jcs::to_vec(&execution.receipt).unwrap();
         let doc = document(&execution);
@@ -371,8 +384,15 @@ fn real_engine_outcomes_project_without_collapsing_authority_execution_or_verifi
                 execution.receipt.body.terminal_status,
                 AgentRunStatus::Completed
             ),
-            Scenario::Denied | Scenario::Ask => {
+            Scenario::Denied | Scenario::Ask | Scenario::HardStop => {
                 assert!(calls.is_empty());
+                assert_eq!(
+                    execution.receipt.body.terminal_status,
+                    AgentRunStatus::Blocked
+                );
+            }
+            Scenario::ExecutorDenied | Scenario::ExecutorAsk => {
+                assert_eq!(calls.len(), 1);
                 assert_eq!(
                     execution.receipt.body.terminal_status,
                     AgentRunStatus::Blocked
@@ -406,6 +426,24 @@ fn real_engine_outcomes_project_without_collapsing_authority_execution_or_verifi
             ),
         }
     }
+}
+
+#[test]
+fn hard_stop_and_executor_refusal_export_the_sealed_decision_codes() {
+    let mut projected = Vec::new();
+    let cases = [
+        (Scenario::HardStop, "runtime.hard_stop"),
+        (Scenario::ExecutorDenied, "executor.denied"),
+        (Scenario::ExecutorAsk, "executor.awaiting_authority"),
+    ];
+    for (scenario, code) in cases {
+        let (execution, _) = run(scenario);
+        assert_eq!(execution.receipt.body.terminal_reason, code);
+        let doc = document(&execution);
+        let run = &doc["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        projected.push(attributes(&run["attributes"])["gaap.run.reason"]["stringValue"].clone());
+    }
+    assert_eq!(projected, cases.map(|(_, code)| json!(code)));
 }
 
 #[test]
@@ -466,17 +504,24 @@ fn sealed_terminal_reasons_keep_fixed_codes_and_omit_private_text() {
     );
     assert_projection(&execution, "other_omitted");
 
-    // Seal a valid fixture with free text that starts with an allowlisted code.
+    // Valid receipts can contain private text and codes the current engine never emits.
     let request = fixture_request();
     let support = ContractSupport::new(request.policies.clone());
-    let mut body = execution.receipt.body;
-    body.terminal_reason = "permission.unknown_action: secret request".into();
-    let Some(RunEvent::StatusTransition { reason, .. }) = body.events.last_mut() else {
-        panic!("the fixture must end in a terminal transition");
-    };
-    *reason = Some(body.terminal_reason.clone());
-    execution.receipt = seal_terminal_receipt(&request, &support, body).unwrap();
-    assert_projection(&execution, "other_omitted");
+    for reason_text in [
+        "permission.unknown_action: secret request",
+        "permission.policy_denied",
+        "protected_effect.denied",
+        "protected_effect.awaiting_authority",
+    ] {
+        let mut body = execution.receipt.body;
+        body.terminal_reason = reason_text.into();
+        let Some(RunEvent::StatusTransition { reason, .. }) = body.events.last_mut() else {
+            panic!("the fixture must end in a terminal transition");
+        };
+        *reason = Some(body.terminal_reason.clone());
+        execution.receipt = seal_terminal_receipt(&request, &support, body).unwrap();
+        assert_projection(&execution, "other_omitted");
+    }
 }
 
 #[test]

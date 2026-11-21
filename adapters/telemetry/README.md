@@ -108,13 +108,24 @@ and native evidence bytes keep their existing versions and meaning.
 | Usage | Ledger events retain elapsed milliseconds and tool-call counts. Model token/cost values are omitted; `gaap.usage.model_scope=unavailable` preserves the absence of a complete model-usage observation. |
 | Protected Effect Results | Child spans retain exact decision and execution-status enums, result/request/capability/tool-schema/sandbox-profile digests when present. |
 
-The run span's `gaap.run.reason` carries an exact match from a fixed list.
-Operators can identify unknown actions, dangerous actions that need approval,
-wrapper chains that need approval and tools that lack approval. The list also
-covers failed, interrupted and unknown protected effects and stale verification.
-Free text and unlisted codes become `other_omitted`. Executed-but-unverified
-work retains its executed effect status and the run's actual terminal status.
-The OTLP status stays UNSET (`0`).
+The run span's `gaap.run.reason` uses an exact list of fixed codes from the
+engine. Free text and unlisted codes become `other_omitted`. The table groups
+the codes by prefix. For example, runtime budget exhaustion can produce
+`runtime.hard_stop`, and an executor refusal produces `executor.denied`.
+
+| Prefix | Allowed suffixes |
+|---|---|
+| `executor.` | `awaiting_authority`, `denied`, `not_dispatched` |
+| `permission.` | `dangerous_requires_approval`, `denied`, `policy_requires_approval`, `unknown_action`, `wrapper_requires_approval` |
+| `plan.` | `approval_required`, `invalid_digest` |
+| `protected_effect.` | `failed`, `interrupted`, `stale_subject`, `unknown_outcome`, `untrusted_executor`, `untrusted_sandbox` |
+| `runtime.` | `approval_required`, `budget_exceeded`, `duplicate_effect`, `effect_sequence_invalid`, `hard_stop`, `interrupted`, `invalid_budget`, `max_effects_exhausted`, `usage_overflow` |
+| `tool_trust.` | `approval_required` |
+| `verification.` | `evidence_required`, `independence_required`, `invalid_report`, `pass_required`, `stale_subject`, `untrusted_verifier` |
+| `workflow.` | `completion_authorized` |
+
+Executed-but-unverified work retains its executed effect status and the run's
+actual terminal status. The OTLP status stays UNSET (`0`).
 
 The current ledger has neither agent-turn boundaries nor event wall-clock
 measurements. Turn/model spans and runtime latency metrics are deliberately
