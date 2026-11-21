@@ -148,7 +148,8 @@ class Slot:
                                                "generation": generation, "journal_digest": digest(data)}))
 
     def start(self, args, *, point=None, action=None, trace=None, fail_cleanup=False,
-              handoff="normal", fail_sync_ordinal=None, read_trace=None, fail_read_ordinal=None):
+              handoff="normal", fail_sync_ordinal=None, sync_errno="EIO", read_trace=None,
+              fail_read_ordinal=None):
         """Launch an independent host process with the journal's real descriptor handoff."""
         binary = self.qualification if point else self.release
         command = [str(binary), *args]
@@ -170,7 +171,7 @@ class Slot:
             tracing = ["strace", "-qq", "-yy", "-o", str(trace), "-e", "trace=" + calls]
             if fail_sync_ordinal is not None:
                 # -D keeps the tracee as our child for waitpid, SIGKILL and cleanup.
-                tracing += ["-D", "-e", f"inject=fsync:error=EIO:when={fail_sync_ordinal}"]
+                tracing += ["-D", "-e", f"inject=fsync:error={sync_errno}:when={fail_sync_ordinal}"]
             argv = [*tracing, *argv]
         env = os.environ.copy()
         for name in ("GAAP_JOURNAL_POINT", "GAAP_JOURNAL_ACTION", "GAAP_JOURNAL_CLEANUP_FAIL"):

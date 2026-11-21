@@ -118,7 +118,7 @@ impl SlotOperation<'_> {
             point(v, step, "flush")?;
             v.mutation("flush_stage", || file.flush())?;
             point(v, step, "file_sync")?;
-            v.mutation("sync_stage", || file.sync_all())
+            v.writeback("sync_stage", || file.sync_all())
         })();
         // The host must withdraw after a health authority failure. Dropping the descriptor
         // here releases it without attempting a fresh durable maintenance operation.
@@ -126,7 +126,7 @@ impl SlotOperation<'_> {
             return prepared;
         }
         // Linux consumes the descriptor on close, including when an earlier write failed.
-        let closed = v.mutation("close_stage", || {
+        let closed = v.writeback("close_stage", || {
             checked_close(file.into()).map_err(Into::into)
         });
         let mut renamed = false;
@@ -175,7 +175,7 @@ impl SlotOperation<'_> {
             renamed = true;
             point(v, step, "after_rename")?;
             point(v, step, "before_dir_sync")?;
-            v.mutation("sync_publication_directory", || dir.sync_all())?;
+            v.writeback("sync_publication_directory", || dir.sync_all())?;
             point(v, step, "after_dir_sync")
         })();
         match publication {

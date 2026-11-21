@@ -354,3 +354,48 @@ fn workflow_decision_ids_do_not_select_completion_or_change_its_digest_domain() 
         super::publication::validate_decision_targets(&wrong_target.body, &effect_hash).is_err()
     );
 }
+
+#[test]
+fn proven_noncommit_rejects_a_changed_subject_even_when_the_result_reports_a_failure() {
+    use super::publication::validate_effect_observation;
+    use super::types::{Disposition, Observation};
+    use gaap::contracts::{EffectExecutionStatus, ProtectedEffectResult};
+
+    let result: ProtectedEffectResult = serde_json::from_str(include_str!(
+        "../../../../examples/contracts/protected-effect/v0.1.0/failed.json"
+    ))
+    .unwrap();
+    let mut body = result.body;
+    let changed = body.observed_post_effect_subject.clone();
+    assert_ne!(changed.as_ref().unwrap(), &body.observed_pre_effect_subject);
+    for disposition in [Disposition::NotStarted, Disposition::StoppedBeforeRename] {
+        let observation = Observation {
+            disposition,
+            after: None,
+            source: None,
+            usage_floor: serde_json::from_value(usage(1)).unwrap(),
+        };
+        for status in [
+            EffectExecutionStatus::Failed,
+            EffectExecutionStatus::Interrupted,
+            EffectExecutionStatus::UnknownOutcome,
+        ] {
+            body.execution_status = status;
+            body.observed_post_effect_subject = changed.clone();
+            assert!(
+                validate_effect_observation(&body, &observation).is_err(),
+                "{disposition:?} {status:?} changed"
+            );
+            body.observed_post_effect_subject = Some(body.observed_pre_effect_subject.clone());
+            assert!(
+                validate_effect_observation(&body, &observation).is_ok(),
+                "{disposition:?} {status:?} unchanged"
+            );
+        }
+        body.execution_status = EffectExecutionStatus::Executed;
+        assert!(validate_effect_observation(&body, &observation).is_err());
+        body.execution_status = EffectExecutionStatus::UnknownOutcome;
+        body.observed_post_effect_subject = None;
+        assert!(validate_effect_observation(&body, &observation).is_ok());
+    }
+}

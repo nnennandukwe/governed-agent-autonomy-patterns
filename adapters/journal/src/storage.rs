@@ -262,9 +262,9 @@ impl SlotOperation<'_> {
                 match request {
                     Request::Enroll => {
                         self.volume
-                            .mutation("repeat_anchor_sync", || saved.file.sync_all())?;
+                            .writeback("repeat_anchor_sync", || saved.file.sync_all())?;
                         self.volume
-                            .mutation("repeat_control_sync", || self.handles.control.sync_all())?;
+                            .writeback("repeat_control_sync", || self.handles.control.sync_all())?;
                         self.recheck(&saved, Some(&journal))?;
                         self.enrolled(generation)
                     }

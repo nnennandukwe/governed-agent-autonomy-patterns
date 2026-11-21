@@ -137,20 +137,22 @@ class JournalQualification(unittest.TestCase):
                 self.assertEqual(observe_tree(slot.workspace), workspace)
                 self.record(slot, point, trace)
 
-    def test_process_dies_after_real_sync_error_before_health_update(self):
-        """Kill after a directory sync returns EIO and confirm both restarts retain the hold."""
-        # Count calls from a successful enrollment on the same build/volume. Prove the
-        # failing syscall below used the desired directory before accepting the result.
+    def activation_sync_ordinal(self, baseline):
+        """Locate the active anchor's directory sync in a successful production enrollment."""
         healthy = self.slot()
-        baseline = SETTINGS.evidence / "sync-calibration.log"
         healthy.call("enroll", expected="enrolled", trace=baseline)
         syncs = [line for line in baseline.read_text().splitlines() if "fsync(" in line]
         control_syncs = [i for i, line in enumerate(syncs, 1) if f"<{healthy.control}>" in line]
         self.assertEqual(len(control_syncs), 2, syncs)
+        return control_syncs[-1]
+
+    def test_process_dies_after_real_sync_error_before_health_update(self):
+        """Kill after a directory sync returns EIO and confirm both restarts retain the hold."""
+        ordinal = self.activation_sync_ordinal(SETTINGS.evidence / "sync-calibration.log")
         slot = self.slot()
         workspace = observe_tree(slot.workspace)
         trace = SETTINGS.evidence / "eio-before-quarantine.log"
-        writer = slot.stop("volume.after_eio", trace=trace, fail_sync_ordinal=control_syncs[-1])
+        writer = slot.stop("volume.after_eio", trace=trace, fail_sync_ordinal=ordinal)
         try:
             self.assertTrue(any(f"<{slot.control}>" in line and "fsync(" in line
                                 and "EIO" in line and "INJECTED" in line
@@ -176,6 +178,35 @@ class JournalQualification(unittest.TestCase):
         self.assertEqual((snapshot(slot.anchor), snapshot(slot.journal), snapshot(slot.health)), before)
         self.assertEqual(observe_tree(slot.workspace), workspace)
         self.record(slot, "killed-after-injected-eio", {"lookup": reads, "retry": retry})
+
+    def test_delayed_space_error_at_activation_holds_store(self):
+        """Preserve the visible generation and quarantine a delayed quota or space error."""
+        ordinal = self.activation_sync_ordinal(SETTINGS.evidence / "space-sync-calibration.log")
+        for errno in ("ENOSPC", "EDQUOT"):
+            with self.subTest(errno=errno):
+                slot = self.slot()
+                trace = SETTINGS.evidence / f"activation-sync-{errno.lower()}.log"
+                workspace = observe_tree(slot.workspace)
+                failure = slot.call("enroll", expected=("unavailable", "capacity"), trace=trace,
+                                    fail_sync_ordinal=ordinal, sync_errno=errno)
+                self.assertTrue(any(f"<{slot.control}>" in line and "fsync(" in line
+                                    and errno in line and "INJECTED" in line
+                                    for line in trace.read_text().splitlines()))
+                anchor = json.loads(slot.anchor.read_bytes())
+                self.assertEqual(anchor["phase"], "active")
+                self.assertEqual(anchor["journal_digest"], digest(slot.journal.read_bytes()))
+                visible = snapshot(slot.anchor), snapshot(slot.journal)
+                latch = slot.health.read_bytes()
+                # Record the complete restart behavior even if the original process missed the fault.
+                lookup = slot.call("lookup", "never", expected=("unavailable", "absent"))
+                retry = slot.call("enroll", expected=("unavailable", "enrolled"))
+                self.record(slot, "delayed-activation-" + errno,
+                            {"error": failure, "lookup": lookup, "retry": retry})
+                self.assertEqual((failure["status"], latch, lookup["status"], retry["status"]),
+                                 ("unavailable", b"1", "unavailable", "unavailable"))
+                self.assertEqual(slot.health.read_bytes(), b"1")
+                self.assertEqual((snapshot(slot.anchor), snapshot(slot.journal)), visible)
+                self.assertEqual(observe_tree(slot.workspace), workspace)
 
     def test_journal_read_eio_quarantines_across_restart(self):
         """Inject EIO on the actual journal read and retain evidence and the independent hold."""

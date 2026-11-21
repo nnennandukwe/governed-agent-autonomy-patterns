@@ -1,7 +1,8 @@
 use gaap::contracts::{
     AgentRunStatus, ContractSupport, EffectEvidenceType, EffectExecutionStatus, EvidenceType,
-    ProtectedEffectResult, ResourceUsage, RunEvent, TerminalRunReceiptBody, VerificationVerdict,
-    validate_protected_effect_request, verify_protected_effect_result, verify_terminal_receipt,
+    ProtectedEffectResult, ProtectedEffectResultBody, ResourceUsage, RunEvent,
+    TerminalRunReceiptBody, VerificationVerdict, validate_protected_effect_request,
+    verify_protected_effect_result, verify_terminal_receipt,
 };
 use gaap::{Gate, Outcome};
 
@@ -155,22 +156,7 @@ pub(super) fn validate(
         }
     }
     if let Some(o) = observation {
-        match o.disposition {
-            Disposition::NotStarted | Disposition::StoppedBeforeRename => require(
-                b.execution_status != EffectExecutionStatus::Executed,
-                "executed result contradicts observed non-execution",
-            )?,
-            Disposition::Replaced => {
-                let after = o.after.as_ref().expect("validated replacement");
-                require(
-                    b.observed_post_effect_subject
-                        .as_ref()
-                        .is_none_or(|s| s == &after.subject),
-                    "result post-effect subject contradicts observed replacement",
-                )?;
-            }
-            Disposition::Unresolved => {}
-        }
+        validate_effect_observation(b, o)?;
     }
     if receipt.terminal_status == AgentRunStatus::Completed {
         require(
@@ -187,6 +173,28 @@ pub(super) fn validate(
         )?;
     }
     Ok(())
+}
+
+pub(super) fn validate_effect_observation(
+    result: &ProtectedEffectResultBody,
+    observation: &Observation,
+) -> Result<()> {
+    let post = result.observed_post_effect_subject.as_ref();
+    match observation.disposition {
+        Disposition::NotStarted | Disposition::StoppedBeforeRename => require(
+            result.execution_status != EffectExecutionStatus::Executed
+                && post.is_none_or(|subject| subject == &result.observed_pre_effect_subject),
+            "result reports an executed write or changed subject despite observed non-execution",
+        ),
+        Disposition::Replaced => {
+            let after = observation.after.as_ref().expect("validated replacement");
+            require(
+                post.is_none_or(|subject| subject == &after.subject),
+                "result post-effect subject contradicts observed replacement",
+            )
+        }
+        Disposition::Unresolved => Ok(()),
+    }
 }
 
 /// During execution a workflow decision targets the effect. During verification it

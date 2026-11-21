@@ -30,16 +30,20 @@ impl Volume<'_> {
         operation.map_err(|error| {
             let error = error.into();
             if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) {
-                return match self.write_health(b'1') {
-                    Ok(()) => Error::unavailable("volume_quarantined"),
-                    Err(failure) => failure,
-                };
+                return self.quarantine();
             }
-            if writing && error.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()) {
+            if writing && capacity_error(&error) {
                 return Error::new("capacity", reason);
             }
             Error::unavailable(reason)
         })
+    }
+
+    fn quarantine(&self) -> Error {
+        match self.write_health(b'1') {
+            Ok(()) => Error::unavailable("volume_quarantined"),
+            Err(failure) => failure,
+        }
     }
 
     fn read_health(&self) -> Result<u8> {
@@ -100,23 +104,43 @@ impl Volume<'_> {
         Ok(descriptor)
     }
 
-    /// The exclusive health lock serializes the pending marker with both readers and writers.
-    /// A new process can't infer what happened between the syscall and confirmation.
     pub fn mutation<T>(
         &self,
         reason: &'static str,
         operation: impl FnOnce() -> io::Result<T>,
     ) -> Result<T> {
+        self.guarded_mutation(reason, false, operation)
+    }
+
+    /// A sync or checked close can report delayed loss of a previous write.
+    pub fn writeback<T>(
+        &self,
+        reason: &'static str,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> Result<T> {
+        self.guarded_mutation(reason, true, operation)
+    }
+
+    /// The exclusive health lock serializes the pending marker with both readers and writers.
+    /// A new process can't infer what happened between the syscall and confirmation.
+    fn guarded_mutation<T>(
+        &self,
+        reason: &'static str,
+        writeback: bool,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> Result<T> {
         self.healthy()?;
         self.write_health(b'P')?;
         let result = operation();
-        if result
-            .as_ref()
-            .is_err_and(|e| e.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()))
-        {
-            #[cfg(feature = "qualification")]
-            super::publication::stop_after_eio()?;
-            return self.io(result, true, reason);
+        if let Err(error) = &result {
+            let io_failure = error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error());
+            if io_failure || (writeback && capacity_error(error)) {
+                #[cfg(feature = "qualification")]
+                if io_failure {
+                    super::publication::stop_after_eio()?;
+                }
+                return Err(self.quarantine());
+            }
         }
         // A different health state is never cleared. All cooperating operators must take the same lock.
         if self.read_health()? != b'P' {
@@ -238,6 +262,13 @@ impl Volume<'_> {
         self.check_health_binding()?;
         self.healthy()
     }
+}
+
+fn capacity_error(error: &io::Error) -> bool {
+    use rustix::io::Errno;
+    error.raw_os_error().is_some_and(|code| {
+        code == Errno::NOSPC.raw_os_error() || code == Errno::DQUOT.raw_os_error()
+    })
 }
 
 fn open_directory(name: &Path) -> rustix::io::Result<File> {
