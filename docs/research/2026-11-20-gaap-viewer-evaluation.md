@@ -21,7 +21,7 @@ The three blocked runs had different outcomes. GAAP denied one effect before dis
 
 All eight root spans omit a parent and upstream ThreadLoop identities. The paired session contains four explicitly supplied, hashed Workflow Run, Action Request, Execution Claim and Attempt identities. The receipt digest connects the run to its native record. Each effect has a stable span ID, a hashed effect ID and request and result digests. Complete model usage stays unavailable in every case. These are recorded fixtures with synthetic host correlation. [Eight OTLP requests](viewer-evaluation/recorded-runs.ndjson) · [Paired request](viewer-evaluation/paired.json)
 
-Both browser UIs found all three blocked runs and returned zero rows for a missing attribute value. Jaeger's search also found the paired trace by its supplied attempt hash. Its query response represented a zero-duration span as 1 ns, and the UI rounded to 0 μs. It returned some equal-timestamp events out of ledger order. Sorting by GAAP's sequence field recovered every projected event. Aspire showed the spans at 0 μs. Use the sealed ledger to interpret ordering and verification. [Jaeger attribute search](viewer-evaluation/jaeger/attribute-search.png) · [Jaeger stale-verification detail](viewer-evaluation/jaeger/stale-verification.png) · [Aspire blocked-run filter](viewer-evaluation/aspire/blocked-filter.png) · [Aspire paired span](viewer-evaluation/aspire/paired-span.png)
+Both browser UIs found all three blocked runs and returned zero rows for a missing attribute value. Jaeger's search also found the paired trace by its supplied attempt hash. Its query response preserved the recorded start and event times, then added 1 ns to the end of each zero-duration span. The UI rounded the duration to 0 μs. It returned some equal-timestamp events out of ledger order. Sorting by GAAP's sequence field recovered every projected event. Aspire showed the spans at 0 μs. Use the sealed ledger to interpret ordering and verification. [Jaeger attribute search](viewer-evaluation/jaeger/attribute-search.png) · [Jaeger stale-verification detail](viewer-evaluation/jaeger/stale-verification.png) · [Aspire blocked-run filter](viewer-evaluation/aspire/blocked-filter.png) · [Aspire paired span](viewer-evaluation/aspire/paired-span.png)
 
 ## From a trace to its receipt
 
@@ -72,7 +72,7 @@ cargo test --manifest-path adapters/telemetry/Cargo.toml --locked --test integra
   print_sanitized_recorded_fixtures -- --ignored --nocapture
 ```
 
-With the chosen viewer running locally, set `viewer_port` to its OTLP/HTTP port. This posts exactly the eight archived requests. The separately recorded ninth request is in `paired.json`.
+With the chosen viewer running locally, set `viewer_port` to its OTLP/HTTP port. This posts exactly the eight archived requests. Read each acknowledgement body for rejected spans or warnings. A 200 alone can't confirm full delivery. The separately recorded ninth request is in `paired.json`.
 
 ```sh
 viewer_port=19473  # Jaeger. Use 19572 for the measured Aspire profile.

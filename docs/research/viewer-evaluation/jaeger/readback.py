@@ -35,6 +35,33 @@ def query(path, params=None):
         return json.load(response)
 
 
+def reject_nonfinite(token):
+    """Reject numeric constants outside the JSON grammar."""
+    raise ValueError(f"Invalid JSON number in OTLP acknowledgement: {token}")
+
+
+def check_acknowledgement(response):
+    """Require a bounded OTLP/JSON full-success reply for the replayed batch."""
+    if response.status != 200:
+        raise ValueError("OTLP receiver didn't return HTTP 200")
+    limit = 8192
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("OTLP acknowledgement exceeded 8 KiB")
+    ack = json.loads(body.decode("utf-8"), parse_constant=reject_nonfinite)
+    if not isinstance(ack, dict):
+        raise ValueError("Expected an OTLP acknowledgement object")
+    partial = ack.get("partialSuccess")
+    if partial is None:
+        return
+    if not isinstance(partial, dict):
+        raise ValueError("Malformed OTLP partialSuccess")
+    count = partial.get("rejectedSpans")
+    zero = count is None or (type(count) is int and count == 0) or count == "0"
+    if not zero or partial.get("errorMessage") not in (None, ""):
+        raise ValueError("OTLP receiver didn't confirm full acceptance")
+
+
 def inspect_case(scenario, payload):
     """Compare a recorded trace with its stored spans, events and resource fields."""
     source = payload["resourceSpans"][0]
@@ -59,6 +86,12 @@ def inspect_case(scenario, payload):
         for key in ("name", "traceId", "parentSpanId"):
             if actual.get(key) != span.get(key):
                 raise ValueError(f"Unexpected {key} in {scenario}")
+        start_ns = int(span["startTimeUnixNano"])
+        end_ns = int(span["endTimeUnixNano"])
+        # Jaeger 2.23.0 normalizes these zero-duration fixtures to one nanosecond.
+        expected_end_ns = start_ns + 1 if end_ns == start_ns else end_ns
+        if actual["startTimeUnixNano"] != span["startTimeUnixNano"] or actual["endTimeUnixNano"] != str(expected_end_ns):
+            raise ValueError(f"Span timestamps changed in {scenario}")
         check_fields(span, actual)
         expected_events = span.get("events", [])
         stored_events = actual.get("events", [])
@@ -73,6 +106,8 @@ def inspect_case(scenario, payload):
         for expected, event in zip(expected_events, sorted(stored_events, key=sequence)):
             if expected["name"] != event["name"]:
                 raise ValueError("Event identity changed")
+            if expected["timeUnixNano"] != event["timeUnixNano"]:
+                raise ValueError(f"Event timestamp changed in {scenario}")
             check_fields(expected, event)
             if event["name"] == "gaap.verification":
                 verdicts.append(attributes(event)["gaap.verification.verdict"]["stringValue"])
@@ -107,8 +142,7 @@ def main():
             request = Request("http://127.0.0.1:19473/v1/traces", data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json"})
             with client.open(request, timeout=5) as response:
-                if response.status != 200:
-                    raise ValueError("OTLP receiver didn't return HTTP 200")
+                check_acknowledgement(response)
         checked.append(inspect_case(fixture["scenario"], payload))
         start = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["startTimeUnixNano"]
         times.append(datetime.fromtimestamp(int(start) / 1e9, timezone.utc))
