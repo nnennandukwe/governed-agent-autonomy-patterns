@@ -77,6 +77,10 @@ jobs:
       - name: Run Rust tests
         run: cargo test --locked
 
+      - name: Exercise the proposed durable Agent Run recovery model
+        working-directory: tests/durable_run_model
+        run: python3 -B -m unittest -v test_recovery
+
       - name: Build subject binary
         run: cargo build --locked
 
