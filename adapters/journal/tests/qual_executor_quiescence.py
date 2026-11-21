@@ -63,6 +63,7 @@ def watch_target(workspace):
             raise OSError(ctypes.get_errno(), "inotify_add_watch")
 
         def count():
+            """Drain move notifications since the previous observation."""
             events = 0
             while True:
                 try:
@@ -152,6 +153,60 @@ def interrupt_at_source(lldb, debugger, case, binary, line):
             process.Kill()
 
 
+def reap_debugger_children(children):
+    """Kill only this supervisor's direct children, including orphans adopted as parents exit."""
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            exited, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"debugger child cleanup timed out: {children.read_text().strip()}")
+        if exited:
+            continue
+        for child in children.read_text().split():
+            # This single-threaded parent hasn't reaped this PID since listing it.
+            try:
+                pidfd = os.pidfd_open(int(child))
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                finally:
+                    os.close(pidfd)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.01)
+
+
+def supervise_debugger(arguments, trace):
+    """Own one debugger tree, including detached descendants that never reached a breakpoint."""
+    supervisor = os.fork()
+    if supervisor:
+        _, status = os.waitpid(supervisor, 0)
+        return os.waitstatus_to_exitcode(status)
+
+    result = 1
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+        prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+        if prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+            raise OSError(ctypes.get_errno(), "couldn't own debugger descendants")
+        children = Path("/proc/thread-self/children")
+        children.read_text()  # Require kernel child enumeration before starting LLDB.
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        try:
+            child = subprocess.Popen(arguments, stdout=trace, stderr=subprocess.STDOUT,
+                                     start_new_session=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+            result = child.wait(timeout=45)
+        finally:
+            reap_debugger_children(children)
+    except BaseException as error:
+        result = 1
+        os.write(trace.fileno(), f"debugger supervision failed: {error}\n".encode())
+    finally:
+        os._exit(0 if result == 0 else 1)
+
+
 def debugger_cut(case, binary, lldb, line, log_path):
     """Launch only this fixture under LLDB, with a deadline for the complete cut."""
     module_dir = str(Path(__file__).resolve().parent)
@@ -159,22 +214,36 @@ def debugger_cut(case, binary, lldb, line, log_path):
                f"import qual_executor_quiescence as q; q.interrupt_at_source(lldb, lldb.debugger, "
                f"q.Path({str(case)!r}), q.Path({str(binary)!r}), {line})")
     with (case / "lldb.log").open("w+b") as trace:
-        with subprocess.Popen([str(lldb), "--no-lldbinit", "--batch", "-o", command],
-                              stdout=trace, stderr=subprocess.STDOUT, start_new_session=True,
-                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}) as child:
-            try:
-                child.wait(timeout=45)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait(timeout=5)
-                raise
-            finally:
-                trace.seek(max(0, trace.seek(0, os.SEEK_END) - 8192))
-                log = trace.read(8192)
-                log_path.write_bytes(log)
-    if child.returncode or not (case / "cut.json").is_file():
+        returncode = supervise_debugger([str(lldb), "--no-lldbinit", "--batch", "-o", command], trace)
+        trace.seek(max(0, trace.seek(0, os.SEEK_END) - 8192))
+        log = trace.read(8192)
+        log_path.write_bytes(log)
+    if returncode or not (case / "cut.json").is_file():
         raise AssertionError(log.decode(errors="replace")[-4000:])
     return json.loads((case / "cut.json").read_bytes())
+
+
+def retained_stage(workspace, initial_entries, before_rename, proposed_digest):
+    """Identify the interrupted writer's private stage and check other workspace entries."""
+    entries = observe_tree(workspace)
+    for name, initial in initial_entries.items():
+        if name != "shipping.py" and entries.get(name) != initial:
+            raise AssertionError(("unrelated workspace entry changed", name))
+    added = entries.keys() - initial_entries.keys()
+    if len(added) != int(before_rename):
+        raise AssertionError(("unexpected staged entries", sorted(added)))
+    if not added:
+        return None
+    name = added.pop()
+    path = workspace / name
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid != os.geteuid() or info.st_nlink != 1):
+        raise AssertionError(("unexpected stage type, permissions or owner", name))
+    stage = record_file(path)
+    if stage["digest"] != proposed_digest:
+        raise AssertionError(("stage differs from proposed bytes", name))
+    return {"name": name, **stage}
 
 
 def qualify_case(label, case, binary, lldb, evidence):
@@ -188,6 +257,7 @@ def qualify_case(label, case, binary, lldb, evidence):
     (case / "proposal.json").write_bytes(canonical(proposal))
     old = record_file(target)
     locks = probe_locks(root, "acquired")
+    initial_entries = observe_tree(target.parent)
     with watch_target(target.parent) as moves:
         if label == "completed-control":
             run = reference(binary, root, "coding-submit", proposal)
@@ -212,6 +282,8 @@ def qualify_case(label, case, binary, lldb, evidence):
                 raise AssertionError("target changed before rename")
         elif (old["ino"] == found["ino"] or found["digest"] != digest(GOOD.encode()) or replacements != 1):
             raise AssertionError(("expected a single replacement", old, found, replacements))
+        result["retained_stage"] = retained_stage(
+            target.parent, initial_entries, label == "before-rename", digest(GOOD.encode()))
         observed = observe_tree(root)
         inspected = reference(binary, root, "coding-inspect")
         result["inspected"] = {"inflight": inspected["inflight"], "published_runs": len(inspected["runs"])}

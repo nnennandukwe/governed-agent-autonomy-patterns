@@ -42,10 +42,12 @@ Under the lock the worker validates the journal and checks caller, key and canon
 
 | Cut or observation | What to check in the reference | Consequence for integration |
 | --- | --- | --- |
-| Worker paused before target rename | Both locks exclude a contender. The target still has its original inode and bytes. The ledger contains the in-flight marker. | Intent and dispatch have different meanings. If dispatch survives without sufficient evidence, hold fresh dispatch for every key. |
+| Worker paused before target rename | Both locks exclude a contender. The target still has its original inode and bytes. The ledger contains the in-flight marker. After process death the observer records the private staged file, its inode and its proposed bytes. | Intent and dispatch have different meanings. If dispatch survives without sufficient evidence, hold fresh dispatch for every key. |
 | Worker paused after rename, before receipt publication | The target has the replacement inode and proposed bytes. The marker remains. Interrupting the worker preserves the write. | A changed target and a failed run can coexist. Later byte equality lacks invocation provenance. |
 | Worker killed at either cut | Observe exit and lock reacquisition. A new process inspects the marker. An exact duplicate is refused. The target and ledger survive retry unchanged. | Quiescence ends the opportunity for another write by that invocation. The surviving facts govern whether its past effect is known. |
 | Receipt published before delivery | A separate inspector and a duplicate recover the original sealed receipt. Compare effect count, target and receipt digest. | A lost reply grants no replay authority. Cleanup or sync warnings preserve the earlier visible commit and its durability status. |
+
+A dedicated test process owns each debugger and its descendants. A debugger timeout fails the case. The test terminates and reaps its children, including detached descendants, and retains the debugger output.
 
 A later integrated build must exercise termination, file and directory sync errors, stale authority, competing callers, cleanup and lost delivery around the actual target and journal commits. Its operator must preserve uncertain state and the independent storage-health hold. Process interruption on a running kernel and hardware power loss need separate evidence.
 
