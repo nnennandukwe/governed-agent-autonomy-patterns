@@ -240,7 +240,8 @@ jobs:
           cargo build --locked --manifest-path adapters/journal/Cargo.toml
           cp "$CARGO_TARGET_DIR/debug/gaap-journal" "$RUNNER_TEMP/gaap-journal-production"
           cargo build --locked --manifest-path adapters/journal/Cargo.toml --features qualification
-          cargo build --locked --manifest-path examples/submitted-proposal/Cargo.toml
+          cargo --config 'profile.dev.package.gaap-submitted-proposal-reference.debug="line-tables-only"' \
+            build --locked --manifest-path examples/submitted-proposal/Cargo.toml
 
       - name: Qualify journal enrollment and lookup on local ext4
         run: |
