@@ -399,3 +399,31 @@ fn proven_noncommit_rejects_a_changed_subject_even_when_the_result_reports_a_fai
         assert!(validate_effect_observation(&body, &observation).is_ok());
     }
 }
+
+#[test]
+fn lookup_retains_the_planners_own_digest_in_the_sealed_receipt() {
+    let mut s = Sample::new();
+    let plan_digest = digest(s.row["proposal"]["plan"].as_str().unwrap().as_bytes());
+    assert_ne!(plan_digest, s.row["proposal_digest"]);
+    let mut receipt: Value = serde_json::from_str(include_str!(
+        "../../../../examples/contracts/v0.1.0/failed.json"
+    ))
+    .unwrap();
+    let body = &mut receipt["body"];
+    body["request_digest"] = json!(hash(&s.row["run_request"]));
+    let events = body["events"].as_array_mut().unwrap();
+    events[2]["sequence"] = json!(4);
+    events.insert(
+        2,
+        json!({"event_type":"plan_recorded", "sequence":3, "plan_digest":plan_digest}),
+    );
+    receipt["receipt_digest"] = json!(hash(body));
+    s.append("published", json!({"receipt":receipt, "result":null}));
+    let reply = s.own().unwrap();
+    assert_eq!(reply.status, "published");
+    assert_eq!(reply.attempt.as_ref(), Some(&s.row));
+
+    s.row["facts"][1]["payload"]["receipt"]["body"]["events"][2]["plan_digest"] =
+        json!(digest(b"other plan"));
+    assert!(s.own().is_err());
+}

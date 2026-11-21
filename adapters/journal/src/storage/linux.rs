@@ -134,7 +134,8 @@ impl Volume<'_> {
         let result = operation();
         if let Err(error) = &result {
             let io_failure = error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error());
-            if io_failure || (writeback && capacity_error(error)) {
+            // Any error from a sync or checked close leaves durability unconfirmed.
+            if writeback || io_failure {
                 #[cfg(feature = "qualification")]
                 if io_failure {
                     super::publication::stop_after_eio()?;

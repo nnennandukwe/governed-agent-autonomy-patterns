@@ -36,10 +36,6 @@ pub(super) fn validate(
             RunEvent::ToolExecution { .. } => executions.push(event),
             RunEvent::Mutation { .. } => mutations.push(event),
             RunEvent::Verification { .. } => verified.push(event),
-            RunEvent::PlanRecorded { plan_digest, .. } => require(
-                plan_digest == &a.proposal_digest,
-                "receipt plan differs from the submission",
-            )?,
             _ => {}
         }
     }

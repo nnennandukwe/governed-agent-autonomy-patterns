@@ -179,10 +179,10 @@ class JournalQualification(unittest.TestCase):
         self.assertEqual(observe_tree(slot.workspace), workspace)
         self.record(slot, "killed-after-injected-eio", {"lookup": reads, "retry": retry})
 
-    def test_delayed_space_error_at_activation_holds_store(self):
-        """Preserve the visible generation and quarantine a delayed quota or space error."""
-        ordinal = self.activation_sync_ordinal(SETTINGS.evidence / "space-sync-calibration.log")
-        for errno in ("ENOSPC", "EDQUOT"):
+    def test_failed_writeback_at_activation_holds_store(self):
+        """Keep the visible generation on hold when its directory sync fails."""
+        ordinal = self.activation_sync_ordinal(SETTINGS.evidence / "activation-sync-calibration.log")
+        for errno in ("ENOSPC", "EDQUOT", "EROFS"):
             with self.subTest(errno=errno):
                 slot = self.slot()
                 trace = SETTINGS.evidence / f"activation-sync-{errno.lower()}.log"
