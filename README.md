@@ -171,7 +171,7 @@ Architecture decisions:
 - [`0005: Add a bounded Agent Run engine`](./docs/adr/0005-bounded-agent-run-engine.md)
 - [`0006: Add the MCP client and map conference reuse`](./docs/adr/0006-mcp-client-adapter.md)
 - [`0007: Add the ACP client and mediate delegated effects`](./docs/adr/0007-acp-client-adapter.md)
-- [Accepted ADR 0009 on recovering an uncertain Agent Run effect](./docs/adr/0009-durable-agent-run-reconciliation.md) and its [proposed storage contract for enrollment and lookup](./docs/contracts/journal-enrollment-v0.1.md)
+- [Accepted ADR 0009 on recovering an uncertain Agent Run effect](./docs/adr/0009-durable-agent-run-reconciliation.md) and its [accepted storage contract for enrollment and lookup](./docs/contracts/journal-enrollment-v0.1.md)
 
 The normative contract guide is
 [`Agent Run Contract 0.1.0`](./docs/contracts/agent-run-v0.1.md). Contract

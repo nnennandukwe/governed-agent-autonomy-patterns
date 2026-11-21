@@ -1,0 +1,262 @@
+//! Same-directory stage, checked close, ownership recheck, rename and directory sync.
+use super::linux::{Volume, checked_close};
+use super::{ANCHOR, JOURNAL, SlotOperation, Snapshot};
+use crate::{Error, Result};
+use rustix::fs::{self, Mode, OFlags, RenameFlags};
+use std::fs::{File, Metadata};
+use std::io::Write;
+use std::os::unix::fs::MetadataExt;
+
+#[derive(Clone, Copy)]
+pub(super) enum Stage {
+    Reserve,
+    Journal,
+    Activate,
+}
+
+impl Stage {
+    fn names(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Reserve => ("reserve", ".gaap-stage-reserve", ANCHOR),
+            Self::Journal => ("journal", ".gaap-stage-journal", JOURNAL),
+            Self::Activate => ("activate", ".gaap-stage-activate", ANCHOR),
+        }
+    }
+}
+
+#[cfg(feature = "qualification")]
+fn selected(stage: &str, operation: &str) -> Option<String> {
+    (std::env::var("GAAP_JOURNAL_POINT").ok()?.as_str() == format!("{stage}.{operation}"))
+        .then(|| std::env::var("GAAP_JOURNAL_ACTION").unwrap_or_default())
+}
+
+// Qualification can stop at the actual syscall error return, before recording quarantine.
+#[cfg(feature = "qualification")]
+pub(super) fn stop_after_eio() -> Result<()> {
+    if selected("volume", "after_eio").as_deref() == Some("stop") {
+        eprintln!("journal qualification stop volume.after_eio");
+        rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::STOP)
+            .map_err(|_| Error::unavailable("qualification_stop"))?;
+    }
+    Ok(())
+}
+
+pub(super) fn point(_volume: &Volume<'_>, _stage: &str, _operation: &str) -> Result<()> {
+    #[cfg(feature = "qualification")]
+    if let Some(action) = selected(_stage, _operation) {
+        let failure = match action.as_str() {
+            "stop" => {
+                eprintln!("journal qualification stop {_stage}.{_operation}");
+                return _volume.io(
+                    rustix::process::kill_process(
+                        rustix::process::getpid(),
+                        rustix::process::Signal::STOP,
+                    ),
+                    false,
+                    "qualification_stop",
+                );
+            }
+            "eio" => rustix::io::Errno::IO,
+            "enospc" => rustix::io::Errno::NOSPC,
+            "short" => return Ok(()),
+            _ => rustix::io::Errno::INVAL,
+        };
+        return _volume.io(Err(failure), true, "qualification_fault");
+    }
+    Ok(())
+}
+
+impl SlotOperation<'_> {
+    pub(super) fn publish(
+        &self,
+        stage: Stage,
+        bytes: &[u8],
+        anchor: &Snapshot,
+        journal: Option<&Snapshot>,
+    ) -> Result<()> {
+        let volume = &self.volume;
+        let (step, staging, target) = stage.names();
+        let dir = if matches!(stage, Stage::Journal) {
+            &self.handles.store
+        } else {
+            &self.handles.control
+        };
+        self.recheck(anchor, journal)?;
+        point(volume, step, "create")?;
+        let flags =
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let fd = volume
+            .mutation("create_stage", || {
+                match fs::openat(dir, staging, flags, Mode::RUSR | Mode::WUSR) {
+                    Ok(fd) => Ok(Some(fd)),
+                    Err(rustix::io::Errno::EXIST) => Ok(None),
+                    Err(error) => Err(error.into()),
+                }
+            })?
+            .ok_or_else(|| Error::invalid("stage_collision"))?;
+        let mut file = File::from(fd);
+        let stage_metadata = || -> Result<Metadata> {
+            let owned = volume.io(file.metadata(), false, "stage_metadata")?;
+            if !owned.is_file()
+                || owned.uid() != self.host.slot.control.uid
+                || (owned.mode() & 0o7777) & !0o600 != 0
+                || owned.nlink() != 1
+            {
+                return Err(Error::invalid("stage_mode_or_owner"));
+            }
+            Ok(owned)
+        };
+        let pin_stage = (|| {
+            let mut owned = stage_metadata()?;
+            if owned.mode() & 0o7777 != 0o600 {
+                // umask can remove owner bits. Change only the inode this writer created.
+                volume.same_entry(dir, staging, &owned)?;
+                volume.mutation("set_stage_mode", || {
+                    fs::fchmod(&file, Mode::RUSR | Mode::WUSR).map_err(Into::into)
+                })?;
+                owned = stage_metadata()?;
+            }
+            // Keep an independent read pin across checked writer close, rename and cleanup.
+            let staged = volume
+                .existing(dir, staging, self.host.slot.control.uid)?
+                .ok_or_else(|| Error::invalid("stage_disappeared"))?;
+            volume.same_entry(dir, staging, &owned)?;
+            let reader = volume.io(staged.metadata(), false, "read_pin_metadata")?;
+            if reader.dev() != owned.dev() || reader.ino() != owned.ino() {
+                return Err(Error::invalid("entry_replaced"));
+            }
+            Ok((staged, owned))
+        })();
+        let (staged, owned) = match pin_stage {
+            Ok(pin) => pin,
+            Err(primary) if health_hold(&primary) => return Err(primary),
+            Err(primary) => {
+                let failure = self.cleanup_failed_stage(primary, dir, staging, stage_metadata());
+                if !health_hold(&failure) {
+                    volume
+                        .writeback("close_stage", || {
+                            checked_close(file.into()).map_err(Into::into)
+                        })
+                        .map_err(|close_failure| close_failure.with_warning(failure.reason))?;
+                }
+                return Err(failure);
+            }
+        };
+        let prepared = (|| {
+            point(volume, step, "write")?;
+            #[cfg(feature = "qualification")]
+            if selected(step, "write").as_deref() == Some("short") {
+                volume.mutation("short_write", || file.write_all(&bytes[..bytes.len() / 2]))?;
+                return Err(Error::unavailable("incomplete_stage_write"));
+            }
+            volume.mutation("write_stage", || file.write_all(bytes))?;
+            point(volume, step, "flush")?;
+            volume.mutation("flush_stage", || file.flush())?;
+            point(volume, step, "file_sync")?;
+            volume.writeback("sync_stage", || file.sync_all())
+        })();
+        // The host must withdraw after a health authority failure. Dropping the descriptor
+        // here releases it without attempting a fresh durable maintenance operation.
+        if prepared.as_ref().is_err_and(health_hold) {
+            return prepared;
+        }
+        // Linux consumes the descriptor on close, including when an earlier write failed.
+        let closed = volume.writeback("close_stage", || {
+            checked_close(file.into()).map_err(Into::into)
+        });
+        let mut renamed = false;
+        let publication = (|| {
+            closed?;
+            prepared?;
+            point(volume, step, "close")?;
+            point(volume, step, "before_rename")?;
+            self.recheck(anchor, journal)?;
+            match stage {
+                Stage::Reserve => self.entries(&[])?,
+                Stage::Journal => self.entries(&[staging])?,
+                Stage::Activate => self.entries(&[JOURNAL])?,
+            }
+            {
+                use std::io::Read;
+                let mut persisted = Vec::with_capacity(bytes.len());
+                volume.io(
+                    (&staged)
+                        .take(bytes.len() as u64 + 1)
+                        .read_to_end(&mut persisted),
+                    false,
+                    "reread_stage",
+                )?;
+                if persisted != bytes {
+                    return Err(Error::invalid("staged_bytes_changed"));
+                }
+            }
+            volume.same_entry(dir, staging, &owned)?;
+            // No other entry can be adopted on the initial publication, even after an unexpected creation.
+            let flags = if matches!(stage, Stage::Journal) {
+                RenameFlags::NOREPLACE
+            } else {
+                RenameFlags::empty()
+            };
+            let published = volume.mutation("publish_stage", || {
+                match fs::renameat_with(dir, staging, dir, target, flags) {
+                    Ok(()) => Ok(true),
+                    Err(rustix::io::Errno::EXIST) => Ok(false),
+                    Err(error) => Err(error.into()),
+                }
+            })?;
+            if !published {
+                return Err(Error::invalid("journal_target_exists"));
+            }
+            renamed = true;
+            point(volume, step, "after_rename")?;
+            point(volume, step, "before_dir_sync")?;
+            volume.writeback("sync_publication_directory", || dir.sync_all())?;
+            point(volume, step, "after_dir_sync")
+        })();
+        match publication {
+            Err(primary) if !renamed && !health_hold(&primary) => {
+                Err(self.cleanup_failed_stage(primary, dir, staging, Ok(owned)))
+            }
+            other => other,
+        }
+    }
+
+    fn cleanup_failed_stage(
+        &self,
+        primary: Error,
+        dir: &File,
+        staging: &str,
+        pinned_metadata: Result<Metadata>,
+    ) -> Error {
+        let volume = &self.volume;
+        let cleanup = (|| {
+            let owned = pinned_metadata?;
+            self.handles.recheck(self.host, volume)?;
+            volume.same_entry(dir, staging, &owned)?;
+            #[cfg(feature = "qualification")]
+            if std::env::var_os("GAAP_JOURNAL_CLEANUP_FAIL").is_some() {
+                return Err(Error::unavailable("remove_owned_stage"));
+            }
+            volume.mutation("remove_owned_stage", || {
+                fs::unlinkat(dir, staging, fs::AtFlags::empty()).map_err(Into::into)
+            })
+        })();
+        match cleanup {
+            Ok(()) => primary,
+            Err(secondary) if health_hold(&secondary) => secondary.with_warning(primary.reason),
+            Err(secondary) if secondary.reason == "remove_owned_stage" => {
+                primary.with_warning("owned_stage_cleanup_failed")
+            }
+            Err(_) => primary.with_warning("stage_ownership_unconfirmed"),
+        }
+    }
+}
+
+fn health_hold(error: &Error) -> bool {
+    matches!(
+        error.reason,
+        "volume_quarantined"
+            | "volume_operation_unconfirmed"
+            | "health_authority_failed_withdraw_volume"
+    )
+}
