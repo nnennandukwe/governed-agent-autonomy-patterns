@@ -26,8 +26,9 @@ CUTS = ("before-rename", "after-rename")
 
 
 def source_line(label):
-    """Locate the legacy executor's persist call and its successful return in this source revision."""
-    sequence = ['.persist(self.path().join("shipping.py"))', '.map_err(|e| e.to_string())?;', 'Ok(())']
+    """Locate the stage handoff before persist and its successful return in this source revision."""
+    sequence = ['.take()', '.ok_or("shipping stage already consumed")?',
+                '.persist(self.path().join("shipping.py"))', '.map_err(|e| e.to_string())?;', 'Ok(())']
     lines = [line.strip() for line in SOURCE.read_text().splitlines()]
     starts = [i for i in range(len(lines)) if lines[i:i + len(sequence)] == sequence]
     if label not in CUTS or len(starts) != 1:
@@ -110,7 +111,10 @@ def interrupt_at_source(lldb, debugger, case, binary, line, relay_fd):
     process = target.Launch(launch, error)
     try:
         if not error.Success() or process.GetState() != lldb.eStateStopped:
-            raise AssertionError(("reference didn't stop", str(error), process.GetState()))
+            reason = (case / "child.stderr").read_bytes()[:4096]
+            response = (case / "child.stdout").read_bytes()[:512]
+            raise AssertionError(("reference didn't stop", str(error), process.GetState(), process.GetExitStatus(),
+                                  process.GetExitDescription(), reason, response, str(breakpoint)))
         thread = next(t for t in process if t.GetStopReason() == lldb.eStopReasonBreakpoint
                       and t.GetStopReasonDataAtIndex(0) == breakpoint.GetID())
         location = thread.GetFrameAtIndex(0).GetLineEntry()
