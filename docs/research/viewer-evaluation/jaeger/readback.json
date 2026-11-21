@@ -1,0 +1,305 @@
+{
+  "cases": [
+    {
+      "scenario": "Completed",
+      "trace_id": "cf012d001608e11cbed2639a49623afa",
+      "run": "completed",
+      "reason": "workflow.completion_authorized",
+      "decision": "allow",
+      "effect": "executed",
+      "usage_scope": "unavailable",
+      "verification_events": [
+        "pass"
+      ],
+      "span_count": 2,
+      "event_count": 16,
+      "query_event_order": [
+        4,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        15,
+        1,
+        5,
+        13,
+        16,
+        10,
+        2,
+        12,
+        14
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Denied",
+      "trace_id": "5d3c4b61ab1cd91020b106fe973f7e32",
+      "run": "blocked",
+      "reason": "permission.denied",
+      "decision": "block",
+      "effect": "denied",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 7,
+      "query_event_order": [
+        4,
+        3,
+        6,
+        1,
+        5,
+        7,
+        2
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Ask",
+      "trace_id": "10965165fd1f4c5654393da571f76bb0",
+      "run": "blocked",
+      "reason": "permission.policy_requires_approval",
+      "decision": "ask",
+      "effect": "awaiting_authority",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 8,
+      "query_event_order": [
+        4,
+        3,
+        6,
+        1,
+        5,
+        7,
+        8,
+        2
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Failed",
+      "trace_id": "3ef61e86b78d7a754f78f5f0b0e3318b",
+      "run": "failed",
+      "reason": "protected_effect.failed",
+      "decision": "allow",
+      "effect": "failed",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 13,
+      "query_event_order": [
+        4,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        1,
+        5,
+        13,
+        10,
+        2,
+        12
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Interrupted",
+      "trace_id": "70c7a11df1a940e77ecf432e1705fad6",
+      "run": "interrupted",
+      "reason": "protected_effect.interrupted",
+      "decision": "allow",
+      "effect": "interrupted",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 14,
+      "query_event_order": [
+        4,
+        13,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        1,
+        5,
+        14,
+        10,
+        2,
+        12
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Unknown",
+      "trace_id": "6eabae836ee8408526e7605cf8822a82",
+      "run": "failed",
+      "reason": "protected_effect.unknown_outcome",
+      "decision": "allow",
+      "effect": "unknown_outcome",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 12,
+      "query_event_order": [
+        4,
+        3,
+        6,
+        7,
+        8,
+        9,
+        1,
+        5,
+        12,
+        10,
+        2,
+        11
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Stale",
+      "trace_id": "755a69229dd0004779628730043d4920",
+      "run": "blocked",
+      "reason": "verification.stale_subject",
+      "decision": "allow",
+      "effect": "executed",
+      "usage_scope": "unavailable",
+      "verification_events": [
+        "pass"
+      ],
+      "span_count": 2,
+      "event_count": 15,
+      "query_event_order": [
+        4,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        1,
+        5,
+        13,
+        15,
+        10,
+        2,
+        12,
+        14
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Unverified",
+      "trace_id": "aeee8829418e4e173584fea221490f2b",
+      "run": "failed",
+      "reason": "other_omitted",
+      "decision": "allow",
+      "effect": "executed",
+      "usage_scope": "unavailable",
+      "verification_events": [],
+      "span_count": 2,
+      "event_count": 14,
+      "query_event_order": [
+        4,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        1,
+        5,
+        13,
+        14,
+        10,
+        2,
+        12
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    },
+    {
+      "scenario": "Paired",
+      "trace_id": "fac08a888beed4dd5abf4d44de0e5c01",
+      "run": "completed",
+      "reason": "workflow.completion_authorized",
+      "decision": "allow",
+      "effect": "executed",
+      "usage_scope": "unavailable",
+      "verification_events": [
+        "pass"
+      ],
+      "span_count": 2,
+      "event_count": 17,
+      "query_event_order": [
+        4,
+        11,
+        3,
+        6,
+        7,
+        8,
+        9,
+        16,
+        1,
+        5,
+        13,
+        17,
+        10,
+        2,
+        12,
+        14,
+        15
+      ],
+      "returned_durations_ns": [
+        1,
+        1
+      ]
+    }
+  ],
+  "searches": [
+    {
+      "attribute": "gaap.run.terminal_status",
+      "value": "blocked",
+      "matches": 3
+    },
+    {
+      "attribute": "gaap.run.reason",
+      "value": "fixture.absent",
+      "matches": 0
+    },
+    {
+      "attribute": "threadloop.attempt.id_sha256",
+      "value": "943a6885e1c2d234f46376b4324acc1d86634e1ae7666d0b4f008ad01b8715a2",
+      "matches": 1
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+{
+  "package": {
+    "id": "Aspire.Dashboard.Sdk.osx-arm64",
+    "version": "17.0.0",
+    "source_commit": "2d325b13709752ba6d9a943635c5e2940a2530c0",
+    "license_expression": "MIT",
+    "download_bytes": 38770701,
+    "sha512_base64": "VHWpBb3LRYxf+hi1wTadzePqnjNOziHGegogZQzkGyC54JwvLc1OsG2eofZluQxauG+YUuNF9lRCasjxRd54dA==",
+    "extracted_regular_file_bytes": 95888814,
+    "unexecuted_container_index_sha256": "69b9b095610997cc2b5a3c265acd5c9f8d6b6b5040ef8cfdccc8a66efff0252d",
+    "unexecuted_linux_arm64_sha256": "a57984de7b56ac6b9562883662b1ef87715a839d047761c2ee22d393b0bcb2b1",
+    "unexecuted_linux_amd64_sha256": "6884125996f7ccc9962a39c6a430eff207e772f65d86938491303e5bd196be15"
+  },
+  "native_viewer_listeners": [
+    "127.0.0.1:19571",
+    "127.0.0.1:19572",
+    "127.0.0.1:19573"
+  ],
+  "measure": {
+    "ready": {
+      "rss_kib": 133296,
+      "cpu_time": "0:00.12",
+      "probe": "HTTP /traces redirected to login and returned 200"
+    },
+    "ingest_seconds": 0.021438041999999997,
+    "after_ingest": {
+      "rss_kib": 135984,
+      "cpu_time": "0:00.14"
+    },
+    "after_5s_idle": {
+      "rss_kib": 135968,
+      "cpu_time": "0:00.14"
+    },
+    "startup_readiness_s": 0.13496350000000001,
+    "fixture_responses": [
+      {
+        "file": "completed.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "denied.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "ask.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "failed.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "interrupted.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "unknown.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "stale.json",
+        "http": 200,
+        "response": {}
+      },
+      {
+        "file": "unverified.json",
+        "http": 200,
+        "response": {}
+      }
+    ]
+  },
+  "search": [
+    {
+      "attribute": "gaap.run.terminal_status",
+      "condition": "contains",
+      "value": "blocked",
+      "count": 3
+    },
+    {
+      "attribute": "gaap.run.terminal_status",
+      "condition": "contains",
+      "value": "absent-fixture-value",
+      "count": 0
+    }
+  ],
+  "ui": {
+    "traces": [
+      {
+        "scenario": "Completed",
+        "trace_id": "cf012d001608e11cbed2639a49623afa",
+        "terminal_status": "completed",
+        "reason": "workflow.completion_authorized",
+        "effect": "executed",
+        "decision": "allow",
+        "verification_events": 1,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:63de1c08d158a5ea01ea76e00d7b66fd1bc818bdfc41881ec2aa034109c246d8",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Denied",
+        "trace_id": "5d3c4b61ab1cd91020b106fe973f7e32",
+        "terminal_status": "blocked",
+        "reason": "permission.denied",
+        "effect": "denied",
+        "decision": "block",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:11a89812c3eb24d786c6acb6a1ab52e88864e95b2548c7d2c7a245c5c4ee5376",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Ask",
+        "trace_id": "10965165fd1f4c5654393da571f76bb0",
+        "terminal_status": "blocked",
+        "reason": "permission.policy_requires_approval",
+        "effect": "awaiting_authority",
+        "decision": "ask",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:6d02c5e380bd60bbba596c547d36089116d2d393dae8334f4265c3c66a969235",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Failed",
+        "trace_id": "3ef61e86b78d7a754f78f5f0b0e3318b",
+        "terminal_status": "failed",
+        "reason": "protected_effect.failed",
+        "effect": "failed",
+        "decision": "allow",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:79f9854169650efe45608333ebc5ec4a91b086435ca38973400e590891ecf1cd",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Interrupted",
+        "trace_id": "70c7a11df1a940e77ecf432e1705fad6",
+        "terminal_status": "interrupted",
+        "reason": "protected_effect.interrupted",
+        "effect": "interrupted",
+        "decision": "allow",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:2199982ae370baa0f283b38260a71d96a82ab1e4775bee6846318d97e784c40f",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Unknown",
+        "trace_id": "6eabae836ee8408526e7605cf8822a82",
+        "terminal_status": "failed",
+        "reason": "protected_effect.unknown_outcome",
+        "effect": "unknown_outcome",
+        "decision": "allow",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:252a921163718e3a599c0c0577f224597ae73b36141023c1319b281924053cae",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Stale",
+        "trace_id": "755a69229dd0004779628730043d4920",
+        "terminal_status": "blocked",
+        "reason": "verification.stale_subject",
+        "effect": "executed",
+        "decision": "allow",
+        "verification_events": 1,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:2ebdc666163dabb9648a19630e5dc7d710e01add638e867856adaeee2c676aba",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Unverified",
+        "trace_id": "aeee8829418e4e173584fea221490f2b",
+        "terminal_status": "failed",
+        "reason": "other_omitted",
+        "effect": "executed",
+        "decision": "allow",
+        "verification_events": 0,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 0,
+        "receipt_digest": "sha256:76d72c9fee8fa718d386cec1cca84099ec0541f3ad60b3188be3a538b40a720b",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      },
+      {
+        "scenario": "Paired",
+        "trace_id": "fac08a888beed4dd5abf4d44de0e5c01",
+        "terminal_status": "completed",
+        "reason": "workflow.completion_authorized",
+        "effect": "executed",
+        "decision": "allow",
+        "verification_events": 1,
+        "model_scope": "unavailable",
+        "upstream_hash_fields": 4,
+        "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+        "protocol": "1.9.0",
+        "semconv": "1.42.0",
+        "evidence_ref_has_anchor": false
+      }
+    ],
+    "card_readback": true,
+    "blocked_external_browser_hosts": []
+  },
+  "default_restart": {
+    "trace_rows_before": 9,
+    "trace_rows_after": 0,
+    "trace_rows_after_one_replay": 1,
+    "ephemeral_sqlite_files_removed": true
+  },
+  "resume_restart": {
+    "trace_rows_before": 9,
+    "trace_rows_after": 9,
+    "replayed_on_restart": false,
+    "native_state_sha256_before_and_after": "f1266a2fd41e76df2f064915a09276bf21d7b4ac76e45e977933986b79e1b33f",
+    "paired_trace_reopened_with_original_receipt_and_correlations": true,
+    "repeat_raw_reply": {
+      "http": 200,
+      "content_type": "application/json",
+      "response": "{\"partialSuccess\":{\"rejectedSpans\":\"2\",\"errorMessage\":\"\"}}"
+    }
+  },
+  "fresh_worker_pair": {
+    "initial_visible_traces": 0,
+    "final_visible_traces": 1,
+    "first_worker_result": "Delivered",
+    "repeat_worker_result": "Partial",
+    "original_receipt_and_four_correlations_verified_in_browser": true
+  },
+  "after_shutdown": {
+    "orderly_process_stop": true,
+    "connect_ex_errno_on_macos": {
+      "19571": 61,
+      "19572": 61,
+      "19573": 61
+    }
+  }
+}

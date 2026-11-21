@@ -1,0 +1,128 @@
+{
+  "gaap_commit": "338298787d3277d526847a62920da2ec3cd94880",
+  "host": {
+    "os": "macOS 26.6 (25G72)",
+    "architecture": "arm64",
+    "processor": "Apple M4 Pro",
+    "logical_cpus": 12,
+    "memory_GiB": 24
+  },
+  "samples_per_viewer": 1,
+  "requests": 8,
+  "encoded_http_body_bytes": 62877,
+  "sources": {
+    "recorded_runs_sha256": "5b46899e6914ef70091d37c4a13cd20e24689f9fb9f1e6908afea08ae98f9ddf",
+    "paired_sha256": "912e61fee7e5b2b4929662b49a3e96f66468555793445d581c99ad418d67ab6a"
+  },
+  "offline_tcp_probe": {
+    "control_loopback_errno": 0,
+    "restricted_loopback_errno": 0,
+    "control_off_host_errno": 0,
+    "restricted_off_host_errno": 1,
+    "control": "TCP connect only to resolved github.com:443 and a task-owned loopback listener. No application request or fixture data. The localhost rule also allows addresses owned by the same machine."
+  },
+  "public_adapter_observations": {
+    "jaeger_existing": {
+      "delivered": 1,
+      "dropped": 0,
+      "effect_result_bytes_unchanged": true,
+      "failed": 0,
+      "partial": 0,
+      "queued": 1,
+      "receipt_body_bytes": 5821,
+      "receipt_bytes_unchanged": true,
+      "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+      "sampled_out": 0,
+      "shutdown": "Complete",
+      "submission": "Queued"
+    },
+    "aspire_existing_resume": {
+      "delivered": 0,
+      "dropped": 0,
+      "effect_result_bytes_unchanged": true,
+      "failed": 0,
+      "partial": 1,
+      "queued": 1,
+      "receipt_body_bytes": 5821,
+      "receipt_bytes_unchanged": true,
+      "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+      "sampled_out": 0,
+      "shutdown": "Complete",
+      "submission": "Queued"
+    },
+    "aspire_fresh": {
+      "delivered": 1,
+      "dropped": 0,
+      "effect_result_bytes_unchanged": true,
+      "failed": 0,
+      "partial": 0,
+      "queued": 1,
+      "receipt_body_bytes": 5821,
+      "receipt_bytes_unchanged": true,
+      "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+      "sampled_out": 0,
+      "shutdown": "Complete",
+      "submission": "Queued"
+    },
+    "aspire_repeat": {
+      "delivered": 0,
+      "dropped": 0,
+      "effect_result_bytes_unchanged": true,
+      "failed": 0,
+      "partial": 1,
+      "queued": 1,
+      "receipt_body_bytes": 5821,
+      "receipt_bytes_unchanged": true,
+      "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+      "sampled_out": 0,
+      "shutdown": "Complete",
+      "submission": "Queued"
+    },
+    "no_receiver": {
+      "delivered": 0,
+      "dropped": 0,
+      "effect_result_bytes_unchanged": true,
+      "failed": 1,
+      "partial": 0,
+      "queued": 1,
+      "receipt_body_bytes": 5821,
+      "receipt_bytes_unchanged": true,
+      "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+      "sampled_out": 0,
+      "shutdown": "Complete",
+      "submission": "Queued"
+    }
+  },
+  "process_measurements": {
+    "aspire": {
+      "startup_seconds": 0.13496350000000001,
+      "ready": {
+        "rss_KiB": 133296,
+        "cpu_seconds": 0.12
+      },
+      "after_eight_acks": {
+        "rss_KiB": 135984,
+        "cpu_seconds": 0.14
+      },
+      "after_five_idle_seconds": {
+        "rss_KiB": 135968,
+        "cpu_seconds": 0.14
+      }
+    },
+    "jaeger": {
+      "startup_seconds": 0.052,
+      "ready": {
+        "rss_KiB": 51632,
+        "cpu_seconds": 0.03
+      },
+      "after_eight_acks": {
+        "rss_KiB": 52496,
+        "cpu_seconds": 0.04
+      },
+      "after_five_idle_seconds": {
+        "rss_KiB": 52496,
+        "cpu_seconds": 0.04
+      }
+    }
+  }
+}
