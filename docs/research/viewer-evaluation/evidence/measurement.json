@@ -1,0 +1,104 @@
+{
+  "source_revision": "338298787d3277d526847a62920da2ec3cd94880",
+  "paired_trace": {
+    "scenario": "Paired",
+    "file": "paired.json",
+    "trace_id": "fac08a888beed4dd5abf4d44de0e5c01",
+    "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "terminal_status": "completed",
+    "reason": "workflow.completion_authorized",
+    "effect_status": "executed",
+    "usage": "unavailable",
+    "effect_result_digest": "sha256:9987e138adecee6b3ebef87ee3717dd197954f0d1412ece69d311142cc90be9b",
+    "evidence_ref": "receipts/df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "payload_sha256": "912e61fee7e5b2b4929662b49a3e96f66468555793445d581c99ad418d67ab6a",
+    "known_correlations": {
+      "threadloop.workflow_run.id_sha256": "6f3ef33a19238543eb7fa0129041af1dc35c5337eb6a60da2aae42b172d04558",
+      "threadloop.action_request.id_sha256": "96481594b2a4431180a837f1649b733927148e2d400b791e1f40c547aea26438",
+      "threadloop.execution_claim.id_sha256": "655f58308b5fe940e57ce02f741b00b12acbadf19aa4b6886e9d937a69ff363d",
+      "threadloop.attempt.id_sha256": "943a6885e1c2d234f46376b4324acc1d86634e1ae7666d0b4f008ad01b8715a2"
+    }
+  },
+  "run_id_sha256": "b9a10b35063cb0cf1e534b497322c452ba378af2c92a21400295045785fec575",
+  "effect_id_sha256": "7d965177987db1854eb11282934ad75037f0cfff45c6445883bb53fda5936b99",
+  "host_supplied_threadloop_hashes_verified": 4,
+  "native_lookup": {
+    "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "effect_digest": "sha256:9987e138adecee6b3ebef87ee3717dd197954f0d1412ece69d311142cc90be9b",
+    "terminal_receipt_verified": true,
+    "model_usage": null,
+    "cases": 41,
+    "passed": true
+  },
+  "fixed_cases": 9,
+  "seeded_cases": 32,
+  "signature_verification": "unavailable in this fixture",
+  "evidence_card": {
+    "bound_address": "127.0.0.1",
+    "port": 19490,
+    "matching_digest_http_status": 200,
+    "unknown_digest_http_status": 404,
+    "public_path": "/receipts/df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "connection_refused_after_stop": true
+  },
+  "closed_ingestion_port": {
+    "delivered": 0,
+    "dropped": 0,
+    "effect_result_bytes_unchanged": true,
+    "failed": 1,
+    "partial": 0,
+    "queued": 1,
+    "receipt_body_bytes": 5821,
+    "receipt_bytes_unchanged": true,
+    "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "sampled_out": 0,
+    "shutdown": "Complete",
+    "submission": "Queued"
+  },
+  "native_file_hashes_before_restart": {
+    "operator/lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "operator/state.json": "f1266a2fd41e76df2f064915a09276bf21d7b4ac76e45e977933986b79e1b33f",
+    "workspace/TASK.md": "2a042653d0457f4226ac38a96167c80d1ec38b154a40ee41b4ad21d649e8559d",
+    "workspace/deployment.json": "44dece7b7e448bf84d15362b71fb37c58bc567fe38d03fe3b23c9d00db8d7eb0",
+    "workspace/shipping.py": "e87356f9e408b571a9c3af6892517d60d7ece31db1d28f2dc14a06fcee26116c"
+  },
+  "native_file_hashes_after_both_viewer_restarts": {
+    "operator/lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "operator/state.json": "f1266a2fd41e76df2f064915a09276bf21d7b4ac76e45e977933986b79e1b33f",
+    "workspace/TASK.md": "2a042653d0457f4226ac38a96167c80d1ec38b154a40ee41b4ad21d649e8559d",
+    "workspace/deployment.json": "44dece7b7e448bf84d15362b71fb37c58bc567fe38d03fe3b23c9d00db8d7eb0",
+    "workspace/shipping.py": "e87356f9e408b571a9c3af6892517d60d7ece31db1d28f2dc14a06fcee26116c"
+  },
+  "native_inspection_bytes_identical_after_restarts": true,
+  "native_inspection_sha256": "ab7941525d18358d5e8e4e77ecc48b4079eba7397ed45db80c1077393595a210",
+  "native_before_sample_utc": "2026-11-21T02:23:49.673260+00:00",
+  "native_after_sample_utc": "2026-11-21T02:29:09.544392+00:00",
+  "jaeger_adapter_delivery": {
+    "delivered": 1,
+    "dropped": 0,
+    "effect_result_bytes_unchanged": true,
+    "failed": 0,
+    "partial": 0,
+    "queued": 1,
+    "receipt_body_bytes": 5821,
+    "receipt_bytes_unchanged": true,
+    "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "sampled_out": 0,
+    "shutdown": "Complete",
+    "submission": "Queued"
+  },
+  "aspire_adapter_delivery": {
+    "delivered": 0,
+    "dropped": 0,
+    "effect_result_bytes_unchanged": true,
+    "failed": 0,
+    "partial": 1,
+    "queued": 1,
+    "receipt_body_bytes": 5821,
+    "receipt_bytes_unchanged": true,
+    "receipt_digest": "sha256:df42eeace653b7314c27ccacfc6f91b4b2dffe97ed5f6e0870dea34419896f93",
+    "sampled_out": 0,
+    "shutdown": "Complete",
+    "submission": "Queued"
+  }
+}
