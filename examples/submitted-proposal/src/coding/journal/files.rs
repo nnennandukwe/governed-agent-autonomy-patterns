@@ -123,16 +123,19 @@ impl Stage {
             checked_close(tx, writer)?;
             witness.bind_stage(tx, &stage.name)
         })();
-        if let Err(error) = prepared {
-            let cleanup = stage.remove(tx);
-            if writable {
-                checked_close(tx, stage.pin)?;
+        if let Err(primary) = prepared {
+            if primary.health_hold() {
+                return Err(primary);
             }
-            return Err(if cleanup.is_err() {
-                error.with_warning("owned_stage_cleanup_failed")
-            } else {
-                error
-            });
+            let failure = match stage.remove(tx) {
+                Ok(()) => primary,
+                Err(error) if error.health_hold() => error.with_warning(primary.reason),
+                Err(_) => primary.with_warning("owned_stage_cleanup_failed"),
+            };
+            if writable && !failure.health_hold() {
+                checked_close(tx, stage.pin).map_err(|error| error.with_warning(failure.reason))?;
+            }
+            return Err(failure);
         }
         Ok(stage)
     }

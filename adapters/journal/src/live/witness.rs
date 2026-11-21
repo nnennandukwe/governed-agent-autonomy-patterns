@@ -80,8 +80,8 @@ pub fn witness_main() -> Result<()> {
         )?;
         match receive(&mut channel)? {
             Request::Bind { name } => {
-                watch.bind_stage(name)?;
-                send(&mut channel, &Reply::Ok { value: Value::Null })?;
+                let value = watch.bind_stage(name)?;
+                send(&mut channel, &Reply::Ok { value })?;
                 if !matches!(receive(&mut channel)?, Request::Finish) {
                     return Err(ambiguous());
                 }
@@ -118,6 +118,7 @@ pub struct Witness {
     channel: UnixStream,
     binding: String,
     before: Value,
+    bound_stage: Option<Value>,
 }
 
 impl Witness {
@@ -158,6 +159,7 @@ impl Witness {
             channel,
             binding: binding.into(),
             before: Value::Null,
+            bound_stage: None,
         };
         witness.before = witness.exchange(
             tx.volume(),
@@ -192,13 +194,13 @@ impl Witness {
     }
 
     pub fn bind_stage(&mut self, tx: &Submission<'_>, basename: &str) -> Result<()> {
-        self.exchange(
+        self.bound_stage = Some(self.exchange(
             tx.volume(),
             Request::Bind {
                 name: basename.into(),
             },
-        )
-        .map(|_| ())
+        )?);
+        Ok(())
     }
 
     pub fn finish(mut self, tx: &Submission<'_>, admission: &Admission) -> Result<EffectEvidence> {
@@ -207,6 +209,16 @@ impl Witness {
         let raw = match self.exchange(tx.volume(), Request::Finish) {
             Ok(raw) => raw,
             Err(e) if e.reason == "ambiguous_effect_witness" => {
+                // The observer did not report a final disposition. Keep its earlier
+                // authenticated replies and the worker's actual authority check.
+                archive::retain(
+                    tx,
+                    &self.binding,
+                    "effect",
+                    Vec::new(),
+                    json!({"failure":"witness_final_observation_unavailable","observation":null,
+                        "before":self.before,"bound_stage":self.bound_stage,"authority":*admission.rename_check.borrow()}),
+                )?;
                 return Ok(EffectEvidence {
                     disposition: "unresolved".into(),
                     after: None,
@@ -231,7 +243,8 @@ impl Witness {
             &self.binding,
             "effect",
             vec![archive::entry(actor, &locator, &bytes)],
-            json!({"observation":raw,"authority":*admission.rename_check.borrow()}),
+            json!({"failure":null,"observation":raw, "before":self.before, "bound_stage":self.bound_stage,
+                "authority":*admission.rename_check.borrow()}),
         )?;
         Ok(EffectEvidence {
             disposition: disposition.into(),

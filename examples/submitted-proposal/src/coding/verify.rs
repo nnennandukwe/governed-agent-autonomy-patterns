@@ -114,7 +114,7 @@ fn evaluate_program(source: &str, program: &str, timeout: Duration, seed: &str) 
         }
     }
     Ok(
-        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":"independent-shipping-oracle","execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
+        json!({"passed":cases.iter().all(|case|case["passed"]==true),"cases":cases,"fixed_case_count":CASES.len(),"sample_count":if observed["validation_error"].is_null(){32}else{0},"challenge_seed":seed,"verification_scope":"recorded fixture and host-seeded sample inputs","compiler_warnings":observed["compiler_warnings"],"validation_error":observed["validation_error"],"elapsed_ms":started.elapsed().as_millis() as u64,"verifier":VERIFIER_ID,"execution_policy":"bounded float arithmetic; no imports, attributes, loops, or arbitrary calls"}),
     )
 }
 
@@ -169,7 +169,7 @@ impl<W: ShippingWorkspace> VerifierPort for ShippingVerifier<'_, W> {
             Ok(PortObservation {
                 value: VerificationReport {
                     subject_digest: observed_digest.clone(),
-                    verifier_id: "independent-shipping-oracle".into(),
+                    verifier_id: VERIFIER_ID.into(),
                     verdict: if report["passed"] == true {
                         VerificationVerdict::Pass
                     } else {

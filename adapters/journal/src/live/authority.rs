@@ -212,6 +212,21 @@ pub fn admit(
     })
 }
 
+struct Assessment {
+    time: u64,
+    hash: String,
+    refusal: Option<&'static str>,
+}
+
+impl Assessment {
+    fn allow(&self) -> Result<u64> {
+        match self.refusal {
+            Some(_) => Err(deny()),
+            None => Ok(self.time),
+        }
+    }
+}
+
 pub struct GrantEvidence {
     pub checked_at_ms: u64,
     pub checks: Vec<Value>,
@@ -225,7 +240,13 @@ impl Admission {
     /// The engine calls its executor's one-shot completion claim after verification.
     /// A cooperating source update either precedes this decision or takes effect later.
     pub fn check_completion(&self, host: &Host, usage: &ResourceUsage) -> Result<()> {
-        if self.completion_checked.replace(true) || self.rename_check.borrow().is_none() {
+        if self.completion_checked.replace(true)
+            || self
+                .rename_check
+                .borrow()
+                .as_ref()
+                .is_none_or(|s| s["decision"] != "allow")
+        {
             return Err(deny());
         }
         let source = LockedAuthority::open(host)?;
@@ -235,7 +256,7 @@ impl Admission {
             elapsed_ms: 0,
             tool_calls: 0,
         };
-        self.check_now(&source, usage, &remaining)?;
+        self.assess(&source, usage, &remaining)?.allow()?;
         Ok(())
     }
 
@@ -276,48 +297,57 @@ impl Admission {
         Ok(())
     }
 
-    fn check_now(
+    fn assess(
         &self,
         source: &LockedAuthority,
         used: &ResourceUsage,
         reserved: &EffectUsage,
-    ) -> Result<u64> {
+    ) -> Result<Assessment> {
+        let hash = digest(&source.bytes);
         let elapsed = u64::try_from(self.start.elapsed().as_millis()).map_err(|_| deny())?;
         let now = now_ms()?.max(self.start_ms.checked_add(elapsed).ok_or_else(deny)?);
         let a = &source.record;
-        if digest(&source.bytes) != self.source_digest
-            || a.approval != self.approval
-            || a.budget != self.budget
-            || now < a.valid_from_ms
-            || now >= a.expires_at_ms
-            || [
-                (
-                    used.cost_micros,
-                    reserved.cost_micros,
-                    self.budget.max_cost_micros,
-                ),
-                (
-                    used.model_tokens,
-                    reserved.model_tokens,
-                    self.budget.max_model_tokens,
-                ),
-                (
-                    used.tool_calls,
-                    reserved.tool_calls,
-                    self.budget.max_tool_calls,
-                ),
-                (
-                    used.elapsed_ms.max(elapsed),
-                    reserved.elapsed_ms,
-                    self.budget.max_elapsed_ms,
-                ),
-            ]
-            .iter()
-            .any(|(u, r, max)| u.checked_add(*r).is_none_or(|n| n > *max))
-        {
-            return Err(deny());
-        }
-        Ok(now)
+        let budget = &a.budget;
+        let exceeded = [
+            (
+                used.cost_micros,
+                reserved.cost_micros,
+                budget.max_cost_micros,
+            ),
+            (
+                used.model_tokens,
+                reserved.model_tokens,
+                budget.max_model_tokens,
+            ),
+            (used.tool_calls, reserved.tool_calls, budget.max_tool_calls),
+            (
+                used.elapsed_ms.max(elapsed),
+                reserved.elapsed_ms,
+                budget.max_elapsed_ms,
+            ),
+        ]
+        .iter()
+        .any(|(u, r, max)| u.checked_add(*r).is_none_or(|n| n > *max));
+        let refusal = if a.approval != self.approval || a.proposal_digest != self.proposal_digest {
+            Some("authority_changed")
+        } else if a.revoked {
+            Some("grant_revoked")
+        } else if a.cancelled {
+            Some("attempt_cancelled")
+        } else if now < a.valid_from_ms || now >= a.expires_at_ms {
+            Some("grant_outside_validity_interval")
+        } else if exceeded {
+            Some("budget_exhausted")
+        } else if hash != self.source_digest || a.budget != self.budget {
+            Some("authority_changed")
+        } else {
+            None
+        };
+        Ok(Assessment {
+            time: now,
+            hash,
+            refusal,
+        })
     }
 
     pub fn dispatch_check(
@@ -334,7 +364,7 @@ impl Admission {
         }
         self.verify_request(tx.host(), run, effect)?;
         let source = LockedAuthority::open(tx.host())?;
-        let time = self.check_now(&source, usage, reserved)?;
+        let time = self.assess(&source, usage, reserved)?.allow()?;
         let actor = &tx.host().profile.grant_observer;
         let locator = format!("gaap:journal/grant/{}", &binding[7..]);
         let bytes = canonical(
@@ -390,13 +420,14 @@ impl Admission {
         if subject != self.subject {
             return Err(deny());
         }
-        let now = self.check_now(&source, &usage, reserved)?;
-        let result = rename_once();
+        let check = self.assess(&source, &usage, reserved)?;
+        let result = check.allow().map(|_| rename_once());
         drop(source._lock);
         *self.rename_check.borrow_mut() = Some(
-            json!({"checked_at_ms":now,"revision":source.record.revision,
-            "authority_digest":self.source_digest,"subject_digest":subject.digest,"usage":usage,"reserved":reserved}),
+            json!({"checked_at_ms":check.time, "revision":source.record.revision,
+                "authority_digest":check.hash, "subject_digest":subject.digest, "usage":usage, "reserved":reserved,
+                "decision":if check.refusal.is_some() { "deny" } else { "allow" }, "reason":check.refusal}),
         );
-        Ok(result)
+        result
     }
 }

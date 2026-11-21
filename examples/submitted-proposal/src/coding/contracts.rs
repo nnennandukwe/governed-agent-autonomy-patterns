@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const VERIFIER_ID: &str = "independent-shipping-oracle";
+
 pub fn policy() -> PolicyIdentity {
     PolicyIdentity {
         name: "shipping-demo-policy".into(),
@@ -173,7 +175,7 @@ pub fn runtime_support(change: &Change, trusted_schema: &str) -> RuntimeSupport 
         },
         effect_usage(1, 1),
         vec![],
-        vec!["independent-shipping-oracle".into()],
+        vec![VERIFIER_ID.into()],
     )
 }
 pub fn config() -> RuntimeConfig {

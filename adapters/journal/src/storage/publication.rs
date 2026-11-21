@@ -133,10 +133,10 @@ impl SlotOperation<'_> {
         })();
         let (staged, owned) = match pin_stage {
             Ok(pin) => pin,
-            Err(primary) if health_hold(&primary) => return Err(primary),
+            Err(primary) if primary.health_hold() => return Err(primary),
             Err(primary) => {
                 let failure = self.cleanup_failed_stage(primary, dir, staging, stage_metadata());
-                if !health_hold(&failure) {
+                if !failure.health_hold() {
                     volume
                         .writeback("close_stage", || {
                             checked_close(file.into()).map_err(Into::into)
@@ -161,7 +161,7 @@ impl SlotOperation<'_> {
         })();
         // The host must withdraw after a health authority failure. Dropping the descriptor
         // here releases it without attempting a fresh durable maintenance operation.
-        if prepared.as_ref().is_err_and(health_hold) {
+        if prepared.as_ref().is_err_and(Error::health_hold) {
             return prepared;
         }
         // Linux consumes the descriptor on close, including when an earlier write failed.
@@ -219,7 +219,7 @@ impl SlotOperation<'_> {
             point(volume, step, "after_dir_sync")
         })();
         match publication {
-            Err(primary) if !renamed && !health_hold(&primary) => {
+            Err(primary) if !renamed && !primary.health_hold() => {
                 Err(self.cleanup_failed_stage(primary, dir, staging, Ok(owned)))
             }
             other => other,
@@ -248,20 +248,11 @@ impl SlotOperation<'_> {
         })();
         match cleanup {
             Ok(()) => primary,
-            Err(secondary) if health_hold(&secondary) => secondary.with_warning(primary.reason),
+            Err(secondary) if secondary.health_hold() => secondary.with_warning(primary.reason),
             Err(secondary) if secondary.reason == "remove_owned_stage" => {
                 primary.with_warning("owned_stage_cleanup_failed")
             }
             Err(_) => primary.with_warning("stage_ownership_unconfirmed"),
         }
     }
-}
-
-fn health_hold(error: &Error) -> bool {
-    matches!(
-        error.reason,
-        "volume_quarantined"
-            | "volume_operation_unconfirmed"
-            | "health_authority_failed_withdraw_volume"
-    )
 }

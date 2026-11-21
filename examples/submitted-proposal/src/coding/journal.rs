@@ -11,6 +11,9 @@ mod files;
 
 pub fn submit(key: &str) -> JResult<Value> {
     let host = handoff::host_config()?;
+    if !host.can_read {
+        return Err(Error::new("forbidden", "current host permission denied"));
+    }
     let health = handoff::inherited(4)?;
     let proposal = handoff::caller_proposal()?;
     writer::with_submission(&host, &health, key, &proposal, |tx| run(tx, key, &proposal))
@@ -39,6 +42,19 @@ fn dedicated_workspace(tx: &Submission<'_>) -> JResult<()> {
 fn run(tx: &mut Submission<'_>, key: &str, proposal: &Value) -> JResult<()> {
     tx.check_workspace()?;
     dedicated_workspace(tx)?;
+    let enrolled = &tx.host().profile;
+    let schema = mcp::capability_digest();
+    let runtime = config();
+    if enrolled.implementer_id != runtime.implementer_id
+        || enrolled.verifier_id != VERIFIER_ID
+        || enrolled.executor != runtime.executor_identity
+        || enrolled.policies.as_slice() != [policy()]
+        || enrolled.capability != capability(&schema)
+        || enrolled.tool_schema_digest != schema
+        || enrolled.sandbox != profile()
+    {
+        return Err(Error::unsupported("incompatible_shipping_profile"));
+    }
     let change: Change = serde_json::from_value(proposal.clone())
         .map_err(|_| Error::new("invalid_request", "invalid_shipping_proposal"))?;
     let before = files::snapshot(tx)?;
@@ -88,8 +104,8 @@ fn run(tx: &mut Submission<'_>, key: &str, proposal: &Value) -> JResult<()> {
         failure: RefCell::new(None),
     };
     let result = AgentRunEngine::new(
-        runtime_support(&change, &mcp::capability_digest()),
-        config(),
+        runtime_support(&change, &schema),
+        runtime,
         adapter,
         FileExecutor {
             store: &workspace,
@@ -143,8 +159,11 @@ impl JournalWorkspace<'_, '_> {
         message
     }
 
-    fn checkpoint(&self, result: JResult<()>) -> std::result::Result<(), RuntimeError> {
-        result.map_err(|error| RuntimeError::Checkpoint(self.remember(error)))
+    fn checkpoint(
+        &self,
+        operation: impl FnOnce() -> JResult<()>,
+    ) -> std::result::Result<(), RuntimeError> {
+        operation().map_err(|error| RuntimeError::Checkpoint(self.remember(error)))
     }
 }
 
@@ -165,17 +184,36 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
         usage: &ResourceUsage,
         reserved: &EffectUsage,
     ) -> std::result::Result<(), RuntimeError> {
-        self.checkpoint((|| {
+        self.checkpoint(|| {
             let mut tx = self.tx.borrow_mut();
-            let witness = Witness::arm(&tx, &self.binding, self.attempt, &digest(self.change.content.as_bytes()))?;
-            let grants = self.admission.dispatch_check(&tx, &self.binding, self.run, effect, usage, reserved)?;
-            let decisions: Vec<_> = events.iter().filter(|event|matches!(event,RunEvent::ProtectedEffectDecision{..})).collect();
-            tx.dispatch(json!({"before":witness.before(),"executor":executor_identity(),"decisions":decisions,
-                "checked_at_ms":grants.checked_at_ms,"checks":grants.checks,"reserved":reserved,"usage_floor":usage}))?;
+            let proposed = digest(self.change.content.as_bytes());
+            let witness = Witness::arm(&tx, &self.binding, self.attempt, &proposed)?;
+            let grants = self.admission.dispatch_check(
+                &tx,
+                &self.binding,
+                self.run,
+                effect,
+                usage,
+                reserved,
+            )?;
+            let decisions: Vec<_> = events
+                .iter()
+                .filter(|event| matches!(event, RunEvent::ProtectedEffectDecision { .. }))
+                .collect();
+            tx.dispatch(json!({
+                "before": witness.before(),
+                "executor": executor_identity(),
+                "decisions": decisions,
+                "checked_at_ms": grants.checked_at_ms,
+                "checks": grants.checks,
+                "reserved": reserved,
+                "usage_floor": usage,
+            }))?;
             self.witness.replace(Some(witness));
-            self.dispatch.replace(Some((usage.clone(), reserved.clone())));
+            self.dispatch
+                .replace(Some((usage.clone(), reserved.clone())));
             Ok(())
-        })())
+        })
     }
 
     fn stage(&self, content: &str) -> Result<Self::Stage> {
@@ -204,6 +242,7 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
                     self.effect,
                     reserved,
                     || {
+                        qualify("target.authority_held_before_rename");
                         dedicated_workspace(&tx)?;
                         if control.cancellation().is_some() {
                             return Err(Error::new("forbidden", "shipping_cancelled"));
@@ -218,10 +257,7 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
                                 .map_err(|_| Error::invalid("shipping_subject_digest"))?;
                         Ok((subject, usage.clone()))
                     },
-                    || {
-                        qualify("target.authority_held_before_rename");
-                        stage.rename(tx.workspace_dir())
-                    },
+                    || stage.rename(tx.workspace_dir()),
                 );
                 match result {
                     Ok(raw) => raw.map(Ok),
@@ -241,10 +277,22 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
     }
 
     fn abandon(&self, stage: Self::Stage, primary: String) -> String {
-        if let Err(cleanup) = stage.remove(&self.tx.borrow()) {
-            // The journal retains dispatch and never deletes an unrecognized stage.
-            self.remember(cleanup.with_warning("owned_stage_cleanup_failed"));
+        let failure = self.failure.take();
+        if failure.as_ref().is_some_and(Error::health_hold) {
+            self.failure.replace(failure);
+            return primary;
         }
+        // Preserve the operation and cleanup diagnostics. A failed health authority
+        // takes precedence because the host must withdraw the volume.
+        let failure = match (stage.remove(&self.tx.borrow()), failure) {
+            (Ok(()), original) => original,
+            (Err(cleanup), Some(original)) if cleanup.health_hold() => {
+                Some(cleanup.with_warning(original.reason))
+            }
+            (Err(_), Some(original)) => Some(original.with_warning("owned_stage_cleanup_failed")),
+            (Err(cleanup), None) => Some(cleanup.with_warning("target_commit_aborted")),
+        };
+        self.failure.replace(failure);
         primary
     }
 
@@ -263,17 +311,27 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
         if self.failure.borrow().is_some() {
             return Err(RuntimeError::Checkpoint("shipping operation failed".into()));
         }
-        self.checkpoint((|| {
+        self.checkpoint(|| {
             let mut tx = self.tx.borrow_mut();
-            let witness = self.witness.take().ok_or_else(|| Error::invalid("shipping_witness_missing"))?;
-            let observed = witness.finish(&tx,&self.admission)?;
-            live::retain_executor(&tx,&self.binding,record)?;
-            tx.observed(json!({"disposition":observed.disposition,"after":observed.after,"source":observed.source,"usage_floor":usage}))?;
-            if observed.disposition == "unresolved" && result.body.execution_status == EffectExecutionStatus::Executed {
+            let witness = self
+                .witness
+                .take()
+                .ok_or_else(|| Error::invalid("shipping_witness_missing"))?;
+            let observed = witness.finish(&tx, &self.admission)?;
+            live::retain_executor(&tx, &self.binding, record)?;
+            tx.observed(json!({
+                "disposition": observed.disposition,
+                "after": observed.after,
+                "source": observed.source,
+                "usage_floor": usage,
+            }))?;
+            if observed.disposition == "unresolved"
+                && result.body.execution_status == EffectExecutionStatus::Executed
+            {
                 return Err(Error::unavailable("shipping_effect_unresolved"));
             }
             Ok(())
-        })())
+        })
     }
 
     fn verifier_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
@@ -289,15 +347,18 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
         usage: &ResourceUsage,
         report: &Value,
     ) -> std::result::Result<(), RuntimeError> {
-        self.checkpoint((|| {
+        self.checkpoint(|| {
             let mut tx = self.tx.borrow_mut();
             let snapshot = self
                 .verified_snapshot
                 .take()
                 .ok_or_else(|| Error::invalid("shipping_verifier_snapshot_missing"))?;
             live::retain_verifier(&tx, &self.binding, self.attempt, event, report, &snapshot)?;
-            tx.verified(json!({"event":event,"usage_floor":usage}))
-        })())
+            tx.verified(json!({
+                "event": event,
+                "usage_floor": usage,
+            }))
+        })
     }
 
     fn check_completion(&self, subject: &Subject, usage: &ResourceUsage) -> Result<()> {

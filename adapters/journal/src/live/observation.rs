@@ -224,7 +224,7 @@ impl Watch {
         }
     }
 
-    pub fn bind_stage(&mut self, name: String) -> Result<()> {
+    pub fn bind_stage(&mut self, name: String) -> Result<Value> {
         if self.stage.is_some()
             || !token(&name)
             || [".", "..", "shipping.py", "TASK.md", "deployment.json"].contains(&name.as_str())
@@ -259,9 +259,12 @@ impl Watch {
         {
             return Err(ambiguous());
         }
+        let retained = json!({"name":name, "dev":stat.dev().to_string(), "ino":stat.ino().to_string(),
+            "uid":stat.uid(), "mode":stat.mode() & 0o7777, "artifact_digest":self.start.proposed,
+            "wd":self.wd, "events":self.events});
         self.bound_at = self.events.len();
         self.stage = Some((name, file));
-        Ok(())
+        Ok(retained)
     }
 
     pub fn finish(mut self) -> Result<Value> {

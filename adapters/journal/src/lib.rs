@@ -36,6 +36,15 @@ impl Error {
             warning: None,
         }
     }
+    /// A pending, quarantined or unavailable health authority forbids further storage writes.
+    pub fn health_hold(&self) -> bool {
+        matches!(
+            self.reason,
+            "volume_quarantined"
+                | "volume_operation_unconfirmed"
+                | "health_authority_failed_withdraw_volume"
+        )
+    }
     pub fn with_warning(mut self, warning: &'static str) -> Self {
         self.warning = Some(warning);
         self

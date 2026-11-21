@@ -56,6 +56,7 @@ def update_grant(directory, **changes):
 class Shipping:
     def __init__(self, root, health, args, inputs, profile, budget, content, key):
         self.root, self.key, self.args = root, key, args
+        self.commands = []
         self.workspace = root / "workspace"
         self.workspace.mkdir(mode=0o700)
         for name, data in inputs.items():
@@ -90,7 +91,14 @@ class Shipping:
                                       "locator": "gaap:issuer/approval-shipping"}},
             "approval_bytes_hex": source.hex()}
         write_private(self.authority / "authority.json", canonical(self.grant))
-        self.slot.call("enroll", expected="enrolled")
+        enrolled = self.slot.call("enroll", expected="enrolled")
+        self.commands.append({"command": "enroll", "reply": enrolled})
+
+    def lookup(self, key, *, expected):
+        reply = self.slot.call("lookup", key, expected=expected)
+        self.commands.append({"command": "lookup", "principal": self.slot.host["principal"],
+                              "key": key, "reply": reply})
+        return reply
 
     def start(self, *, key=None, point=None, action="stop", trace=(), binary=None, fail_cleanup=False):
         """Launch the real submission command through the existing descriptor handoff."""
@@ -103,11 +111,13 @@ class Shipping:
             env["GAAP_JOURNAL_CLEANUP_FAIL"] = "1"
         if point:
             env.update(GAAP_JOURNAL_POINT=point, GAAP_JOURNAL_ACTION=action)
-        return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=env, start_new_session=True)
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=env, start_new_session=True)
+        self.commands.append({"command": "journal-submit", "principal": self.slot.host["principal"],
+                              "key": key or self.key, "binary": str(binary), "pid": child.pid, "cut": point})
+        return child
 
-    @staticmethod
-    def finish(child, stdin=None):
+    def finish(self, child, stdin=None):
         """Require JSON and preserve diagnostics if the command dies without a result."""
         try:
             out, err = child.communicate(stdin, timeout=20)
@@ -118,6 +128,7 @@ class Shipping:
             result = json.loads(out or err)
         except ValueError as exc:
             raise AssertionError((child.returncode, out[:300], err[:1500])) from exc
+        self.commands.append({"pid": child.pid, "exit": child.returncode, "reply": result})
         return child.returncode, result
 
     def submit(self, *, stdin=None, **options):
@@ -149,17 +160,17 @@ class Shipping:
             yield child
         finally:
             terminate(child)
+            self.commands.append({"cut": point, "pid": child.pid, "exit": child.returncode})
 
 
 def terminate(child):
-    if child.poll() is not None:
-        return
-    child.kill()
-    try:
-        child.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        child.communicate(timeout=5)
+    if child.poll() is None:
+        child.kill()
+        try:
+            child.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.communicate(timeout=5)
 
 
 def lock_blocked(path):

@@ -37,13 +37,13 @@ class JournalSubmit(unittest.TestCase):
                 "base_digest": initial["subject_digest"]})
             cls.profile, cls.budget = reference_profile(run), run["request"]["resource_budget"]
 
-    def fixture(self, content=GOOD, label=None):
+    def fixture(self, content=GOOD, label=None, profile=None):
         workspace = tempfile.TemporaryDirectory(dir=ARGS.root)
         health = tempfile.TemporaryDirectory(dir=ARGS.health_root)
         self.addCleanup(workspace.cleanup)
         self.addCleanup(health.cleanup)
         f = Shipping(Path(workspace.name), Path(health.name), ARGS, self.inputs,
-                     self.profile, self.budget, content, "shipping-1")
+                     profile or self.profile, self.budget, content, "shipping-1")
         # Preserve the exact last journal, archive and target identity even if an assertion fails.
         name = self._testMethodName + ("-" + label if label else "")
         case = ARGS.evidence / "submission" / name
@@ -59,6 +59,7 @@ class JournalSubmit(unittest.TestCase):
         (case / "outside.json").write_bytes(canonical({"initial": f.initial, "target": record_file(f.target),
             "workspace": observe_tree(f.workspace), "control": observe_tree(f.slot.control),
             "store": observe_tree(f.slot.store), "archive": observe_tree(f.archive)}))
+        (case / "commands.json").write_bytes(canonical(f.commands))
         shutil.copytree(f.archive, case / "archive")
 
     def reply(self, f, status, **options):
@@ -76,12 +77,12 @@ class JournalSubmit(unittest.TestCase):
         initial = snapshot(f.target)
         with watch_target(f.workspace) as moves:
             sent = self.reply(f, "published")
-            stored = f.slot.call("lookup", f.key, expected="published")
+            stored = f.lookup(f.key, expected="published")
             self.assertEqual(sent["attempt"], stored["attempt"])
             row = facts(stored)
             self.assertEqual(list(row), ["intent", "dispatch", "observed", "verified", "published"])
             self.assertEqual(row["observed"]["disposition"], "replaced")
-            self.assertEqual(row["verified"]["event"]["verdict"], "pass")
+            self.assertEqual(row["verified"]["event"]["verdict"], "PASS")
             self.assertEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
             self.assertIn(f.grant["approval"], stored["attempt"]["run_request"]["approval_context"])
             self.assertEqual(row["observed"]["after"]["subject"]["digest"], subject(f.workspace))
@@ -100,7 +101,7 @@ class JournalSubmit(unittest.TestCase):
             self.assertNotIn("attempt", rejected)
             f.slot.host["principal"] = "bob"
             f.slot.configure()
-            f.slot.call("lookup", f.key, expected="absent")
+            f.lookup(f.key, expected="absent")
             f.slot.host["can_read"] = False
             f.slot.configure()
             for key in (f.key, "never"):
@@ -123,14 +124,17 @@ class JournalSubmit(unittest.TestCase):
         to_cookie, = [e["cookie"] for e in events if e["name"] == "shipping.py" and e["mask"] & 0x80]
         self.assertGreater(from_cookie, 0)
         self.assertEqual(from_cookie, to_cookie)
-        self.assertEqual(capsule["source"]["authority"]["revision"], f.grant["revision"])
+        final_check = capsule["source"]["authority"]
+        self.assertEqual(final_check["revision"], f.grant["revision"])
+        self.assertEqual(final_check["decision"], "allow")
+        self.assertIsNone(final_check["reason"])
         self.assertEqual(archived.name.split(".")[-2], digest(raw).split(":")[1])
         archived.unlink()
-        f.slot.call("lookup", f.key, expected="unavailable")
+        f.lookup(f.key, expected="unavailable")
         write_private(archived, raw + b" ")
-        f.slot.call("lookup", f.key, expected=("invalid_store", "unavailable"))
+        f.lookup(f.key, expected=("invalid_store", "unavailable"))
         write_private(archived, raw)
-        self.assertEqual(f.slot.call("lookup", f.key, expected="published")["attempt"], stored["attempt"])
+        self.assertEqual(f.lookup(f.key, expected="published")["attempt"], stored["attempt"])
         legacy = subprocess.run([ARGS.reference, "coding-submit", f.root], input=canonical(f.proposal),
                                 capture_output=True, timeout=10)
         self.assertNotEqual(legacy.returncode, 0)
@@ -143,12 +147,21 @@ class JournalSubmit(unittest.TestCase):
             for field, denied, allowed in (("revoked", True, False), ("allow_retention", False, True)):
                 update_grant(f.authority, **{field: denied})
                 self.reply(f, "forbidden")
-                self.assertEqual(f.slot.call("lookup", f.key, expected="absent")["generation"], 0)
+                self.assertEqual(f.lookup(f.key, expected="absent")["generation"], 0)
                 self.assertEqual((snapshot(f.slot.anchor), snapshot(f.slot.journal)), base)
                 update_grant(f.authority, **{field: allowed})
             (f.root / "operator").mkdir(mode=0o700)
             self.assertEqual(self.reply(f, "forbidden")["reason"], "legacy_session_workspace")
             self.assertEqual((snapshot(f.slot.anchor), snapshot(f.slot.journal)), base)
+            self.assertEqual(moves(), 0)
+        f = self.fixture(label="different-verifier",
+                         profile={**self.profile, "verifier_id": "separate-shipping-verifier"})
+        with watch_target(f.workspace) as moves:
+            before = snapshot(f.slot.journal), snapshot(f.slot.anchor)
+            reply = self.reply(f, "unsupported_storage")
+            self.assertEqual(reply["reason"], "incompatible_shipping_profile")
+            self.assertEqual(f.lookup(f.key, expected="absent")["generation"], 0)
+            self.assertEqual((snapshot(f.slot.journal), snapshot(f.slot.anchor)), before)
             self.assertEqual(moves(), 0)
         f = self.fixture(label="policy")
         f.proposal.update(path="deployment.json", content="{}")
@@ -156,7 +169,7 @@ class JournalSubmit(unittest.TestCase):
         before = observe_tree(f.workspace)
         with watch_target(f.workspace) as moves:
             saved = self.reply(f, "published")
-            self.assertEqual(saved["attempt"], f.slot.call("lookup", f.key, expected="published")["attempt"])
+            self.assertEqual(saved["attempt"], f.lookup(f.key, expected="published")["attempt"])
             row = facts(saved)
             self.assertEqual(list(row), ["intent", "published"])
             self.assertNotEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
@@ -200,7 +213,7 @@ class JournalSubmit(unittest.TestCase):
         self.assertEqual(f.slot.health.read_bytes(), b"0")
         self.assertEqual((snapshot(f.slot.journal), snapshot(f.slot.anchor), snapshot(f.target)), baseline)
         self.assertTrue((f.slot.store / ".gaap-stage-append").is_file())
-        f.slot.call("lookup", f.key, expected="invalid_store")
+        f.lookup(f.key, expected="invalid_store")
         f = self.fixture(label="replaced")
         baseline = snapshot(f.slot.journal), snapshot(f.slot.anchor), snapshot(f.target)
         with f.stopped("intent.before_rename") as worker:
@@ -214,18 +227,18 @@ class JournalSubmit(unittest.TestCase):
             self.assertNotEqual(code, 0, reply)
             self.assertEqual(snapshot(stage), kept)
         self.assertEqual((snapshot(f.slot.journal), snapshot(f.slot.anchor), snapshot(f.target)), baseline)
-        f.slot.call("lookup", f.key, expected="invalid_store")
+        f.lookup(f.key, expected="invalid_store")
 
     def test_failed_verifier_after_observed_replacement(self):
         content = "def shipping_quote(quantity, unit_price):\n    return 9\n"
         f = self.fixture(content)
         with watch_target(f.workspace) as moves:
             sealed = self.reply(f, "published")["attempt"]
-            stored = f.slot.call("lookup", f.key, expected="published")
+            stored = f.lookup(f.key, expected="published")
             self.assertEqual(stored["attempt"], sealed)
             row = facts(stored)
             self.assertEqual(row["observed"]["disposition"], "replaced")
-            self.assertEqual(row["verified"]["event"]["verdict"], "fail")
+            self.assertEqual(row["verified"]["event"]["verdict"], "FAIL")
             self.assertNotEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
             self.assertEqual(f.target.read_bytes(), content.encode())
             self.assertEqual(moves(), 1)
@@ -260,7 +273,7 @@ class JournalSubmit(unittest.TestCase):
                         finally:
                             os.close(process_handle)
                     self.assertFalse(lock_blocked(f.slot.lock))
-                    retained = f.slot.call("lookup", f.key, expected="partial")
+                    retained = f.lookup(f.key, expected="partial")
                     self.assertTrue(retained["workspace_hold"])
                     self.assertEqual(retained["attempt"], live["attempts"][0])
                     before = observe_tree(f.workspace), snapshot(f.slot.journal), snapshot(f.slot.anchor)
@@ -268,7 +281,7 @@ class JournalSubmit(unittest.TestCase):
                     self.reply(f, "workspace_held", key="new-key")
                     f.slot.host["principal"] = "bob"
                     f.slot.configure()
-                    self.assertTrue(f.slot.call("lookup", f.key, expected="absent")["workspace_hold"])
+                    self.assertTrue(f.lookup(f.key, expected="absent")["workspace_hold"])
                     self.reply(f, "workspace_held", key=f.key)
                     self.assertEqual((observe_tree(f.workspace), snapshot(f.slot.journal), snapshot(f.slot.anchor)), before)
                     self.assertEqual(moves(), 0)
@@ -286,7 +299,11 @@ class JournalSubmit(unittest.TestCase):
                 code, reply = f.finish(worker)
                 self.assertEqual((code, reply["status"]), (0, "published"))
                 # No journal replacement intervened between the confirmed dispatch and the file effect.
-                self.assertEqual(ordered(), ["shipping.py", "journal.json", "journal.json", "journal.json"])
+                notifications = ordered()
+                self.assertEqual(notifications[0], "shipping.py", notifications)
+                self.assertEqual(set(notifications[1:]), {"journal.json"}, notifications)
+                self.assertEqual(reply["generation"], json.loads(original)["generation"] + 3)
+                self.assertEqual(list(facts(reply)), ["intent", "dispatch", "observed", "verified", "published"])
             dispatch.seek(0)
             self.assertEqual(dispatch.read(), original)
             self.assertEqual(f.target.read_bytes(), GOOD.encode())
@@ -319,7 +336,7 @@ class JournalSubmit(unittest.TestCase):
                                 self.assertEqual(anchor["journal_digest"], digest(f.slot.journal.read_bytes()))
                                 self.assertEqual(anchor["generation"], journal["generation"])
                                 status = "published" if phase == "published" else "partial"
-                            retained = f.slot.call("lookup", f.key, expected=status)
+                            retained = f.lookup(f.key, expected=status)
                             before = snapshot(f.slot.anchor), snapshot(f.slot.journal), observe_tree(f.workspace)
                             again = self.reply(f, status)
                             if status in ("published", "partial"):
@@ -336,7 +353,7 @@ class JournalSubmit(unittest.TestCase):
                 self.assertFalse(select.select([worker.stdout], [], [], 0)[0])
                 self.assertTrue(lock_blocked(f.slot.lock))
                 self.assertEqual(moves(), 1)
-            stored = f.slot.call("lookup", f.key, expected="published")
+            stored = f.lookup(f.key, expected="published")
             before = snapshot(f.slot.journal), snapshot(f.slot.anchor), observe_tree(f.archive)
             self.assertEqual(self.reply(f, "published")["attempt"], stored["attempt"])
             self.assertEqual((snapshot(f.slot.journal), snapshot(f.slot.anchor), observe_tree(f.archive)), before)
@@ -362,12 +379,21 @@ class JournalSubmit(unittest.TestCase):
                     code, answer = f.finish(worker)
                     self.assertEqual(record_file(f.target), f.initial)
                     self.assertEqual(moves(), 0)
-                    read = f.slot.call("lookup", f.key, expected=("partial", "published"))
+                    read = f.lookup(f.key, expected="published")
                     row = facts(read)
-                    self.assertIn("dispatch", row)
-                    self.assertNotEqual(row.get("observed", {}).get("disposition"), "replaced")
-                    if read["status"] == "published":
-                        self.assertNotEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
+                    self.assertEqual(row["observed"]["disposition"], "stopped_before_rename")
+                    self.assertFalse(read["workspace_hold"])
+                    self.assertNotEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
+                    capsule, = f.archive.glob("*.effect.*.json")
+                    final_check = json.loads(capsule.read_bytes())["source"]["authority"]
+                    reasons = {"revoked": "grant_revoked", "cancelled": "attempt_cancelled",
+                               "budget": "budget_exhausted", "expiry": "grant_outside_validity_interval"}
+                    self.assertEqual(final_check["decision"], "deny")
+                    self.assertEqual(final_check["reason"], reasons[label])
+                    current = (f.authority / "authority.json").read_bytes()
+                    self.assertEqual(final_check["authority_digest"], digest(current))
+                    self.assertEqual(final_check["revision"], json.loads(current)["revision"])
+                    self.assertGreater(final_check["checked_at_ms"], 0)
                     self.assertEqual(self.reply(f, read["status"])["attempt"], read["attempt"])
                     self.assertEqual(moves(), 0, (code, answer))
         f = self.fixture(label="guarded-rename")
@@ -391,6 +417,20 @@ class JournalSubmit(unittest.TestCase):
                     updater.kill()
                     updater.communicate()
 
+    def test_expiry_inside_rename_fence(self):
+        f = self.fixture()
+        deadline = time.time_ns() // 1_000_000 + 3000
+        update_grant(f.authority, expires_at_ms=deadline)
+        with watch_target(f.workspace) as moves, f.stopped("target.authority_held_before_rename") as worker:
+            self.assertTrue(lock_blocked(f.authority_lock))
+            time.sleep(max(0, (deadline + 20) / 1000 - time.time()))
+            worker.send_signal(signal.SIGCONT)
+            f.finish(worker)
+            self.assertEqual(moves(), 0)
+            self.assertEqual(record_file(f.target), f.initial)
+            read = f.lookup(f.key, expected=("partial", "published"))
+            self.assertNotEqual(facts(read).get("observed", {}).get("disposition"), "replaced")
+
     def test_revoke_after_effect_before_completion(self):
         f = self.fixture()
         with watch_target(f.workspace) as moves, f.stopped("verified.after_dir_sync") as worker:
@@ -399,10 +439,10 @@ class JournalSubmit(unittest.TestCase):
             update_grant(f.authority, revoked=True)
             worker.send_signal(signal.SIGCONT)
             f.finish(worker)
-            read = f.slot.call("lookup", f.key, expected=("published", "partial"))
+            read = f.lookup(f.key, expected=("published", "partial"))
             row = facts(read)
             self.assertEqual(row["observed"]["disposition"], "replaced")
-            self.assertEqual(row["verified"]["event"]["verdict"], "pass")
+            self.assertEqual(row["verified"]["event"]["verdict"], "PASS")
             if "published" in row:
                 self.assertNotEqual(row["published"]["receipt"]["body"]["terminal_status"], "completed")
             self.assertEqual(f.target.read_bytes(), GOOD.encode())
@@ -412,7 +452,8 @@ class JournalSubmit(unittest.TestCase):
     def test_witness_loss_and_archive_faults(self):
         f = self.fixture(label="witness")
         with watch_target(f.workspace) as moves, f.stopped("target.before_rename") as worker:
-            pids = Path(f"/proc/{worker.pid}/task/{worker.pid}/children").read_text().split()
+            pids = {pid for task in Path(f"/proc/{worker.pid}/task").iterdir()
+                    for pid in (task / "children").read_text().split()}
             witnesses = []
             for pid in pids:
                 child = Path("/proc") / pid
@@ -429,9 +470,25 @@ class JournalSubmit(unittest.TestCase):
                 self.assertTrue(select.select([handle], [], [], 6)[0])
                 worker.send_signal(signal.SIGCONT)
                 f.finish(worker)
-                self.assertIn(moves(), (0, 1))
-                read = f.slot.call("lookup", f.key, expected=("partial", "published"))
+                replacements = moves()
+                self.assertIn(replacements, (0, 1))
+                read = f.lookup(f.key, expected=("partial", "published"))
                 self.assertTrue(read["workspace_hold"])
+                row = facts(read)
+                self.assertEqual(row["observed"]["disposition"], "unresolved")
+                self.assertIsNone(row["observed"]["source"])
+                self.assertIsNone(row["observed"]["after"])
+                capsule_file, = f.archive.glob("*.effect.*.json")
+                capsule = json.loads(capsule_file.read_bytes())
+                self.assertEqual(capsule["entries"], [])
+                source = capsule["source"]
+                self.assertEqual(source["failure"], "witness_final_observation_unavailable")
+                self.assertIsNone(source["observation"])
+                self.assertEqual(source["before"], row["dispatch"]["before"])
+                self.assertEqual(source["bound_stage"]["artifact_digest"], digest(GOOD.encode()))
+                if replacements:
+                    self.assertEqual(int(source["bound_stage"]["ino"]), record_file(f.target)["ino"])
+                    self.assertEqual(source["authority"]["revision"], f.grant["revision"])
                 self.reply(f, "workspace_held", key="another-key")
                 self.assertEqual(moves(), 0)
             finally:
@@ -445,17 +502,49 @@ class JournalSubmit(unittest.TestCase):
                     with f.stopped(point):
                         self.assertEqual(moves(), int(has_write))
                     before = snapshot(f.slot.journal), snapshot(f.slot.anchor), observe_tree(f.archive)
-                    read = f.slot.call("lookup", f.key, expected=("partial", "invalid_store", "unavailable"))
-                    if read["status"] == "partial":
-                        row = facts(read)
-                        self.assertNotIn("published", row)
-                        if point.startswith("archive_effect"):
-                            self.assertNotIn("observed", row)
-                            self.assertTrue(read["workspace_hold"])
+                    self.assertEqual(f.slot.health.read_bytes(), b"0")
+                    read = f.lookup(f.key, expected="partial")
+                    kept = ["intent"]
+                    if not point.startswith("archive_grant"):
+                        kept.append("dispatch")
+                    if point.startswith("archive_verifier"):
+                        kept.append("observed")
+                    self.assertEqual(list(facts(read)), kept)
+                    self.assertEqual(read["workspace_hold"], point.startswith("archive_effect"))
                     again = self.reply(f, read["status"])
                     self.assertEqual(again.get("attempt"), read.get("attempt"))
                     self.assertEqual((snapshot(f.slot.journal), snapshot(f.slot.anchor), observe_tree(f.archive)), before)
                     self.assertEqual(moves(), 0)
+
+    def test_cleanup_eio_after_stage_write_capacity_error(self):
+        tracer = shutil.which("strace")
+        self.assertIsNotNone(tracer)
+        f = self.fixture(label="calibrate")
+        trace = [tracer, "-D", "-qq", "-yy", "-e", "trace=write,unlinkat"]
+        baseline = ARGS.evidence / "shipping-stage-write-calibration.strace"
+        self.reply(f, "published", trace=[*trace, "-o", baseline])
+        writes = [line for line in baseline.read_text().splitlines() if line.startswith("write(")]
+        ordinal, = [i for i, line in enumerate(writes, 1) if f"<{f.workspace}/.gaap-stage-target-" in line]
+        f = self.fixture(label="write-and-cleanup")
+        output = ARGS.evidence / "shipping-stage-write-cleanup.strace"
+        injected = [*trace, "-o", output, "-e", f"inject=write:error=ENOSPC:when={ordinal}",
+                    "-e", "inject=unlinkat:error=EIO:when=1"]
+        with watch_target(f.workspace) as moves:
+            code, failure = f.submit(trace=injected)
+            self.assertNotEqual(code, 0, failure)
+            lines = output.read_text().splitlines()
+            self.assertTrue(any(f"<{f.workspace}/.gaap-stage-target-" in line and "ENOSPC" in line
+                                and "INJECTED" in line for line in lines))
+            self.assertTrue(any(line.startswith("unlinkat(") and f"<{f.workspace}>" in line
+                                and '".gaap-stage-target-' in line and "EIO" in line and "INJECTED" in line
+                                for line in lines))
+            self.assertEqual(f.slot.health.read_bytes(), b"1")
+            self.assertEqual(failure.get("reason"), "volume_quarantined", failure)
+            self.assertEqual(failure.get("warning"), "target_write", failure)
+            self.assertTrue(list(f.workspace.glob(".gaap-stage-target-*")))
+            self.assertEqual(record_file(f.target), f.initial)
+            self.assertEqual(moves(), 0)
+            f.lookup(f.key, expected="unavailable")
 
     def test_real_target_and_archive_sync_errors(self):
         tracer = shutil.which("strace")
@@ -492,7 +581,7 @@ class JournalSubmit(unittest.TestCase):
                     self.assertEqual(moves(), 1)
                     self.assertEqual(f.target.read_bytes(), GOOD.encode())
                     self.assertEqual(f.slot.health.read_bytes(), b"1")
-                    self.assertNotIn("attempt", f.slot.call("lookup", f.key, expected="unavailable"))
+                    self.assertNotIn("attempt", f.lookup(f.key, expected="unavailable"))
                     self.reply(f, "unavailable", key="other")
                     self.assertEqual(moves(), 0)
         f = self.fixture(label="pending")
@@ -503,7 +592,7 @@ class JournalSubmit(unittest.TestCase):
                 self.assertEqual(f.slot.health.read_bytes(), b"P")
             self.assertTrue(any(f"<{f.workspace}>" in line and "EIO" in line and "INJECTED" in line
                                 for line in output.read_text().splitlines()))
-            self.assertNotIn("attempt", f.slot.call("lookup", f.key, expected="unavailable"))
+            self.assertNotIn("attempt", f.lookup(f.key, expected="unavailable"))
             self.reply(f, "unavailable")
             self.assertEqual(f.slot.health.read_bytes(), b"P")
             self.assertEqual(moves(), 1)
