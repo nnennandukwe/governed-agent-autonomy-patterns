@@ -196,12 +196,15 @@ def read_member(directory, entry):
                 type(component) is str or (type(component) is int and component >= 0)
                 for component in path):
             raise ValueError("invalid public assertion")
-    for field in ("initial", "expected") if private else ("initial", "expected", "decoy"):
+    if type(task["initial"]) is not dict:
+        raise ValueError("invalid replacement fixture")
+    initial = _initial_files(task)[TARGET]
+    for field in ("expected",) if private else ("expected", "decoy"):
         if type(task[field]) is not dict or len(encode(task[field])) > MAX_REPLACEMENT_BYTES:
             raise ValueError("invalid replacement fixture")
-    if encode(task["expected"]) == encode(task["initial"]):
+    if encode(task["expected"]) == initial:
         raise ValueError("repair must change initial state")
-    if (public_checks(task, encode(task["initial"]))
+    if (public_checks(task, initial)
             or not public_checks(task, encode(task["expected"]))):
         raise ValueError("public assertion must expose part of the requested repair")
     if not private and (not public_checks(task, encode(task["decoy"]))
@@ -253,20 +256,24 @@ def verify(private_dir=None):
 
 
 def _initial_files(task):
-    """Render only starting configuration, task instructions and public checks."""
-    return {TARGET: encode(task["initial"]), "TASK.txt": (task["prompt"] + "\n").encode(),
-            "checks.json": encode(task["checks"])}
+    """Render each starting file and enforce the byte limit used to observe it."""
+    files = {TARGET: encode(task["initial"]), "TASK.txt": (task["prompt"] + "\n").encode(),
+             "checks.json": encode(task["checks"])}
+    if any(len(raw) > MAX_REPLACEMENT_BYTES for raw in files.values()):
+        raise ValueError("initial workspace file exceeds byte policy")
+    return files
 
 
 def reset(task, workspace):
     """Populate a new empty directory exclusively and reread its initial file digests."""
+    files = _initial_files(task)
     workspace = Path(workspace)
     workspace.mkdir(mode=0o700, exist_ok=True)
     directory_fd = _open_directory(workspace)
     try:
         if os.listdir(directory_fd):
             raise ValueError("reset requires an empty directory")
-        for name, raw in _initial_files(task).items():
+        for name, raw in files.items():
             target_fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory_fd)
             with os.fdopen(target_fd, "wb") as handle:
                 handle.write(raw)

@@ -140,6 +140,41 @@ class SplitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 corpus.read_member(directory, wrong)
 
+    def test_rendered_check_bytes_match_the_workspace_limit(self):
+        """Admit the exact UTF-8 byte limit and reject one extra byte before reset."""
+        value = "é" + "x" * 35000
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            member_id = "0" * 32
+            path = directory / (member_id + ".json")
+            for excess in (0, 1):
+                with self.subTest(excess=excess):
+                    limit = corpus.MAX_REPLACEMENT_BYTES + excess
+                    checks = [{"path": ["field"], "equals": value},
+                              {"path": ["field"], "starts_with": "é"}]
+                    checks[1]["starts_with"] += "x" * (limit - len(corpus.encode(checks)))
+                    member = {"schema": "feedback-repair-task/1", "id": member_id, "salt": "1" * 64,
+                              "family": "size-limit", "prompt": "Restore the catalog value.",
+                              "target": "settings.json", "initial": {"field": "old"},
+                              "expected": {"field": value}, "checks": checks}
+                    raw = corpus.encode(member)
+                    path.write_bytes(raw)
+                    path.chmod(0o600)
+                    entry = {"id": member_id, "split": "validation", "sha256": corpus.digest(raw)}
+                    workspace = directory / str(limit)
+                    self.assertEqual(len(corpus.encode(checks)), limit)
+                    self.assertLess(len(raw), corpus.MAX_BUNDLE_BYTES)
+                    if excess:
+                        with self.assertRaisesRegex(ValueError, "initial workspace file"):
+                            corpus.read_member(directory, entry)
+                        with self.assertRaisesRegex(ValueError, "initial workspace file"):
+                            corpus.reset(member, workspace)
+                        self.assertFalse(workspace.exists())
+                    else:
+                        admitted = corpus.read_member(directory, entry)
+                        corpus.reset(admitted, workspace)
+                        self.assertEqual((workspace / "checks.json").stat().st_size, limit)
+
     def test_duplicate_reordered_or_extra_split_fields(self):
         """Duplicate families, swapped assignments and exposed private fields invalidate the index."""
         for change in ("duplicate_id", "duplicate_digest", "swap", "answer"):
