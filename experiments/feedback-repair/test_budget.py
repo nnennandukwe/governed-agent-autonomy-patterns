@@ -2,7 +2,13 @@
 
 import json
 import unittest
+from decimal import Decimal
 from pathlib import Path
+
+
+def dollars(microusd):
+    """Format an integer microdollar charge in the guide's exact decimal units."""
+    return f"${Decimal(microusd) / 1_000_000:f}"
 
 
 class BudgetTests(unittest.TestCase):
@@ -69,6 +75,43 @@ class BudgetTests(unittest.TestCase):
             estimates["upper_study_microusd"], study["total_tokens"] * max(input_rate, output_rate)
         )
         self.assertLess(estimates["upper_study_microusd"], study["proposed_cost_stop_microusd"])
+
+    def test_published_cost_table_matches_schedule(self):
+        """Recalculate each split and compare its cells, calls, tokens and charges with the guide."""
+        guide = Path(__file__).with_name("COST.md").read_text(encoding="utf-8")
+        table_lines = [line for line in guide.splitlines() if line.startswith("|")]
+        columns = [cell.strip() for cell in table_lines[0].strip("|").split("|")]
+        self.assertEqual(
+            columns,
+            ["Split", "Cells", "Provider calls at most", "Combined tokens at most",
+             "All input", "Example mix", "Upper charge"],
+        )
+        allocation = self.budget["allocation"]
+        instances = allocation["instances_per_family"] * allocation["repetitions_per_arm"]
+        cells_per_family = instances * len(allocation["arms"])
+        families = allocation["families_by_split"]
+        split_cells = {name: count * cells_per_family for name, count in families.items()}
+        split_cells["total"] = sum(split_cells.values())
+        limits = self.budget["per_cell_limits"]
+        price = self.budget["price_snapshot"]
+        input_rate = price["input_microusd_per_token"]
+        max_rate = max(input_rate, price["output_microusd_per_token"])
+        worked = self.budget["estimates"]["worked_cell"]
+        expected = []
+        for split, cells in split_cells.items():
+            tokens = cells * limits["total_tokens"]
+            expected.append([
+                split.replace("_", "-").capitalize(), str(cells), str(cells * limits["provider_calls"]),
+                f"{tokens:,}", dollars(tokens * input_rate),
+                dollars(cells * worked["provider_cost_microusd"]), dollars(tokens * max_rate),
+            ])
+        actual = [
+            [cell.strip().strip("*") for cell in line.strip("|").split("|")]
+            for line in table_lines[2:]
+        ]
+        self.assertEqual(actual, expected)
+        stop = dollars(self.budget["study_limits"]["proposed_cost_stop_microusd"])
+        self.assertIn(f"**{stop}** spending stop", guide)
 
     def test_cost_estimates_grant_no_calls(self):
         """Keep unrun cost unknown and the local scorer outside the provider bill."""
