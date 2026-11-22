@@ -19,6 +19,9 @@ ARMS = ("raw", "revision", "lesson", "resampling")
 RESOURCES = ("provider_calls", "total_tokens", "candidates", "strategy_tool_calls",
              "evaluator_calls", "subagent_calls")
 MODE = "offline_development_controls"
+OPERATIONS = {"initial_check": "strategy_tool_calls", "response": "candidates",
+              "public_check": "strategy_tool_calls", "placement": "strategy_tool_calls",
+              "score": "evaluator_calls"}
 
 
 def encoded(value):
@@ -97,7 +100,7 @@ def parse_reply(raw, lesson_required):
             raise ValueError("A refusal needs a reason and an unclaimed result.")
     elif not isinstance(replacement, str) or refusal is not None:
         raise ValueError("A replacement must be UTF-8 text without a refusal.")
-    if lesson_required:
+    if lesson_required and (replacement is not None or lesson is not None):
         if not isinstance(lesson, str) or not lesson.strip():
             raise ValueError("A lesson-arm revision needs a lesson.")
     elif lesson is not None:
@@ -127,13 +130,30 @@ def bound_lesson(task, number, previous, text):
             "public_checks": task["checks"], "text": text}
 
 
+def decode_candidate(reply, lesson_required):
+    """Extract the replayable response fields and retain a reason if no proposal arrived."""
+    try:
+        parsed = parse_reply(reply, lesson_required)
+    except (ValueError, UnicodeError) as exc:
+        return {}, "malformed_response", str(exc), None
+    fields = {"claimed_complete": parsed["claimed_complete"]}
+    if parsed["refusal"] is not None:
+        return fields, "refused", parsed["refusal"], parsed["lesson"]
+    replacement = parsed["replacement_utf8"].encode()
+    if len(replacement) > corpus.MAX_REPLACEMENT_BYTES:
+        return fields, "malformed_response", "The replacement exceeds the size limit.", None
+    fields.update(sha256=sha256(replacement).hexdigest(), utf8=parsed["replacement_utf8"])
+    return fields, None, None, parsed["lesson"]
+
+
 def select(arm, candidates):
-    """Close selection in generation order using only completed public observations."""
-    if not candidates:
+    """Choose from proposals that received public checks, excluding replies that refused."""
+    eligible = [i for i, item in enumerate(candidates) if type(item["public_pass"]) is bool]
+    if not eligible:
         return None
     if arm == "resampling":
-        return next((i for i, item in enumerate(candidates) if item["public_pass"]), 0)
-    return len(candidates) - 1 if arm in ("lesson", "revision") else 0
+        return next((i for i in eligible if candidates[i]["public_pass"]), eligible[0])
+    return eligible[-1] if arm in ("lesson", "revision") else eligible[0]
 
 
 class LimitReached(Exception):
@@ -146,25 +166,29 @@ def run_control(task, proposals, arm, limits, record_path):
     started = time.monotonic_ns()
     usage = dict.fromkeys(RESOURCES, 0)
     record = {"mode": MODE, "member": task["id"], "arm": arm, "status": "started",
-              "usage": usage, "candidates": [], "selected": None, "effect": "none",
+              "usage": usage, "operations": [], "candidates": [], "selected": None, "effect": "none",
               "evaluation": None, "before": None, "after": None, "lesson": None, "initial_request_utf8": None}
     save(record_path, record)
 
-    def charge(resource=None):
+    def charge(operation="finish"):
         """Check the monotonic deadline and reserve one operation before dispatch."""
         if time.monotonic_ns() - started >= limits["elapsed_seconds"] * 1_000_000_000:
+            record["stopped_before"] = operation
             raise LimitReached("elapsed_seconds")
-        if resource:
+        if operation != "finish":
+            resource = OPERATIONS[operation]
             if usage[resource] >= limits[resource]:
+                record["stopped_before"] = operation
                 raise LimitReached(resource)
             usage[resource] += 1
+            record["operations"].append(operation)
 
     with tempfile.TemporaryDirectory() as name:
         parent = Path(name)
         subject = parent / "selected"
         record["before"] = corpus.reset(task, subject)
         try:
-            charge("strategy_tool_calls")
+            charge("initial_check")
             initial_pass = corpus.public_checks(task, (subject / task["target"]).read_bytes())
             initial = common_request(study, task, subject, initial_pass)
             record["initial_request_utf8"] = encoded(initial).decode()
@@ -173,30 +197,24 @@ def run_control(task, proposals, arm, limits, record_path):
                 revised = previous is not None and arm in ("revision", "lesson")
                 if revised and previous["public_pass"]:
                     break
-                charge("candidates")
+                charge("response")
                 if corpus.reset(task, parent / f"proposal-{number}") != record["before"]:
                     raise ValueError("A proposal started from different input bytes.")
                 request = request_for(study, initial, arm, previous if revised else None)
                 candidate = {"request_utf8": encoded(request).decode(), "reply_hex": reply.hex(),
                              "parent": number - 1 if revised else None, "public_pass": None}
                 record["candidates"].append(candidate)
-                try:
-                    parsed = parse_reply(reply, revised and arm == "lesson")
-                except (ValueError, UnicodeError) as exc:
-                    record.update(status="malformed_response", reason=str(exc))
+                fields, status, reason, lesson = decode_candidate(reply, revised and arm == "lesson")
+                candidate.update(fields)
+                if lesson is not None:
+                    record["lesson"] = bound_lesson(task, number - 1, previous, lesson)
+                if status is not None:
+                    if status == "refused" and revised:
+                        break
+                    record.update(status=status, reason=reason)
                     break
-                candidate["claimed_complete"] = parsed["claimed_complete"]
-                if parsed["refusal"] is not None:
-                    record.update(status="refused", reason=parsed["refusal"])
-                    break
-                replacement = parsed["replacement_utf8"].encode()
-                if len(replacement) > corpus.MAX_REPLACEMENT_BYTES:
-                    record.update(status="malformed_response", reason="The replacement exceeds the size limit.")
-                    break
-                candidate.update(sha256=sha256(replacement).hexdigest(), utf8=parsed["replacement_utf8"])
-                if parsed["lesson"] is not None:
-                    record["lesson"] = bound_lesson(task, number - 1, previous, parsed["lesson"])
-                charge("strategy_tool_calls")
+                replacement = fields["utf8"].encode()
+                charge("public_check")
                 candidate["public_pass"] = corpus.public_checks(task, replacement)
             stopped = record["status"] in ("malformed_response", "refused")
             chosen = None if stopped else select(arm, record["candidates"])
@@ -208,7 +226,7 @@ def run_control(task, proposals, arm, limits, record_path):
                 replacement = record["candidates"][chosen]["utf8"].encode()
                 record["status"] = "selected"
                 save(record_path, record)
-                charge("strategy_tool_calls")
+                charge("placement")
                 record["effect"] = "uncertain"
                 save(record_path, record)
                 with tempfile.NamedTemporaryFile(dir=subject, delete=False) as stage:
@@ -218,7 +236,7 @@ def run_control(task, proposals, arm, limits, record_path):
                 if record["after"].get(task["target"]) != sha256(replacement).hexdigest():
                     raise ValueError("The observed target differs from the selected bytes.")
                 record["effect"] = "observed"
-                charge("evaluator_calls")
+                charge("score")
                 result = corpus.evaluate(task, record["before"], subject, replacement)
                 record["evaluation"] = result
                 record["status"] = "verified" if result["effect_valid"] and result["correct"] else "rejected"
@@ -235,7 +253,7 @@ def run_control(task, proposals, arm, limits, record_path):
     if usage["elapsed_ns"] >= limits["elapsed_seconds"] * 1_000_000_000 and record["status"] in (
         "verified", "rejected", "missing_proposal"
     ):
-        record.update(status="timeout", reason="elapsed_seconds")
+        record.update(status="timeout", reason="elapsed_seconds", stopped_before="finish")
     save(record_path, record)
     if record["effect"] == "uncertain":
         raise ValueError(f"Uncertain effect at {record_path.name}. Preserve this incomplete packet.")
@@ -257,6 +275,7 @@ def summary(manifest, records):
                     "unresolved": sum(record["status"] not in ("verified", "rejected") for record in claimed),
                     "false_completions": failures, "per_attempt": failures / len(records) if records else None,
                     "per_claim": failures / len(claimed) if claimed else None}
+    scored = sum(record["status"] in ("verified", "rejected") for record in records)
     totals = {key: sum(record["usage"][key] for record in records) for key in (*RESOURCES, "elapsed_ns")}
     return {
         "mode": MODE,
@@ -266,8 +285,9 @@ def summary(manifest, records):
                            "accrued_provider_cost_microusd": 0, "trial_cost_microusd": None},
         "development_controls": {"assigned": len(records), "outcomes": dict(counts),
                                  "scripted_completion_claims": claim_counts,
-                                 "scored": sum(record["evaluation"] is not None for record in records),
-                                 "unscored": sum(record["evaluation"] is None for record in records),
+                                 "scored": scored, "unscored": len(records) - scored,
+                                 "retained_late_evaluations": sum(record["status"] == "timeout" and
+                                                                  record["evaluation"] is not None for record in records),
                                  "usage": totals, "provider_cost_microusd": 0},
     }
 
@@ -325,59 +345,120 @@ def rehearse(directory):
     return root_digest(packet_bytes(directory, names))
 
 
-def verify_finished(task, arm, proposals, record, limits):
-    """Independently rescore the retained selected bytes in a new verification workspace."""
+def verified_history(task, arm, proposals, record, initial):
+    """Rebuild each arrived reply and public observation, including the final partial step."""
     candidates = record["candidates"]
-    expected_count = (1 if arm in ("lesson", "revision") and candidates and candidates[0]["public_pass"]
-                      else len(proposals))
-    if len(candidates) != expected_count or any(type(item["public_pass"]) is not bool for item in candidates):
-        raise ValueError("The finished control lacks a scripted proposal or public observation.")
-    chosen = select(arm, candidates)
-    if record["effect"] != ("observed" if chosen is not None else "none"):
-        raise ValueError("The control's claimed effect differs from its selection.")
-    if chosen != record["selected"]:
-        raise ValueError("Selection doesn't follow the frozen public rule.")
-    if record["usage"]["elapsed_ns"] >= limits["elapsed_seconds"] * 1_000_000_000:
-        raise ValueError("The control completed past its wall-time limit.")
-    expected_calls = 1 + len(candidates) + int(chosen is not None)
-    measured = record["usage"]
-    if (measured["candidates"], measured["strategy_tool_calls"], measured["evaluator_calls"]) != (
-        len(candidates), expected_calls, int(chosen is not None)
-    ):
-        raise ValueError("Resource charges differ from the completed control's operations.")
+    if record["initial_request_utf8"] is None:
+        if candidates:
+            raise ValueError("A proposal has no starting request.")
+        return [], "initial_check", None, None
+    if record["initial_request_utf8"] != encoded(initial).decode():
+        raise ValueError("The initial request differs from the frozen subject.")
+    ops = ["initial_check"]
+    study = read(HERE / "study.json")
+    lesson = None
+    next_op = "response"
+    stop = None
+    for number, candidate in enumerate(candidates):
+        if next_op != "response" or number >= len(proposals):
+            raise ValueError("Unexpected response after the strategy stopped.")
+        parent = number - 1 if number and arm in ("revision", "lesson") else None
+        previous = candidates[parent] if parent is not None else None
+        reply = proposals[number]
+        fields, status, reason, text = decode_candidate(reply, previous is not None and arm == "lesson")
+        checked = candidate["public_pass"]
+        expected = dict(fields, reply_hex=reply.hex(), request_utf8=encoded(
+            request_for(study, initial, arm, previous)).decode(), parent=parent, public_pass=checked)
+        if candidate != expected or (fields.get("claimed_complete") is not candidate.get("claimed_complete")):
+            raise ValueError("Candidate bytes, claims or parent differ from the scripted response.")
+        ops.append("response")
+        if text is not None:
+            lesson = bound_lesson(task, parent, previous, text)
+        if checked is not None:
+            if status is not None or type(checked) is not bool or checked != corpus.public_checks(task, fields["utf8"].encode()):
+                raise ValueError("A recorded public check differs from its replacement.")
+            ops.append("public_check")
+        if status:
+            if not (status == "refused" and previous is not None):
+                stop = (status, reason)
+            next_op = "finish" if stop else "placement"
+        elif checked is None:
+            next_op = "public_check"
+        elif number + 1 == len(proposals) or (checked and arm in ("revision", "lesson")):
+            next_op = "placement"
+    if record["lesson"] != lesson:
+        raise ValueError("The lesson differs from the recorded failure and reply.")
+    if not proposals:
+        next_op = "finish"
+    chosen = select(arm, candidates) if next_op == "placement" else None
+    return ops, next_op, chosen, stop
+
+
+def verify_control(task, arm, proposals, record, limits):
+    """Verify all observed operations of one terminal control in a disposable workspace."""
+    status, usage = record["status"], record["usage"]
+    finished = ("verified", "rejected", "missing_proposal")
+    stopped = ("timeout", "exhausted", "malformed_response", "refused", "error")
+    if status not in finished + stopped or record["effect"] not in ("none", "observed"):
+        raise ValueError("Incomplete control. Preserve this packet.")
+    if status in stopped and not record.get("reason"):
+        raise ValueError("A stopped control needs its recorded reason.")
+    if set(usage) != {*RESOURCES, "elapsed_ns"} or any(type(n) is not int or n < 0 for n in usage.values()):
+        raise ValueError("Resource counts and elapsed nanoseconds must be nonnegative integers.")
     with tempfile.TemporaryDirectory() as name:
         scratch = Path(name) / "verification"
         before = corpus.reset(task, scratch)
         initial_check = corpus.public_checks(task, (scratch / task["target"]).read_bytes())
-        study = read(HERE / "study.json")
-        initial = common_request(study, task, scratch, initial_check)
-        if encoded(initial).decode() != record["initial_request_utf8"]:
-            raise ValueError("The first request differs from the public starting subject.")
-        expected_lesson = None
-        for number, candidate in enumerate(candidates):
-            parent = number - 1 if number and arm in ("revision", "lesson") else None
-            prior = candidates[parent] if parent is not None else None
-            request = request_for(study, initial, arm, prior)
-            if prior is not None:
-                if prior["public_pass"]:
-                    raise ValueError("A revision requires an observed public failure.")
-                if arm == "lesson":
-                    expected_lesson = bound_lesson(task, parent, prior, json.loads(proposals[number])["lesson"])
-            if candidate["parent"] != parent or candidate["request_utf8"] != encoded(request).decode():
-                raise ValueError("A request or parent differs from the frozen treatment.")
-        if record["lesson"] != expected_lesson:
-            raise ValueError("The lesson isn't bound to this cell's observed failure.")
-        result = None
-        status = "missing_proposal"
-        if chosen is not None:
-            replacement = candidates[chosen]["utf8"].encode()
-            (scratch / task["target"]).write_bytes(replacement)
-            result = corpus.evaluate(task, before, scratch, replacement)
-            status = "verified" if result["effect_valid"] and result["correct"] else "rejected"
-        if (record["before"], record["after"], record["status"], record["evaluation"]) != (
-            before, corpus.snapshot(scratch), status, result
-        ):
-            raise ValueError("Independent verification disagrees with the observed control.")
+        initial = common_request(read(HERE / "study.json"), task, scratch, initial_check)
+        ops, next_op, chosen, response_stop = verified_history(task, arm, proposals, record, initial)
+        if record["selected"] != chosen or (chosen is not None and type(record["selected"]) is not int):
+            raise ValueError("Selection doesn't follow the frozen public rule.")
+        expected_status = "missing_proposal" if response_stop is None else response_stop[0]
+        if record["effect"] == "observed":
+            if chosen is None:
+                raise ValueError("A recorded write needs a selected replacement.")
+            selected = record["candidates"][chosen]["utf8"].encode()
+            (scratch / task["target"]).write_bytes(selected)
+            ops.append("placement")
+            next_op = "score"
+            if record["evaluation"] is not None:
+                result = corpus.evaluate(task, before, scratch, selected)
+                if result != record["evaluation"]:
+                    raise ValueError("The retained evaluation differs from independent scoring.")
+                expected_status = "verified" if result["effect_valid"] and result["correct"] else "rejected"
+                ops.append("score")
+                next_op = "finish"
+        elif record["evaluation"] is not None:
+            raise ValueError("Scoring requires an observed effect.")
+        if before != record["before"] or corpus.snapshot(scratch) != record["after"]:
+            raise ValueError("The retained snapshots differ from the observed prefix.")
+    if status == "error" and next_op in OPERATIONS and record["operations"] == ops + [next_op]:
+        # An admitted call can raise before producing its first observable result.
+        ops.append(next_op)
+    if record["operations"] != ops:
+        raise ValueError("Operation history differs from the observed prefix.")
+    expected_usage = Counter(OPERATIONS[op] for op in ops)
+    for key in RESOURCES:
+        if usage[key] != expected_usage[key] or usage[key] > limits[key]:
+            raise ValueError(f"The {key} charge differs from its observed operations or exceeds its allowance.")
+    elapsed_limit = limits["elapsed_seconds"] * 1_000_000_000
+    if status in ("timeout", "exhausted"):
+        if record.get("stopped_before") != next_op:
+            raise ValueError("The stop point disagrees with the observed prefix.")
+        if status == "timeout":
+            if record["reason"] != "elapsed_seconds" or usage["elapsed_ns"] < elapsed_limit:
+                raise ValueError("The recorded time doesn't reach the deadline.")
+        else:
+            resource = OPERATIONS.get(next_op)
+            if resource is None or record["reason"] != resource or usage[resource] != limits[resource]:
+                raise ValueError("The stop doesn't exhaust the next operation's allowance.")
+    elif status != "error":
+        if next_op != "finish" or expected_status != status:
+            raise ValueError("Terminal status differs from the observed evidence.")
+        if response_stop and record["reason"] != response_stop[1]:
+            raise ValueError("A stopped response needs its original reason.")
+        if status in finished and usage["elapsed_ns"] >= elapsed_limit:
+            raise ValueError("The control completed past its wall-time limit.")
 
 
 def verify(directory, expected_root):
@@ -396,40 +477,7 @@ def verify(directory, expected_root):
     for (task, arm, proposals), record in zip(controls, records):
         if (record["mode"], record["member"], record["arm"]) != (MODE, task["id"], arm):
             raise ValueError("A control is attributed to the wrong development assignment.")
-        finished = ("verified", "rejected", "missing_proposal")
-        stopped = ("error", "exhausted", "timeout", "malformed_response", "refused")
-        if record["status"] not in finished + stopped or record["effect"] not in ("none", "observed"):
-            raise ValueError("Incomplete control. Preserve this packet.")
-        if record["status"] in stopped and not record.get("reason"):
-            raise ValueError("A stopped control needs its recorded reason.")
-        if record["evaluation"] is not None and record["effect"] != "observed":
-            raise ValueError("Scoring requires a known target effect.")
-        candidates = record["candidates"]
-        if len(candidates) > len(proposals):
-            raise ValueError("Extra candidate in the recorded history.")
-        for number, item in enumerate(candidates):
-            reply = proposals[number]
-            if reply.hex() != item["reply_hex"]:
-                raise ValueError("Response bytes differ from the scripted control.")
-            if "utf8" in item:
-                parsed = parse_reply(reply, arm == "lesson" and number > 0)
-                raw = parsed["replacement_utf8"].encode()
-                if (parsed["claimed_complete"], raw, sha256(raw).hexdigest()) != (
-                    item["claimed_complete"], item["utf8"].encode(), item["sha256"]
-                ):
-                    raise ValueError("A proposal or claim differs from its response.")
-                if item["public_pass"] is not None and item["public_pass"] != corpus.public_checks(task, raw):
-                    raise ValueError("The public observation differs from the recorded proposal.")
-        if record["status"] in finished:
-            verify_finished(task, arm, proposals, record, limits)
-        usage = record["usage"]
-        if set(usage) != {*RESOURCES, "elapsed_ns"} or any(type(value) is not int or value < 0 for value in usage.values()):
-            raise ValueError("Resource counts and elapsed nanoseconds must be nonnegative integers.")
-        for key in RESOURCES:
-            if usage[key] > limits[key]:
-                raise ValueError(f"The control exceeds its {key} allowance.")
-        if any(record["usage"][key] for key in ("provider_calls", "total_tokens", "subagent_calls")):
-            raise ValueError("A local script can't report provider or subagent activity.")
+        verify_control(task, arm, proposals, record, limits)
     checked = summary(manifest, records)
     if checked != json.loads(contents["summary.json"]):
         raise ValueError("The summary differs from the recorded controls.")

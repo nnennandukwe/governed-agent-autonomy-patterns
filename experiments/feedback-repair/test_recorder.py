@@ -92,6 +92,8 @@ class RecorderTest(unittest.TestCase):
                 with self.subTest(key=key):
                     bounded = recorder.run_control(task, [recorder.fixture_response(x, True) for x in (decoy, gold)], "resampling",
                                                    dict(limits, **{key: 0}), record)
+                    initial = [recorder.fixture_response(x, True) for x in (decoy, gold)]
+                    recorder.verify_control(task, "resampling", initial, bounded, dict(limits, **{key: 0}))
                     self.assertEqual(bounded["reason"], key)
                     self.assertEqual(bounded["status"], "timeout" if key == "elapsed_seconds" else "exhausted")
                     self.assertIsNone(bounded["evaluation"])
@@ -206,3 +208,74 @@ recorder.rehearse(Path(sys.argv[1]))
                 digest = recorder.root_digest(recorder.packet_bytes(packet, [p.name for p in packet.iterdir()]))
                 with self.assertRaisesRegex(ValueError, message):
                     recorder.verify(packet, digest)
+
+    def test_late_oracle_retained_and_verified_without_score_credit(self):
+        """Keep a late verdict and its incurred charge, then independently verify its content."""
+        with tempfile.TemporaryDirectory() as directory:
+            packet = Path(directory) / "packet"
+            monotonic = recorder.time.monotonic_ns
+            evaluate = corpus.evaluate
+            offset = [0]
+
+            def finish_after_deadline(*args):
+                """Advance the recorded clock after the first real evaluator returns."""
+                result = evaluate(*args)
+                if not offset[0]:
+                    offset[0] = 301_000_000_000
+                return result
+
+            with patch.object(recorder.time, "monotonic_ns", side_effect=lambda: monotonic() + offset[0]), \
+                 patch.object(corpus, "evaluate", side_effect=finish_after_deadline):
+                root = recorder.rehearse(packet)
+            summary = recorder.verify(packet, root)["development_controls"]
+            first = recorder.read(packet / "control-0.json")
+            self.assertEqual(first["status"], "timeout")
+            self.assertEqual(first["stopped_before"], "finish")
+            self.assertTrue(first["evaluation"]["correct"])
+            self.assertEqual(summary["usage"]["evaluator_calls"], 7)
+            self.assertEqual(summary["retained_late_evaluations"], 1)
+            self.assertEqual((summary["scored"], summary["unscored"]), (6, 2))
+            first["evaluation"]["correct"] = False
+            recorder.save(packet / "control-0.json", first)
+            sealed = recorder.root_digest(recorder.packet_bytes(packet, [p.name for p in packet.iterdir()]))
+            checked = cli("verify", packet, "--expected-root", sealed)
+            self.assertNotEqual(checked.returncode, 0)
+            self.assertIn("retained evaluation", checked.stderr)
+
+    def test_unscored_placement_checks_target_and_charges(self):
+        """Reconcile an admitted replacement and its operations even if scoring couldn't start."""
+        task, gold, _ = corpus.controls()[0]
+        replies = [recorder.fixture_response(gold, True)]
+        limits = dict(recorder.read(HERE / "budget.json")["per_cell_limits"], evaluator_calls=0)
+        with tempfile.TemporaryDirectory() as directory:
+            record = recorder.run_control(task, replies, "raw", limits, Path(directory) / "record")
+            self.assertEqual(record["status"], "exhausted")
+            self.assertEqual(record["effect"], "observed")
+            self.assertEqual(record["stopped_before"], "score")
+            self.assertEqual(record["operations"], ["initial_check", "response", "public_check", "placement"])
+            with patch.object(corpus, "evaluate", side_effect=AssertionError("no observed score")):
+                recorder.verify_control(task, "raw", replies, record, limits)
+                for changes in ({"after": record["before"]}, {"selected": None},
+                                {"usage": {**record["usage"], "strategy_tool_calls": 0}},
+                                {"effect": "none"}, {"operations": []}):
+                    with self.subTest(fields=list(changes)), self.assertRaises(ValueError):
+                        recorder.verify_control(task, "raw", replies, dict(record, **changes), limits)
+
+    def test_revision_refusal_preserves_first_proposal_and_all_charges(self):
+        """Charge a valid refused revision and apply the original exactly once under both arms."""
+        task, _, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        with tempfile.TemporaryDirectory() as directory:
+            for arm in ("revision", "lesson"):
+                refusal = recorder.encoded({"replacement_utf8": None, "claimed_complete": False,
+                                            "refusal": "No revised proposal.", "lesson": None})
+                replies = [recorder.fixture_response(b"{}", True), refusal]
+                record = recorder.run_control(task, replies, arm, limits, Path(directory) / arm)
+                with self.subTest(arm=arm):
+                    self.assertEqual((record["selected"], record["effect"], record["status"]), (0, "observed", "rejected"))
+                    self.assertEqual(record["candidates"][1]["reply_hex"], refusal.hex())
+                    self.assertEqual(record["after"][task["target"]], record["candidates"][0]["sha256"])
+                    self.assertEqual(record["operations"].count("placement"), 1)
+                    self.assertEqual([record["usage"][k] for k in ("candidates", "strategy_tool_calls", "evaluator_calls")],
+                                     [2, 3, 1])
+                    recorder.verify_control(task, arm, replies, record, limits)
