@@ -21,8 +21,14 @@ Use the original bundle in place. The directory beside it contains a single priv
 
 Bind the existing study-exclusive serving key through `ANTHROPIC_API_KEY` in the runner's secret environment. Set `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_API_KEY_ID` to that key's provider-issued identifiers. The custodian verifies those identifiers against the serving key's account record. Activation binds the key to its first native count and every later send. Keep the key exclusive through the enclosing UTC minutes and arrange access to native usage and cost reports for that dimension. Set `FROZEN_ROOT` to the digest retained at enrollment.
 
+Before the first token count, obtain an independent account designation from the billing custodian. It names the workspace and API key they verified in the provider account record and the run they authorize that key to serve. Keep it in a mode-0600 JSON file named by `ACCOUNT_DESIGNATION`, inside a separate mode-0700 handoff directory. Copying the broker's environment into the file defeats this check. The runner compares all three fields before starting an assignment and saves the original designation with the ledger.
+
+```json
+{"freeze_sha256":"<retained freeze digest>","workspace_id":"<designated workspace ID>","api_key_id":"<designated key ID>"}
+```
+
 ```sh
-python3 -EsB "$runner" run --private-dir "$OWNER_BUNDLE" --expected-root "$FROZEN_ROOT"
+python3 -EsB "$runner" run --private-dir "$OWNER_BUNDLE" --expected-root "$FROZEN_ROOT" --account-designation "$ACCOUNT_DESIGNATION"
 python3 -EsB "$runner" status --private-dir "$OWNER_BUNDLE" --expected-root "$FROZEN_ROOT"
 python3 -EsB "$runner" billing-window --private-dir "$OWNER_BUNDLE" --expected-root "$FROZEN_ROOT"
 ```

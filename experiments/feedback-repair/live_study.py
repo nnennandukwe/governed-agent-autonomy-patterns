@@ -281,7 +281,7 @@ def dispatch(db, cell, request, remaining_tokens, deadline, initial_digest):
     return reply, usage
 
 
-def collect(db, private_dir, home, frozen):
+def collect(db, private_dir, home, frozen, *, designation=None):
     """Run unattempted assignments serially and hold any interrupted cell without replay."""
     if frozen["runtime"] != identity() or str(private_dir) != frozen["custody"]:
         raise Hold("The runtime or custody location differs from the freeze.")
@@ -290,8 +290,17 @@ def collect(db, private_dir, home, frozen):
     todo = db.execute("SELECT * FROM cells WHERE state='unattempted' ORDER BY id").fetchall()
     if not todo:
         return
+    expected_root = digest(recorder.encoded(frozen))
+    if (not isinstance(designation, dict) or set(designation) != {"freeze_sha256", "workspace_id", "api_key_id"}
+            or designation["freeze_sha256"] != expected_root):
+        raise Hold("Supply the billing custodian's account designation for this exact freeze.")
     scope = account_binding()
+    if (scope["workspace_id"], scope["key_id"]) != (designation["workspace_id"], designation["api_key_id"]):
+        raise Hold("The serving environment differs from the designated billing workspace or key.")
     with db:
+        db.execute("INSERT OR IGNORE INTO metadata VALUES ('designation',?)", (recorder.encoded(designation),))
+        if json.loads(db.execute("SELECT value FROM metadata WHERE name='designation'").fetchone()[0]) != designation:
+            raise Hold("The billing custodian's original designation changed.")
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('billing_scope',?)", (recorder.encoded(scope),))
         if json.loads(db.execute("SELECT value FROM metadata WHERE name='billing_scope'").fetchone()[0]) != scope:
             raise Hold("The provider billing scope changed after activation.")
@@ -473,6 +482,15 @@ def reconcile(db, capture=None, trusted_sha256=None):
                 raise Hold("A revised native charge conflicts with the stored billing observation.")
 
 
+def read_designation(path):
+    """Read the custodian's bounded account handoff under the original private-file rules."""
+    directory = corpus._open_directory(path.parent, private=True)
+    try:
+        return corpus.decode(corpus._read_file(directory, path.name, 2048, private=True), 2048)
+    finally:
+        os.close(directory)
+
+
 def main():
     """Run a single operator action and keep all provider bodies, credentials and answers private."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -482,6 +500,8 @@ def main():
         sub.add_argument("--private-dir", type=Path, required=True)
         if name != "freeze":
             sub.add_argument("--expected-root", required=True)
+        if name == "run":
+            sub.add_argument("--account-designation", type=Path)
         if name == "reconcile":
             sub.add_argument("--capture", type=Path)
             sub.add_argument("--trusted-sha256")
@@ -507,7 +527,8 @@ def main():
     with ledger(private_home(private)) as db:
         frozen = frozen_record(db, args.expected_root)
         if args.action == "run":
-            collect(db, private, private_home(private), frozen)
+            designation = read_designation(args.account_designation) if args.account_designation else None
+            collect(db, private, private_home(private), frozen, designation=designation)
         elif args.action == "billing-window":
             workspace, key, start, end = billing_interval(db)
             print(json.dumps({"workspace_id": workspace, "key_id": key,

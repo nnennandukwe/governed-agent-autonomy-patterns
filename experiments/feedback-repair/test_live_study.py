@@ -20,7 +20,12 @@ import live_isolation
 import live_provider
 import live_study as study
 import recorder
-from test_live_provider import ENV, HEADERS, native_reply
+from test_live_provider import ENV, HEADERS, KEY, WORKSPACE, native_reply
+
+
+def operator_designation(expected):
+    """Bind the test operator's chosen account to the separately retained freeze digest."""
+    return {"freeze_sha256": expected, "workspace_id": WORKSPACE, "api_key_id": KEY}
 
 
 def synthetic_members(root):
@@ -113,7 +118,7 @@ def run_child(root, expected, port):
     with controlled_host(root, port), study.ledger(home) as db:
         frozen = study.frozen_record(db, expected)
         try:
-            study.collect(db, private, home, frozen)
+            study.collect(db, private, home, frozen, designation=operator_designation(expected))
         except study.Hold as error:
             print(str(error), flush=True)
             return
@@ -211,6 +216,43 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(study.charges(db), {"requests": 1, "input_tokens": 20,
                                                 "output_tokens": 5, "list_microusd": 90})
 
+    def test_pending_work_requires_independently_designated_account(self):
+        """Missing or conflicting operator authority stops the first cell before any native request."""
+        approval = operator_designation(self.expected)
+        cases = (("missing", None, {}),
+                 ("wrong freeze", dict(approval, freeze_sha256="0" * 64), {}),
+                 ("changed serving workspace", approval, {"ANTHROPIC_WORKSPACE_ID": "wrkspc_wrong"}),
+                 ("changed serving key", approval, {"ANTHROPIC_API_KEY_ID": "apikey_wrong"}))
+        with study.ledger(self.home) as db, patch.object(live_provider, "_request") as native:
+            frozen = study.frozen_record(db, self.expected)
+            for label, designation, serving_environment in cases:
+                with self.subTest(label=label), patch.dict(os.environ, serving_environment):
+                    with self.assertRaises(study.Hold):
+                        study.collect(db, self.private, self.home, frozen, designation=designation)
+                    native.assert_not_called()
+                    self.assertEqual(study.charges(db)["requests"], 0)
+                    unattempted = db.execute("SELECT count(*) FROM cells WHERE state='unattempted'").fetchone()[0]
+                    self.assertEqual(unattempted, 48)
+                    count = db.execute("SELECT count(*) FROM metadata WHERE name IN ('billing_scope','designation')")
+                    self.assertEqual(count.fetchone()[0], 0)
+
+    def test_designation_file_requires_owner_custody(self):
+        """Read a separate owner-only handoff and refuse an alias or group-writable original."""
+        handoff = self.root / "operator-handoff"
+        handoff.mkdir(mode=0o700)
+        original = handoff / "account.json"
+        approval = operator_designation(self.expected)
+        original.write_bytes(recorder.encoded(approval))
+        original.chmod(0o600)
+        self.assertEqual(study.read_designation(original), approval)
+        alias = handoff / "alias.json"
+        alias.symlink_to(original)
+        with self.assertRaises((OSError, ValueError, study.Hold)):
+            study.read_designation(alias)
+        original.chmod(0o660)
+        with self.assertRaises((OSError, ValueError, study.Hold)):
+            study.read_designation(original)
+
     def test_empty_and_complete_reports_require_original_native_billing(self):
         """Keep the empty denominator, then match every stored call to separate scoped admin evidence."""
         with study.ledger(self.home) as db:
@@ -224,7 +266,9 @@ class StudyTests(unittest.TestCase):
             with self.assertRaisesRegex(study.Hold, "all 48 dispositions"):
                 study.reconcile(db)
             with patch.object(study, "utc", return_value="2026-11-20T09:10:30+00:00"):
-                study.collect(db, self.private, self.home, frozen)
+                study.collect(db, self.private, self.home, frozen, designation=operator_designation(self.expected))
+            retained = db.execute("SELECT value FROM metadata WHERE name='designation'").fetchone()[0]
+            self.assertEqual(json.loads(retained), operator_designation(self.expected))
             delivered = len(self.calls)
             self.assertEqual(delivered, 60)
             settled = study.report(db, frozen)
