@@ -1,6 +1,6 @@
 # Estimated cost of the feedback repair study
 
-**Experiment B has $0 in authorized provider spending and zero authorized provider calls.** At the quoted rates, even the most expensive token mix uses less than the proposed **$25** spending stop. The token limit caps the pre-tax charge sooner. The owner still has to decide whether to fund any trials and how much to authorize. The offline controls use existing local compute. Actual provider usage and invoice cost for the proposed trials remain unknown. [Study budget](budget.json) · [Maintainer decision](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29#issuecomment-7071790843)
+The maintainer approved a **$25** spending stop for one 48-trial run on November 21, 2026. The original zero-call rehearsal and its budget file retain their historical allocation. At the quoted rates, the token ceiling limits the pre-tax list charge to **$5.76**. Actual usage and account charges come from the provider receipts and independent billing report. [Approved run](LIVE.md) · [Spending decision](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29#issuecomment-7073689663)
 
 ## Price and model
 
@@ -23,6 +23,6 @@ All three price columns assume full token use. The upper charge prices every tok
 
 ## Before the first paid request
 
-The owner must approve a frozen trial plan and a monetary stop. Recheck model availability, service class, price and billing categories against the provider's current terms. Retain that dated evidence with the trial manifest. If the model, rate or service class changes, hold the trial and revise the estimate for the owner's decision. An unused balance under the proposed stop can't authorize a changed profile.
+Freeze the approved trial plan and spending stop. Recheck model availability, service class, price and billing categories against the provider's current terms. Retain that dated evidence with the trial manifest. If the model, rate or service class changes, hold the trial and revise the estimate for the owner's decision. An unused balance under the proposed stop can't authorize a changed profile.
 
 Reserve each call's input, maximum output, time and maximum charge from the cell and study balances before sending it. Keep the reservation for a timeout or an ambiguous response until provider records settle it. An increased spending limit can't establish what the provider billed. Stop new requests if the remaining budget can't cover the call, a charge is unknown, or a cap is reached. Preserve incomplete trials. Reconcile actual model IDs, request IDs and native input, cache and output usage with the account's billing records before reporting actual costs. The offline tests reproduce the arithmetic. They can't establish a provider bill or repair outcome.
