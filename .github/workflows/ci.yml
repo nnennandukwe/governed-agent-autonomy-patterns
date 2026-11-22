@@ -81,6 +81,10 @@ jobs:
         working-directory: tests/durable_run_model
         run: python3 -B -m unittest -v test_recovery
 
+      - name: Verify feedback repair study controls offline
+        working-directory: experiments/feedback-repair
+        run: python3 -B -m unittest discover -v
+
       - name: Build subject binary
         run: cargo build --locked
 
