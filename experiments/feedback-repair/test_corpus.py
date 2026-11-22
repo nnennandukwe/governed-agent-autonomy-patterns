@@ -142,7 +142,9 @@ class SplitTests(unittest.TestCase):
 
     def test_rendered_check_bytes_match_the_workspace_limit(self):
         """Admit the exact UTF-8 byte limit and reject one extra byte before reset."""
-        value = "é" + "x" * 35000
+        # non-English test data: this prefix takes two UTF-8 bytes.
+        multibyte_prefix = "\u00e9"
+        value = multibyte_prefix + "x" * 35000
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name)
             member_id = "0" * 32
@@ -151,7 +153,7 @@ class SplitTests(unittest.TestCase):
                 with self.subTest(excess=excess):
                     limit = corpus.MAX_REPLACEMENT_BYTES + excess
                     checks = [{"path": ["field"], "equals": value},
-                              {"path": ["field"], "starts_with": "é"}]
+                              {"path": ["field"], "starts_with": multibyte_prefix}]
                     checks[1]["starts_with"] += "x" * (limit - len(corpus.encode(checks)))
                     member = {"schema": "feedback-repair-task/1", "id": member_id, "salt": "1" * 64,
                               "family": "size-limit", "prompt": "Restore the catalog value.",
