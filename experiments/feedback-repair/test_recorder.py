@@ -279,3 +279,22 @@ recorder.rehearse(Path(sys.argv[1]))
                     self.assertEqual([record["usage"][k] for k in ("candidates", "strategy_tool_calls", "evaluator_calls")],
                                      [2, 3, 1])
                     recorder.verify_control(task, arm, replies, record, limits)
+
+    def test_raw_stops_after_first_proposal_and_rejects_two_response_history(self):
+        """The first raw check closes selection whether it passes or fails."""
+        task, gold, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "control.json"
+            for first, expected in ((b"{}", "rejected"), (gold, "verified")):
+                with self.subTest(expected=expected):
+                    replies = [recorder.fixture_response(first, True), recorder.fixture_response(b"{}", False)]
+                    record = recorder.run_control(task, replies, "raw", limits, path)
+                    self.assertEqual((record["status"], record["selected"]), (expected, 0))
+                    self.assertEqual(record["operations"], ["initial_check", "response", "public_check", "placement", "score"])
+                    self.assertEqual(len(record["candidates"]), 1)
+                    recorder.verify_control(task, "raw", replies, record, limits)
+                    sampled = recorder.run_control(task, replies, "resampling", limits, path)
+                    self.assertEqual((len(sampled["candidates"]), sampled["selected"]), (2, 0))
+                    with self.assertRaisesRegex(ValueError, "response after the strategy stopped"):
+                        recorder.verify_control(task, "raw", replies, dict(sampled, arm="raw"), limits)

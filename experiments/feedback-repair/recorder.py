@@ -146,6 +146,11 @@ def decode_candidate(reply, lesson_required):
     return fields, None, None, parsed["lesson"]
 
 
+def stop_after_check(arm, public_pass):
+    """Close raw sampling after one proposal and revision arms after a public pass."""
+    return arm == "raw" or (arm in ("revision", "lesson") and public_pass)
+
+
 def select(arm, candidates):
     """Choose from proposals that received public checks, excluding replies that refused."""
     eligible = [i for i, item in enumerate(candidates) if type(item["public_pass"]) is bool]
@@ -195,8 +200,6 @@ def run_control(task, proposals, arm, limits, record_path):
             for number, reply in enumerate(proposals):
                 previous = record["candidates"][-1] if number else None
                 revised = previous is not None and arm in ("revision", "lesson")
-                if revised and previous["public_pass"]:
-                    break
                 charge("response")
                 if corpus.reset(task, parent / f"proposal-{number}") != record["before"]:
                     raise ValueError("A proposal started from different input bytes.")
@@ -216,6 +219,8 @@ def run_control(task, proposals, arm, limits, record_path):
                 replacement = fields["utf8"].encode()
                 charge("public_check")
                 candidate["public_pass"] = corpus.public_checks(task, replacement)
+                if stop_after_check(arm, candidate["public_pass"]):
+                    break
             stopped = record["status"] in ("malformed_response", "refused")
             chosen = None if stopped else select(arm, record["candidates"])
             record["selected"] = chosen
@@ -384,7 +389,7 @@ def verified_history(task, arm, proposals, record, initial):
             next_op = "finish" if stop else "placement"
         elif checked is None:
             next_op = "public_check"
-        elif number + 1 == len(proposals) or (checked and arm in ("revision", "lesson")):
+        elif number + 1 == len(proposals) or stop_after_check(arm, checked):
             next_op = "placement"
     if record["lesson"] != lesson:
         raise ValueError("The lesson differs from the recorded failure and reply.")
