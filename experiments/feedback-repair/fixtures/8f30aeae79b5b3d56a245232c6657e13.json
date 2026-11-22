@@ -1,0 +1,95 @@
+{
+  "checks": [
+    {
+      "equals": "/guide",
+      "path": [
+        "routes",
+        0,
+        "location"
+      ]
+    }
+  ],
+  "decoy": {
+    "release_map": {
+      "api": "/reference",
+      "handbook": "/guide"
+    },
+    "routes": [
+      {
+        "location": "/guide",
+        "match": "/docs",
+        "query": "keep",
+        "status": 308
+      },
+      {
+        "location": "/guide",
+        "match": "/documentation",
+        "query": "keep",
+        "status": 301
+      },
+      {
+        "location": "/reference",
+        "match": "/api",
+        "query": "keep",
+        "status": 307
+      }
+    ]
+  },
+  "expected": {
+    "release_map": {
+      "api": "/reference",
+      "handbook": "/guide"
+    },
+    "routes": [
+      {
+        "location": "/guide",
+        "match": "/docs",
+        "query": "keep",
+        "status": 308
+      },
+      {
+        "location": "/guide",
+        "match": "/documentation",
+        "query": "drop",
+        "status": 301
+      },
+      {
+        "location": "/reference",
+        "match": "/api",
+        "query": "keep",
+        "status": 307
+      }
+    ]
+  },
+  "family": "route-alias",
+  "id": "8f30aeae79b5b3d56a245232c6657e13",
+  "initial": {
+    "release_map": {
+      "api": "/reference",
+      "handbook": "/guide"
+    },
+    "routes": [
+      {
+        "location": "/handbook",
+        "match": "/docs",
+        "query": "keep",
+        "status": 308
+      },
+      {
+        "location": "/handbook",
+        "match": "/documentation",
+        "query": "drop",
+        "status": 301
+      },
+      {
+        "location": "/reference",
+        "match": "/api",
+        "query": "keep",
+        "status": 307
+      }
+    ]
+  },
+  "prompt": "The router still sends both documentation aliases to the retired handbook. Use the release map to retarget both aliases. Keep status codes, query handling and every unrelated route as they are.",
+  "schema": "feedback-repair-task/1",
+  "target": "settings.json"
+}

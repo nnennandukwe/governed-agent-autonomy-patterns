@@ -1,0 +1,52 @@
+{
+  "checks": [
+    {
+      "equals": "Desplegando {service}.",
+      "path": [
+        "es",
+        "started"
+      ]
+    }
+  ],
+  "decoy": {
+    "en": {
+      "count": "{count} pending.",
+      "ready": "{service} is ready on {host}.",
+      "started": "Deploying {service}."
+    },
+    "es": {
+      "count": "{count} pendientes.",
+      "ready": "{service} está listo.",
+      "started": "Desplegando {service}."
+    }
+  },
+  "expected": {
+    "en": {
+      "count": "{count} pending.",
+      "ready": "{service} is ready on {host}.",
+      "started": "Deploying {service}."
+    },
+    "es": {
+      "count": "{count} pendientes.",
+      "ready": "{service} está listo en {host}.",
+      "started": "Desplegando {service}."
+    }
+  },
+  "family": "locale-arguments",
+  "id": "b49b7d1040a26261fc2fc95382dd068d",
+  "initial": {
+    "en": {
+      "count": "{count} pending.",
+      "ready": "{service} is ready on {host}.",
+      "started": "Deploying {service}."
+    },
+    "es": {
+      "count": "{count} pendientes.",
+      "ready": "{name} está listo en {host}.",
+      "started": "Desplegando {name}."
+    }
+  },
+  "prompt": "The English notification catalog switched to named arguments. Update each Spanish deployment message to use the argument name in its English counterpart. Keep the translation, punctuation and unrelated messages.",
+  "schema": "feedback-repair-task/1",
+  "target": "settings.json"
+}
