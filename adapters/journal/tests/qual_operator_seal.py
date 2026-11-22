@@ -13,14 +13,14 @@ def check_sealed_failure(case):
     """Admit the observed stage abort and verify both original seals and zero workspace writes on
     lookup and retry.
     """
-    f, op = case.fixture("sealed-failure")
-    case.converted(f, op)
-    target = snapshot(f.target)
-    record = observe(f, op, "stopped_before_rename", seal_before_stop=True)
+    shipping, operator = case.fixture("sealed-failure")
+    case.converted(shipping, operator)
+    target = snapshot(shipping.target)
+    record = observe(shipping, operator, "stopped_before_rename", seal_before_stop=True)
     attempt_id = record["attempt_id"]
-    source = op.deposit(record)
+    source = operator.deposit(record)
 
-    prior_bytes = f.slot.journal.read_bytes()
+    prior_bytes = shipping.slot.journal.read_bytes()
     journal = json.loads(prior_bytes)
     [original] = journal["attempts"]
     case.assertEqual(original["attempt_id"], attempt_id)
@@ -35,23 +35,23 @@ def check_sealed_failure(case):
         sealed[family] = number_canonical(envelope)
         case.assertIn(sealed[family], prior_bytes)
 
-    case.assertEqual(snapshot(f.target), target)
+    case.assertEqual(snapshot(shipping.target), target)
     with contextlib.ExitStack() as stack:
-        watch = DirectoryWatch(f.workspace)
+        watch = DirectoryWatch(shipping.workspace)
         stack.callback(os.close, watch.fd)
-        ruling = op.reconcile(attempt_id, source)
+        ruling = operator.reconcile(attempt_id, source)
         case.assertEqual(ruling["generation"], journal["generation"] + 1)
         case.assertFalse(ruling["workspace_hold"])
         case.assertEqual(ruling["ruling"]["disposition"], "stopped_before_rename")
         case.assertEqual(ruling["ruling"]["attempt_id"], attempt_id)
         case.assertEqual(ruling["ruling"]["evidence_digest"], source)
 
-        confirmed_bytes = f.slot.journal.read_bytes()
+        confirmed_bytes = shipping.slot.journal.read_bytes()
         for original_envelope in sealed.values():
             case.assertIn(original_envelope, confirmed_bytes)
-        confirmed_anchor = f.slot.anchor.read_bytes()
-        lookup = f.lookup(f.key, expected="published")
-        code, duplicate = f.submit()
+        confirmed_anchor = shipping.slot.anchor.read_bytes()
+        lookup = shipping.lookup(shipping.key, expected="published")
+        code, duplicate = shipping.submit()
         case.assertEqual(code, 0, duplicate)
         for answer in (lookup, duplicate):
             case.assertEqual(answer["status"], "published")
@@ -60,13 +60,13 @@ def check_sealed_failure(case):
             case.assertEqual(answer["attempt"], original)
             for family, original_envelope in sealed.items():
                 case.assertEqual(number_canonical(answer["attempt"]["facts"][-1]["payload"][family]), original_envelope)
-        case.assertEqual(f.slot.anchor.read_bytes(), confirmed_anchor)
-        case.assertEqual(f.slot.journal.read_bytes(), confirmed_bytes)
+        case.assertEqual(shipping.slot.anchor.read_bytes(), confirmed_anchor)
+        case.assertEqual(shipping.slot.journal.read_bytes(), confirmed_bytes)
         watch.drain()
         case.assertEqual(watch.events, [])
-        case.assertEqual(snapshot(f.target), target)
+        case.assertEqual(snapshot(shipping.target), target)
 
-    f.commands.append({"attempt_id": attempt_id, "source": source, "ruling": ruling,
+    shipping.commands.append({"attempt_id": attempt_id, "source": source, "ruling": ruling,
                        "result_digest": payload["result"]["result_digest"],
                        "receipt_digest": payload["receipt"]["receipt_digest"],
                        "workspace_events_after_seal": watch.events})
