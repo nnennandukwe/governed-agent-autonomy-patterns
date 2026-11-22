@@ -1,6 +1,6 @@
 # Rehearse a feedback repair study offline
 
-A repair can pass the check an agent sees and still remove a required setting. Experiment B asks whether a lesson drawn from feedback helps repair that kind of error at equal cost. This directory lets a reviewer test the measurement tools on public configuration repairs before anyone funds a provider comparison.
+A repair can pass the check an agent sees and still remove a required setting. Experiment B asks whether a lesson drawn from feedback helps repair that kind of error at equal cost. This directory lets a reviewer test the measurement tools on public configuration repairs on a developer's machine. The maintainer has since approved a separate [48-trial provider study](LIVE.md) with a $25 total spending cap.
 
 On Linux or macOS, use Python 3.11 or newer. Run these commands from this directory with a fresh scratch location.
 
@@ -20,7 +20,7 @@ A scripted proposal supplies replacement JSON. The host starts each attempt from
 
 The public notification-catalog fixture contains Spanish messages as localization test data. Keep those messages intact so the check can catch a lost named argument while preserving the user-facing translation. [Notification-catalog fixture](fixtures/b49b7d1040a26261fc2fc95382dd068d.json)
 
-The proposed study has **48 assigned cells and zero provider trials run**. Each of twelve families has one assignment per arm. Two families are public development inputs. Two validation families and eight held-out families have opaque public identifiers and commitments. The custodian keeps the original private inputs, expected answers and salts outside the repository. The following owner-only check recomputes commitments without publishing those inputs.
+The offline rehearsal registers **48 assigned cells and zero provider trials run by the rehearsal**. Each of twelve families has one assignment per arm. Two families are public development inputs. Two validation families and eight held-out families have opaque public identifiers and commitments. The custodian keeps the original private inputs, expected answers and salts outside the repository. The following owner-only check recomputes commitments without publishing those inputs.
 
 ```sh
 python3 -B corpus.py verify --private-dir "$OWNER_BUNDLE"
@@ -40,4 +40,4 @@ Pair results by family. Report verified repairs per attempted task, false comple
 
 On the eight held-out families, the lesson arm would need at least two more verified repairs than each of raw feedback and equal-budget resampling, zero new mandatory failures and median per-task cost and latency no higher than resampling. Report revision outcomes separately. Missing evidence for a required comparison leaves the decision open. One run per cell supports exploratory reporting. Adoption needs independent replication on newly frozen families and an accepted cost and latency tradeoff.
 
-The maintainer selected offline preparation. Authorized spend is **$0**. Before running any provider trial, freeze the exact request settings and base prompt, candidate/runner identity, independent evaluator, family and split commitments, exposure record, total resource limits and decision rule. Verify current prices and implement pre-dispatch budget enforcement, isolated execution and native usage reconciliation. Record a separate spending decision. The dated estimate identifies its service assumptions and the maximum provider cost under the proposed limits. [Cost estimate](COST.md) · [Maintainer decision](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29#issuecomment-7071790843)
+The maintainer originally selected offline preparation with **$0** in authorized spend. The [live run guide](LIVE.md) records the later approval. Before running any provider trial, freeze the exact request settings and base prompt, candidate/runner identity, independent evaluator, family and split commitments, exposure record, total resource limits and decision rule. Verify current prices and implement pre-dispatch budget enforcement, isolated execution and native usage reconciliation. Record a separate spending decision. The dated estimate identifies its service assumptions and the maximum provider cost under the proposed limits. [Cost estimate](COST.md) · [Maintainer decision](https://github.com/nnennandukwe/governed-agent-autonomy-patterns/issues/29#issuecomment-7071790843)
