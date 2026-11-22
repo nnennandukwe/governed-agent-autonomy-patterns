@@ -18,6 +18,7 @@ from qual_history import GOOD, exercise_unknown, number_canonical, reference, re
 from qual_host import Slot, canonical, digest, observe_tree, snapshot, write_private
 from qual_operator_host import Operator
 from qual_operator_observer import observe
+from qual_operator_seal import check_sealed_failure
 from qual_submit_host import Shipping, subject, terminate, update_grant
 
 
@@ -38,7 +39,7 @@ def save(case, slot, op, log):
         shutil.copytree(src, case / name)
     (case / "observed.json").write_bytes(canonical({
         "workspace": observe_tree(slot.workspace), "control": observe_tree(slot.control),
-        "store": observe_tree(slot.store), "commands": log}))
+        "store": observe_tree(slot.store), "commands": log, "operator_commands": op.commands}))
 
 
 def kill_stopped(child):
@@ -118,6 +119,27 @@ class Reconciliation(unittest.TestCase):
                     self.assertEqual(legacy.get("attempt"), after.get("attempt"))
                     self.assertEqual(after["workspace_hold"], legacy["workspace_hold"])
                     self.assertEqual(moves(), 0)
+
+    def test_original_identity_reuse(self):
+        f, op = self.fixture()
+        self.converted(f, op)
+        code, result = f.submit()
+        self.assertEqual((code, result["status"]), (0, "published"))
+        journal = read(f.slot.journal)
+        # Duplicate a whole frozen-valid envelope after its run completed, preserving
+        # the untouched generation-zero origin. Rehash and confirm the otherwise valid pair.
+        admission = journal["attempts"][0]
+        journal["attempts"].append(copy.deepcopy(admission))
+        journal["generation"] += len(admission["facts"])
+        content = number_canonical(journal)
+        anchor = read(f.slot.anchor)
+        anchor.update(generation=journal["generation"], journal_digest=digest(content))
+        write_private(f.slot.journal, content)
+        write_private(f.slot.anchor, canonical(anchor))
+        before = pair(f.slot), snapshot(f.target)
+        denied = op.command("lookup", "unrelated", expected="invalid_store")
+        self.assertNotIn("attempt", denied)
+        self.assertEqual(before, (pair(f.slot), snapshot(f.target)))
 
     def test_legacy_sealed_unknown(self):
         self.root, self.health = self.area(ARGS.root), self.area(ARGS.health_root)
@@ -220,6 +242,9 @@ class Reconciliation(unittest.TestCase):
         f.commands.append({"observed_disposition": kind, "attempt_id": entry["attempt_id"],
                            "source": source, "pidfd": entry["stop"], "target": snapshot(f.target)})
         return f, op, entry, source, original
+
+    def test_unchanged_sealed_failure_after_ruling(self):
+        check_sealed_failure(self)
 
     def test_all_observed_outcomes_and_original_seals(self):
         for kind in ("not_started", "replaced", "stopped_before_rename"):
@@ -435,12 +460,11 @@ class Reconciliation(unittest.TestCase):
         op.pin_source()
         self.converted(f, op)
         self.fresh(f, "last-key")
-        rec = observe(f, op, "replaced")
+        corroborations = []
+        rec = observe(f, op, "replaced", corroborations=corroborations)
         attempt = rec["attempt_id"]
-        for n in range(3):
-            # Retain corroborating copies from the same observer, each with a later collection time.
-            sample = copy.deepcopy(rec)
-            sample["watch"]["drained_ns"] = str(time.monotonic_ns())
+        self.assertEqual(len(corroborations), 3)
+        for sample in corroborations:
             op.reconcile(attempt, op.deposit(sample))
         self.assertEqual(read(f.slot.journal)["generation"], 2**53 - 1)
         disagreement = op.deposit(self.equivocation(rec))

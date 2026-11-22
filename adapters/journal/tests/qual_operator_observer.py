@@ -1,6 +1,7 @@
 """Observe the one shipping worker from before its launch through its pidfd exit."""
 
 import contextlib
+import copy
 import ctypes
 import fcntl
 import json
@@ -71,7 +72,7 @@ class DirectoryWatch:
         return handle, len(self.events)
 
 
-def observe(f, operator, disposition):
+def observe(f, operator, disposition, *, seal_before_stop=False, corroborations=None):
     """Capture real host observations. The supervisor can withhold the single entry permit."""
     with contextlib.ExitStack() as stack:
         watch = DirectoryWatch(f.workspace)
@@ -89,8 +90,11 @@ def observe(f, operator, disposition):
         fcntl.flock(lease, fcntl.LOCK_SH)
         point = {"replaced": "target.after_rename", "stopped_before_rename": "archive_effect.create",
                  "not_started": None}[disposition]
+        if seal_before_stop:
+            assert disposition == "stopped_before_rename"
+            point = "submit.before_response"
         launched = time.monotonic_ns()
-        child = f.start(point=point, supervisor_fds=((5, worker.fileno()), (8, lease.fileno())))
+        child = stack.enter_context(f.start(point=point, supervisor_fds=((5, worker.fileno()), (8, lease.fileno()))))
         stack.callback(terminate, child)
         worker.close()
         child.stdin.write(canonical(f.proposal))
@@ -171,6 +175,16 @@ def observe(f, operator, disposition):
                                 drained_ns=str(time.monotonic_ns())),
                   "gate": dict(request=request, reply=reply, sender_pid=creds[0], sender_uid=creds[1],
                                received_ns=str(received)), "stop": stop, "stage": stage}
+        if corroborations is not None:
+            # Preserve three separate drains of the still-open observer, for the exact-fit case.
+            terminal_events = list(watch.events)
+            for _ in range(3):
+                watch.drain()
+                if watch.events != terminal_events or tracked(f.workspace) != after:
+                    raise AssertionError("workspace changed while collecting corroborating observations")
+                sample = copy.deepcopy(record)
+                sample["watch"]["drained_ns"] = str(time.monotonic_ns())
+                corroborations.append(sample)
     operator.config["entry_socket_cookie"] = None
     f.slot.configure()
     return record

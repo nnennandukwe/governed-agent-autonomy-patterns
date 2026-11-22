@@ -4,7 +4,6 @@ import contextlib
 import fcntl
 import json
 import os
-from pathlib import Path
 
 from qual_host import canonical, digest, identity, write_private
 from qual_submit_host import sync_dir
@@ -13,6 +12,7 @@ from qual_submit_host import sync_dir
 class Operator:
     def __init__(self, slot, state, health):
         self.slot = slot
+        self.commands = []
         self.legacy_host = dict(slot.host)
         self.authority = health / "operator-authority"
         self.candidates = state / "observer-deposits"
@@ -76,7 +76,10 @@ class Operator:
         return checksum
 
     def command(self, *args, expected, **options):
-        return self.slot.call(*args, expected=expected, **options)
+        result = self.slot.call(*args, expected=expected, **options)
+        self.commands.append({"argv": list(args), "principal": self.slot.host["principal"],
+                              "result": result})
+        return result
 
     def convert(self):
         return self.command("convert", expected="converted")

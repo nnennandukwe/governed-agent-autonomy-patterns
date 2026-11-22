@@ -71,6 +71,10 @@ def launch(config_path, health_path, executable, args):
 | --- | --- |
 | `enrolled` | The slot is active. Repeated enrollment confirms the same binding. |
 | `absent`, `conflict`, `partial`, `published` | The reader validated the confirmed generation. Only the matched principal can receive its attempt. Check `workspace_hold` even for a missing key. A partial run has no terminal receipt. A published receipt retains its separate effect evidence. |
+| `converted`, `cutover_pending` | A confirmed conversion reports the slot and generation. A cutover in progress withholds keyed history and fresh work. Retry only the explicitly authorized conversion against its original source. |
+| `recorded` | The operator receives the stored ruling with its original admitting principal, current generation, effect status and workspace hold. Repeating a ruling after a dispute still reports the dispute. |
+| `not_found`, `ineligible_evidence` | An authorized selector was absent or the intact source couldn't establish the claimed effect. No ruling was added. Preserve the original attempt and evidence. |
+| `workspace_held` | Fresh work must wait while an effect is unresolved, an intake is pending or a dispute is active. Use the original key to read confirmed history. |
 | `not_enrolled`, `incomplete_enrollment` | A trusted unused slot can be explicitly enrolled. An interrupted reservation needs operator diagnosis. |
 | `unconfirmed`, `invalid_store`, `unsupported_storage`, `unavailable` | Preserve the files. Inspect the host binding, volume health or archived evidence before any recovery decision. |
 | `forbidden`, `busy`, `capacity`, `invalid_request` | Use the current authorized principal, wait for the writer to exit, check limits or correct the input as indicated by `reason`. |
