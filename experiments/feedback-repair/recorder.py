@@ -277,7 +277,7 @@ def run_control(task, proposals, arm, limits, record_path):
             record["after"] = corpus.snapshot(subject)
     usage["elapsed_ns"] = time.monotonic_ns() - started
     if usage["elapsed_ns"] >= limits["elapsed_seconds"] * 1_000_000_000 and record["status"] in (
-        "verified", "rejected", "missing_proposal"
+        "verified", "rejected", "missing_proposal", "malformed_response", "refused"
     ):
         record.update(status="timeout", reason="elapsed_seconds", stopped_before="finish")
     save(record_path, record)
@@ -464,8 +464,11 @@ def verify_control(task, arm, proposals, record, limits):
             raise ValueError("Scoring requires an observed effect.")
         if before != record["before"] or corpus.snapshot(scratch) != record["after"]:
             raise ValueError("The retained snapshots differ from the observed prefix.")
-    if status == "error" and next_op in OPERATIONS and record["operations"] == ops + [next_op]:
-        # An admitted call can raise before producing its first observable result.
+    if status == "error" and next_op != "placement":
+        # Placement can stop at its selection checkpoint before admission. Other calls
+        # must have been charged to report an exception before their result arrived.
+        if next_op not in OPERATIONS or record["operations"] != ops + [next_op]:
+            raise ValueError("A host error needs an unfinished operation.")
         ops.append(next_op)
     if record["operations"] != ops:
         raise ValueError("Operation history differs from the observed prefix.")
@@ -489,7 +492,7 @@ def verify_control(task, arm, proposals, record, limits):
             raise ValueError("Terminal status differs from the observed evidence.")
         if response_stop and record["reason"] != response_stop[1]:
             raise ValueError("A stopped response needs its original reason.")
-        if status in finished and usage["elapsed_ns"] >= elapsed_limit:
+        if usage["elapsed_ns"] >= elapsed_limit:
             raise ValueError("The control completed past its wall-time limit.")
 
 

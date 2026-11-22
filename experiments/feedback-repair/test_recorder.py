@@ -407,3 +407,74 @@ recorder.rehearse(Path(sys.argv[1]))
                 received = len(record["candidates"])
                 self.assertEqual([c["reply_hex"] for c in record["candidates"]], [r.hex() for r in replies[:received]])
                 recorder.verify_control(task, "resampling", replies, record, limits)
+
+    def test_an_error_cant_hide_a_completed_score_in_a_resealed_packet(self):
+        """An error needs an unfinished operation even when the new packet root matches."""
+        with tempfile.TemporaryDirectory() as directory:
+            packet = Path(directory) / "packet"
+            recorder.rehearse(packet)
+            rows = [recorder.read(p) for p in sorted(packet.glob("control-*.json"))]
+            manifest = recorder.read(packet / "manifest.json")
+            rows[0].update(status="error", reason="simulated host failure")
+            recorder.save(packet / "control-0.json", rows[0])
+            recorder.save(packet / "summary.json", recorder.summary(manifest, rows))
+            sealed = recorder.root_digest(recorder.packet_bytes(packet, [p.name for p in packet.iterdir()]))
+            checked = cli("verify", packet, "--expected-root", sealed)
+            self.assertNotEqual(checked.returncode, 0)
+            self.assertIn("unfinished operation", checked.stderr)
+
+    def test_error_prefixes_and_terminal_deadlines(self):
+        """Preserve failed checkpoints and calls while enforcing deadlines on every finished outcome."""
+        task, gold, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        deadline = limits["elapsed_seconds"] * 1_000_000_000
+        good = [recorder.fixture_response(gold, True)]
+        refusal = recorder.encoded({"replacement_utf8": None, "claimed_complete": False,
+                                    "refusal": "No proposal.", "lesson": None})
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "record"
+            save = recorder.save
+
+            def fail_checkpoint(path, record):
+                """Fail the selection write before the target placement is charged."""
+                if record["status"] == "selected" and record["effect"] == "none":
+                    raise OSError("selection checkpoint unavailable")
+                save(path, record)
+
+            with patch.object(recorder, "save", side_effect=fail_checkpoint):
+                checkpoint = recorder.run_control(task, good, "raw", limits, out)
+            self.assertEqual((checkpoint["status"], checkpoint["effect"]), ("error", "none"))
+            recorder.verify_control(task, "raw", good, checkpoint, limits)
+            with patch.object(corpus, "evaluate", side_effect=OSError("evaluator unavailable")):
+                error = recorder.run_control(task, good, "raw", limits, out)
+            self.assertEqual((error["status"], error["effect"], error["evaluation"]), ("error", "observed", None))
+            recorder.verify_control(task, "raw", good, error, limits)
+            uncharged = dict(error, operations=error["operations"][:-1], usage={**error["usage"], "evaluator_calls": 0})
+            with self.assertRaisesRegex(ValueError, "unfinished operation"):
+                recorder.verify_control(task, "raw", good, uncharged, limits)
+            for replies in (good, [recorder.fixture_response(b"{}", True)], [], [b"bad"], [refusal]):
+                row = recorder.run_control(task, replies, "raw", limits, out)
+                with self.subTest(outcome=row["status"]):
+                    with self.assertRaisesRegex(ValueError, "unfinished operation"):
+                        recorder.verify_control(task, "raw", replies, dict(row, status="error", reason="unexplained"), limits)
+                    usage = dict(row["usage"], elapsed_ns=deadline)
+                    with self.assertRaisesRegex(ValueError, "wall-time limit"):
+                        recorder.verify_control(task, "raw", replies, dict(row, usage=usage), limits)
+                    early = dict(row, status="timeout", reason="elapsed_seconds", stopped_before="finish")
+                    with self.assertRaisesRegex(ValueError, "reach the deadline"):
+                        recorder.verify_control(task, "raw", replies, early, limits)
+                    recorder.verify_control(task, "raw", replies, dict(early, usage=usage), limits)
+            cleanup = tempfile.TemporaryDirectory.cleanup
+            for replies in ([b"bad"], [refusal]):
+                clock = [0]
+
+                def finish_cleanup_late(scratch):
+                    """Advance the test clock after the actual workspace cleanup finishes."""
+                    cleanup(scratch)
+                    clock[0] = deadline
+
+                with patch.object(recorder.time, "monotonic_ns", side_effect=lambda: clock[0]), \
+                     patch.object(tempfile.TemporaryDirectory, "cleanup", finish_cleanup_late):
+                    late = recorder.run_control(task, replies, "raw", limits, out)
+                self.assertEqual((late["status"], late["stopped_before"]), ("timeout", "finish"))
+                recorder.verify_control(task, "raw", replies, late, limits)
