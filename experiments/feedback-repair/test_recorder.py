@@ -317,3 +317,38 @@ recorder.rehearse(Path(sys.argv[1]))
                     self.assertEqual((len(sampled["candidates"]), sampled["selected"]), (2, 0))
                     with self.assertRaisesRegex(ValueError, "response after the strategy stopped"):
                         recorder.verify_control(task, "raw", replies, dict(sampled, arm="raw"), limits)
+
+    def test_revision_arms_require_a_reply_after_a_failed_first_check(self):
+        """Keep scored first passes and explicit refusals separate from absent or malformed replies."""
+        task, gold, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        failed = recorder.fixture_response(b"{}", True)
+        passing = recorder.fixture_response(gold, True)
+        refusal = recorder.encoded({"replacement_utf8": None, "claimed_complete": False,
+                                    "refusal": "No revision.", "lesson": None})
+        cases = (
+            ("absent first", [], "missing_proposal", None),
+            ("absent second", [failed], "missing_proposal", None),
+            ("first passes", [passing], "verified", 0),
+            ("explicit refusal", [failed, refusal], "rejected", 0),
+            ("empty second", [failed, b""], "malformed_response", None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "record"
+            for arm in ("revision", "lesson"):
+                for label, replies, status, chosen in cases:
+                    with self.subTest(arm=arm, label=label):
+                        record = recorder.run_control(task, replies, arm, limits, path)
+                        self.assertEqual((record["status"], record["selected"]), (status, chosen))
+                        self.assertEqual([c["reply_hex"] for c in record["candidates"]], [r.hex() for r in replies])
+                        self.assertEqual(record["usage"]["candidates"], len(replies))
+                        self.assertEqual(record["usage"]["evaluator_calls"], int(chosen is not None))
+                        self.assertEqual(record["operations"].count("placement"), int(chosen is not None))
+                        if chosen is None:
+                            self.assertIsNone(record["evaluation"])
+                            self.assertEqual(record["before"], record["after"])
+                        recorder.verify_control(task, arm, replies, record, limits)
+                # A raw assignment can score this failed first proposal, even without a second reply.
+                invalid = recorder.run_control(task, [failed], "raw", limits, path)
+                with self.assertRaisesRegex(ValueError, "Selection"):
+                    recorder.verify_control(task, arm, [failed], dict(invalid, arm=arm), limits)

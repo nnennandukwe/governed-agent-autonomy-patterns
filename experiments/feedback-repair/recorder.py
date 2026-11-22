@@ -158,7 +158,11 @@ def select(arm, candidates):
         return None
     if arm == "resampling":
         return next((i for i in eligible if candidates[i]["public_pass"]), eligible[0])
-    return eligible[-1] if arm in ("lesson", "revision") else eligible[0]
+    if arm in ("revision", "lesson"):
+        if len(candidates) == 1 and not candidates[0]["public_pass"]:
+            return None
+        return eligible[-1]
+    return eligible[0]
 
 
 class LimitReached(Exception):
@@ -395,7 +399,11 @@ def verified_history(task, arm, proposals, record, initial):
         raise ValueError("The lesson differs from the recorded failure and reply.")
     if not proposals:
         next_op = "finish"
-    chosen = select(arm, candidates) if next_op == "placement" else None
+    chosen = None
+    if next_op == "placement":
+        chosen = select(arm, candidates)
+        if chosen is None:
+            next_op = "finish"
     return ops, next_op, chosen, stop
 
 
