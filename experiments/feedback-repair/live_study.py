@@ -223,6 +223,13 @@ def charges(db, cell=None):
     return sums
 
 
+def account_binding():
+    """Bind the initial operator-designated account to the serving credential used throughout collection."""
+    workspace, key = live_provider.read_account_scope()
+    return {"workspace_id": workspace, "key_id": key,
+            "credential_fingerprint": live_provider.serving_credential_fingerprint()}
+
+
 def dispatch(db, cell, request, remaining_tokens, deadline, initial_digest):
     """Reserve before send and commit the exact service response before decoding it."""
     owner = db.execute("SELECT state FROM cells WHERE id=?", (cell,)).fetchone()
@@ -234,13 +241,17 @@ def dispatch(db, cell, request, remaining_tokens, deadline, initial_digest):
         raise Hold("The first public input changed after freeze.")
     if remaining_tokens != 12_000 - used["input_tokens"] - used["output_tokens"]:
         raise Hold("Token accounting differs from the native ledger.")
+    stored = db.execute("SELECT value FROM metadata WHERE name='billing_scope'").fetchone()
+    if not stored:
+        raise Hold("The serving key hasn't been enrolled.")
+    scope = json.loads(stored[0])
     try:
-        wire, reservation = live_provider.prepare_message(request, remaining_tokens, deadline)
+        wire, reservation = live_provider.prepare_message(request, remaining_tokens, deadline,
+                                                         expected_fingerprint=scope["credential_fingerprint"])
     except live_provider.ReservationError as error:
         raise live_cell.CellLimit("total_tokens") from error
     with db:
-        scope = db.execute("SELECT value FROM metadata WHERE name='billing_scope'").fetchone()
-        if not scope or json.loads(scope[0]) != [reservation["workspace_id"], reservation["key_id"]]:
+        if any(reservation[key] != value for key, value in scope.items()):
             raise Hold("The native token count belongs to a different billing scope.")
         total = charges(db)
         if (ordinal > 2 or total["requests"] >= 96
@@ -279,9 +290,7 @@ def collect(db, private_dir, home, frozen):
     todo = db.execute("SELECT * FROM cells WHERE state='unattempted' ORDER BY id").fetchall()
     if not todo:
         return
-    scope = list(live_provider.read_account_scope())
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise Hold("The existing Anthropic inference credential isn't bound to the runner.")
+    scope = account_binding()
     with db:
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('billing_scope',?)", (recorder.encoded(scope),))
         if json.loads(db.execute("SELECT value FROM metadata WHERE name='billing_scope'").fetchone()[0]) != scope:
@@ -446,7 +455,8 @@ def billing_interval(db):
     start, end = db.execute("SELECT min(started),max(ended) FROM calls").fetchone()
     if unfinished or unresolved or not scope or not start or not end:
         raise Hold("Final billing needs all 48 dispositions and settled call receipts.")
-    return (*json.loads(scope[0]), datetime.fromisoformat(start), datetime.fromisoformat(end))
+    binding = json.loads(scope[0])
+    return (binding["workspace_id"], binding["key_id"], datetime.fromisoformat(start), datetime.fromisoformat(end))
 
 
 def reconcile(db, capture=None, trusted_sha256=None):

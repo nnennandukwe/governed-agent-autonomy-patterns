@@ -19,7 +19,7 @@ Use the original bundle in place. The directory beside it contains a single priv
 
 ## Collect and reconcile
 
-Bind the existing study-exclusive serving key through `ANTHROPIC_API_KEY` in the runner's secret environment. Set `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_API_KEY_ID` to that key's provider-issued identifiers. Keep the key exclusive through the enclosing UTC minutes and arrange access to native usage and cost reports for that dimension. Set `FROZEN_ROOT` to the digest retained at enrollment.
+Bind the existing study-exclusive serving key through `ANTHROPIC_API_KEY` in the runner's secret environment. Set `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_API_KEY_ID` to that key's provider-issued identifiers. The custodian verifies those identifiers against the serving key's account record. Activation binds the key to its first native count and every later send. Keep the key exclusive through the enclosing UTC minutes and arrange access to native usage and cost reports for that dimension. Set `FROZEN_ROOT` to the digest retained at enrollment.
 
 ```sh
 python3 -EsB "$runner" run --private-dir "$OWNER_BUNDLE" --expected-root "$FROZEN_ROOT"

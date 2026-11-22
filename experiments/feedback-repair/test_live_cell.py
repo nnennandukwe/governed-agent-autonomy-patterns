@@ -37,8 +37,8 @@ class LiveCellTests(unittest.TestCase):
 
         def request(task, arm, history, initial_check, *, deadline):
             """Render each request using a fresh copy of its own projected files."""
-            with tempfile.TemporaryDirectory() as tmp:
-                workspace = Path(tmp)
+            with tempfile.TemporaryDirectory() as request_directory:
+                workspace = Path(request_directory)
                 corpus.reset(task, workspace)
                 initial = recorder.common_request(self.study, task, workspace, initial_check)
                 return recorder.request_for(self.study, initial, arm, history[0] if history else None)

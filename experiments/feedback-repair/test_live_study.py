@@ -161,7 +161,7 @@ class StudyTests(unittest.TestCase):
         """Set up the same running assignment and native scope required by the direct dispatch API."""
         with db:
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('billing_scope',?)",
-                       (recorder.encoded(list(live_provider.read_account_scope())),))
+                       (recorder.encoded(study.account_binding()),))
             db.execute("UPDATE cells SET state='running' WHERE id=?", (cell,))
 
     def test_freeze_denominator_request_identity_and_tampering(self):

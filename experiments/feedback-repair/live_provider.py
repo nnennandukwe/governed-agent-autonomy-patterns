@@ -83,6 +83,24 @@ def _credential(admin):
     return value
 
 
+def _fingerprint(credential):
+    """Derive a study-specific binding that can't authenticate a provider request."""
+    return hmac.digest(credential.encode("ascii"), b"GAAP feedback-repair serving key v1", "sha256").hex()
+
+
+def serving_credential_fingerprint():
+    """Bind the serving key at activation without retaining its secret bytes."""
+    return _fingerprint(_credential(False))
+
+
+def _bound_serving_key(expected):
+    """Read once and pass that exact verified key through to the HTTP header."""
+    key = _credential(False)
+    _require(isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected) and
+             hmac.compare_digest(expected, _fingerprint(key)), "Serving credential changed.")
+    return key
+
+
 def _timeout(_signum, _frame):
     """Interrupt DNS, TLS and slow header or body reads at the absolute deadline."""
     raise ProviderError("Native request deadline expired.")
@@ -103,13 +121,17 @@ def _deadline_guard(deadline):
         signal.signal(signal.SIGALRM, previous)
 
 
-def _request(method, path, wire, deadline, *, admin=False, workspace_id=None):
+def _request(method, path, wire, deadline, *, admin=False, workspace_id=None, serving_key=None):
     """Use one direct, certificate-verified HTTPS connection with no redirect or retry."""
-    headers = {"x-api-key": _credential(admin), "anthropic-version": API_VERSION,
-               "accept": "application/json", "accept-encoding": "identity"}
+    headers = {"anthropic-version": API_VERSION, "accept": "application/json",
+               "accept-encoding": "identity"}
     if admin:
+        _require(serving_key is None, "Admin transport requires separate authorization.")
+        headers["x-api-key"] = _credential(True)
         headers["anthropic-beta"] = ANALYTICS_BETA
     else:
+        _require(isinstance(serving_key, str) and serving_key, "Missing verified serving credential.")
+        headers["x-api-key"] = serving_key
         headers["anthropic-workspace-id"] = _tag(workspace_id, "wrkspc_")
         headers["content-type"] = "application/json"
     # PROTOCOL_TLS_CLIENT verifies hostnames. Use system roots without SSLKEYLOGFILE,
@@ -173,10 +195,10 @@ def _response_id(status, headers, workspace):
     return _tag(headers.get("request-id"), "req_")
 
 
-def prepare_message(public_request, remaining_tokens, deadline):
+def prepare_message(public_request, remaining_tokens, deadline, *, expected_fingerprint):
     """Count the identical text for free and return exact bytes and their reservation."""
     workspace, key = read_account_scope()
-    _credential(False)
+    serving_key = _bound_serving_key(expected_fingerprint)
     _require(type(public_request) is dict, "Expected one host-projected public request.")
     remaining = min(_integer(remaining_tokens), BUDGET["per_cell_limits"]["total_tokens"])
     envelope = _envelope(corpus.encode(public_request).decode())
@@ -186,14 +208,15 @@ def prepare_message(public_request, remaining_tokens, deadline):
     if len(wire) + INPUT_MARGIN + MAX_OUTPUT > remaining:
         raise ReservationError("The request exceeds remaining tokens.")
     status, headers, body = _request("POST", "/v1/messages/count_tokens", corpus.encode(envelope),
-                                     deadline, workspace_id=workspace)
+                                     deadline, workspace_id=workspace, serving_key=serving_key)
     request_id = _response_id(status, headers, workspace)
     count = _integer(_object(body).get("input_tokens"))
     bound = max(len(wire), count) + INPUT_MARGIN
     if bound + MAX_OUTPUT > remaining:
         raise ReservationError("The native count exceeds remaining tokens.")
     return wire, {"workspace_id": workspace, "key_id": key, "count_request_id": request_id,
-                  "wire_sha256": corpus.digest(wire), "count_input_tokens": count, "input_tokens": bound, "output_tokens": MAX_OUTPUT,
+                  "credential_fingerprint": expected_fingerprint, "wire_sha256": corpus.digest(wire),
+                  "count_input_tokens": count, "input_tokens": bound, "output_tokens": MAX_OUTPUT,
                   "total_tokens": bound + MAX_OUTPUT, "list_microusd": _list_price(bound, MAX_OUTPUT)}
 
 
@@ -203,6 +226,7 @@ def send_message(wire, deadline, *, reservation):
     _require(type(reservation) is dict and reservation.get("workspace_id") == workspace and
              reservation.get("key_id") == key and reservation.get("wire_sha256") == corpus.digest(wire),
              "Request bytes or account scope changed after reservation.")
+    serving_key = _bound_serving_key(reservation.get("credential_fingerprint"))
     payload = _object(wire, BUDGET["per_cell_limits"]["total_tokens"])
     messages = payload.get("messages")
     _require(type(messages) is list and len(messages) == 1 and type(messages[0]) is dict,
@@ -210,7 +234,7 @@ def send_message(wire, deadline, *, reservation):
     text = messages[0].get("content")
     _require(type(text) is str and wire == corpus.encode({**_envelope(text), **_paid_fields()}),
              "Native request differs from the frozen profile.")
-    return _request("POST", "/v1/messages", wire, deadline, workspace_id=workspace)
+    return _request("POST", "/v1/messages", wire, deadline, workspace_id=workspace, serving_key=serving_key)
 
 
 def _zero_usage(usage, *, message):

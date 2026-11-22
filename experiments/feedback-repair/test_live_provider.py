@@ -41,6 +41,7 @@ class ProviderTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.deadline = time.monotonic() + 10
+        self.activated = provider.serving_credential_fingerprint()
 
     def test_free_count_paid_request_and_settlement(self):
         """Reserve before the paid call and keep native usage separate from a bill."""
@@ -48,7 +49,7 @@ class ProviderTests(unittest.TestCase):
         with patch.object(provider, "_request", side_effect=[
                 (200, HEADERS, b'{"input_tokens":20}'), (200, HEADERS, json.dumps(native_reply()).encode())
         ]) as transport:
-            wire, reserved = provider.prepare_message(public, 12000, self.deadline)
+            wire, reserved = provider.prepare_message(public, 12000, self.deadline, expected_fingerprint=self.activated)
             self.assertEqual(transport.call_count, 1)
             self.assertEqual(transport.call_args.args[:2], ("POST", "/v1/messages/count_tokens"))
             payload = json.loads(wire)
@@ -71,14 +72,14 @@ class ProviderTests(unittest.TestCase):
     def test_resampling_wire_stays_identical_and_limits_precede_paid_effect(self):
         """A repeat uses identical output settings even with less capacity left."""
         with patch.object(provider, "_request", return_value=(200, HEADERS, b'{"input_tokens":50}')) as native:
-            first, reserved = provider.prepare_message({"task": "repeat"}, 12000, self.deadline)
-            second, _ = provider.prepare_message({"task": "repeat"}, 8000, self.deadline)
+            first, reserved = provider.prepare_message({"task": "repeat"}, 12000, self.deadline, expected_fingerprint=self.activated)
+            second, _ = provider.prepare_message({"task": "repeat"}, 8000, self.deadline, expected_fingerprint=self.activated)
             self.assertEqual(first, second)
             with self.assertRaises(provider.ReservationError):
-                provider.prepare_message({"task": "x" * 2048}, 3000, self.deadline)
+                provider.prepare_message({"task": "x" * 2048}, 3000, self.deadline, expected_fingerprint=self.activated)
             native.return_value = (200, HEADERS, b'{"input_tokens":12000}')
             with self.assertRaises(provider.ReservationError):
-                provider.prepare_message({"task": "repeat"}, 12000, self.deadline)
+                provider.prepare_message({"task": "repeat"}, 12000, self.deadline, expected_fingerprint=self.activated)
             self.assertEqual([call.args[1] for call in native.call_args_list],
                              ["/v1/messages/count_tokens"] * 3)
             native.reset_mock()
@@ -91,12 +92,56 @@ class ProviderTests(unittest.TestCase):
         with patch.object(provider, "_request") as native:
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
                 with self.assertRaisesRegex(provider.ProviderError, "ANTHROPIC_API_KEY"):
-                    provider.prepare_message({}, 12000, self.deadline)
+                    provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
                 native.assert_not_called()
             native.return_value = (200, {**HEADERS, "anthropic-workspace-id": "wrkspc_other"},
                                    b'{"input_tokens":2}')
             with self.assertRaisesRegex(provider.ProviderError, "workspace"):
-                provider.prepare_message({}, 12000, self.deadline)
+                provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
+
+    def test_swapped_serving_credential_stops_paid_dispatch(self):
+        """Keep a replacement credential from serving a request reserved under the original key."""
+        with patch.object(provider.http.client, "HTTPSConnection") as constructor:
+            connection = constructor.return_value
+            response = connection.getresponse.return_value
+            response.status, response.length = 200, 0
+            response.getheader.side_effect = HEADERS.get
+            response.read1.side_effect = [b'{"input_tokens":20}', b"", b"{}", b""]
+            wire, reservation = provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
+            self.assertEqual(connection.request.call_count, 1)
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-replacement"}):
+                with self.assertRaisesRegex(provider.ProviderError, "credential"):
+                    provider.send_message(wire, self.deadline, reservation=reservation)
+            connection.request.assert_called_once()
+            self.assertNotIn(ENV["ANTHROPIC_API_KEY"], json.dumps(reservation))
+
+    def test_credential_swap_before_count_and_during_header_construction(self):
+        """Refuse a changed activation binding and use each checked snapshot during transport."""
+        actual_request = provider._request
+
+        def swap_before_headers(*args, **kwargs):
+            """Rotate the synthetic environment after the check and before header construction."""
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-replacement"}):
+                return actual_request(*args, **kwargs)
+
+        with patch.object(provider.http.client, "HTTPSConnection") as constructor, \
+                patch.object(provider, "_request", side_effect=swap_before_headers):
+            connection = constructor.return_value
+            response = connection.getresponse.return_value
+            response.status, response.length = 200, 0
+            response.getheader.side_effect = HEADERS.get
+            response.read1.side_effect = [b'{"input_tokens":20}', b"", b"{}", b""]
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-other-activation"}):
+                with self.assertRaisesRegex(provider.ProviderError, "credential"):
+                    provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
+            constructor.assert_not_called()
+            wire, reservation = provider.prepare_message({}, 12000, self.deadline,
+                                                         expected_fingerprint=self.activated)
+            provider.send_message(wire, self.deadline, reservation=reservation)
+            self.assertEqual(reservation["credential_fingerprint"], self.activated)
+            self.assertRegex(self.activated, r"^[0-9a-f]{64}$")
+            self.assertEqual([call.kwargs["headers"]["x-api-key"] for call in connection.request.call_args_list],
+                             [ENV["ANTHROPIC_API_KEY"]] * 2)
 
     def test_ambiguous_identity_usage_or_service_holds(self):
         """Reject missing usage, cost drift, foreign scopes and invalid native replies."""
@@ -141,7 +186,7 @@ class ProviderTests(unittest.TestCase):
             response.getheader.side_effect = HEADERS.get
             response.read1.side_effect = [b"redirect body", b""]
             status, headers, raw = provider._request("POST", "/v1/messages", b"{}", self.deadline,
-                                                     workspace_id=WORKSPACE)
+                                                     workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
             self.assertEqual((status, headers, raw), (307, HEADERS, b"redirect body"))
             args, kwargs = constructor.call_args
             self.assertEqual(args, ("api.anthropic.com",))
@@ -169,7 +214,7 @@ class ProviderTests(unittest.TestCase):
                 response.getheader.side_effect = HEADERS.get
                 response.read1.side_effect = [raw, b""]
                 status, headers, observed = provider._request("POST", "/v1/messages", b"{}", self.deadline,
-                                                             workspace_id=WORKSPACE)
+                                                             workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
                 self.assertEqual(observed, raw[:provider.MAX_BODY])
                 self.assertIn(headers["body_status"], ("oversized", "incomplete"))
                 with self.assertRaises(provider.ProviderError):
@@ -179,11 +224,11 @@ class ProviderTests(unittest.TestCase):
                 connection.reset_mock()
             connection.getresponse.side_effect = TimeoutError()
             with self.assertRaises(provider.ProviderError):
-                provider._request("POST", "/v1/messages", b"{}", self.deadline, workspace_id=WORKSPACE)
+                provider._request("POST", "/v1/messages", b"{}", self.deadline, workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
             connection.request.assert_called_once()
             connection.reset_mock()
             with self.assertRaises(provider.ProviderError):
-                provider._request("POST", "/v1/messages", b"{}", time.monotonic()-1, workspace_id=WORKSPACE)
+                provider._request("POST", "/v1/messages", b"{}", time.monotonic()-1, workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
             connection.request.assert_not_called()
 
 
