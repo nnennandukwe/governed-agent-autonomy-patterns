@@ -23,14 +23,17 @@ from qual_submit_host import Shipping, subject, terminate, update_grant
 
 
 def read(path):
+    """Decode the JSON file from disk so the test can check the CLI's reply against it."""
     return json.loads(path.read_bytes())
 
 
 def pair(slot):
+    """Capture the identity and content digest of the slot's anchor and journal."""
     return snapshot(slot.anchor), snapshot(slot.journal)
 
 
 def save(case, slot, op, log):
+    """Copy the final slot, authority and observer evidence before fixture cleanup removes the workspace."""
     case.mkdir(parents=True)
     for name, src in (("anchor.json", slot.anchor), ("journal.json", slot.journal), ("health", slot.health)):
         if src.exists():
@@ -43,14 +46,18 @@ def save(case, slot, op, log):
 
 
 def kill_stopped(child):
+    """Kill the child at its qualification stop, require SIGKILL on reap and drain its pipes."""
     child.kill()
     assert child.wait(timeout=5) == -signal.SIGKILL
     child.communicate(timeout=3)
 
 
 class Reconciliation(unittest.TestCase):
+    """Exercise old and new journal clients against the same disposable ext4 slot."""
+
     @classmethod
     def setUpClass(cls):
+        """Run the shipping reference once to obtain original input bytes, the historical profile and its budget."""
         with tempfile.TemporaryDirectory(dir=ARGS.root) as tmp:
             legacy = Path(tmp) / "legacy"
             initial = reference(ARGS.reference, legacy, "coding-init")
@@ -61,11 +68,13 @@ class Reconciliation(unittest.TestCase):
             cls.profile, cls.budget = reference_profile(run), run["request"]["resource_budget"]
 
     def area(self, root):
+        """Create a case-owned directory under the selected volume and remove it after evidence collection."""
         tmp = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(tmp.cleanup)
         return Path(tmp.name)
 
     def fixture(self, label="", content=GOOD):
+        """Enroll a shipping slot and register its evidence copy to run before the temporary directories disappear."""
         root, health = self.area(ARGS.root), self.area(ARGS.health_root)
         f = Shipping(root, health, ARGS, self.inputs, self.profile, self.budget, content, "shipping-1")
         op = Operator(f.slot, root, health)
@@ -74,6 +83,9 @@ class Reconciliation(unittest.TestCase):
         return f, op
 
     def converted(self, f, op):
+        """Check that conversion preserves the source generation and attempts and binds both file digests
+        to the new anchor.
+        """
         old_anchor, old_journal = f.slot.anchor.read_bytes(), f.slot.journal.read_bytes()
         old = json.loads(old_journal)
         result = op.convert()
@@ -94,6 +106,7 @@ class Reconciliation(unittest.TestCase):
         return old
 
     def test_conversion_preserves_originals(self):
+        """Compare empty, partial and sealed v0.1 histories across conversion while watching the target for writes."""
         for kind in ("empty", "refused", "failed", "completed", "partial"):
             with self.subTest(kind=kind):
                 bad = "def shipping_quote(quantity, unit_price):\n    return 7\n"
@@ -121,6 +134,7 @@ class Reconciliation(unittest.TestCase):
                     self.assertEqual(moves(), 0)
 
     def test_original_identity_reuse(self):
+        """Duplicate an admission in a rehashed journal and require lookup to withhold even an unrelated key."""
         f, op = self.fixture()
         self.converted(f, op)
         code, result = f.submit()
@@ -142,6 +156,7 @@ class Reconciliation(unittest.TestCase):
         self.assertEqual(before, (pair(f.slot), snapshot(f.target)))
 
     def test_legacy_sealed_unknown(self):
+        """Check that conversion preserves an unknown effect's sealed receipt and keeps the workspace held."""
         self.root, self.health = self.area(ARGS.root), self.area(ARGS.health_root)
         self.slot = lambda **kwargs: Slot(self.root, self.health, ARGS.old_release, ARGS.qualification, **kwargs)
         self.record = lambda slot, name, result: setattr(self, "held_slot", slot)
@@ -160,6 +175,7 @@ class Reconciliation(unittest.TestCase):
              [{"convert": result, "unknown_receipt": history["facts"][-1]["payload"]["receipt"]["receipt_digest"]}])
 
     def test_mixed_writers(self):
+        """Race a released writer against conversion and verify which history each client can use after the fence."""
         f, op = self.fixture("old-wins")
         with watch_target(f.workspace) as moves, op.old_handoff():
             code, old = f.submit(binary=ARGS.old_reference)
@@ -203,6 +219,9 @@ class Reconciliation(unittest.TestCase):
                 op.command("lookup", f.key, binary=ARGS.old_release, expected="unsupported_storage")
 
     def test_conversion_interruptions(self):
+        """Kill the converter around each rename and sync, then check the permitted retry against the
+        surviving files.
+        """
         for stage in ("cutover_fence", "cutover_journal", "cutover_active"):
             for cut in ("before_rename", "after_rename", "before_dir_sync", "after_dir_sync"):
                 with self.subTest(stage=stage, cut=cut):
@@ -233,6 +252,7 @@ class Reconciliation(unittest.TestCase):
         self.assertEqual(before, pair(f.slot))
 
     def interrupted(self, kind, label):
+        """Stop a real shipping worker and retain the observer's deposit alongside its dispatch-only history."""
         f, op = self.fixture(label)
         self.converted(f, op)
         entry = observe(f, op, kind)
@@ -244,9 +264,13 @@ class Reconciliation(unittest.TestCase):
         return f, op, entry, source, original
 
     def test_unchanged_sealed_failure_after_ruling(self):
+        """Read the original failed receipt after a ruling and a duplicate submission, with the workspace
+        under watch.
+        """
         check_sealed_failure(self)
 
     def test_all_observed_outcomes_and_original_seals(self):
+        """Admit each supported observation and verify that its interrupted run stays unsealed on lookup and retry."""
         for kind in ("not_started", "replaced", "stopped_before_rename"):
             with self.subTest(kind=kind):
                 f, op, record, source, original = self.interrupted(kind, kind)
@@ -261,6 +285,9 @@ class Reconciliation(unittest.TestCase):
                     self.assertEqual((f.submit()[1]["attempt"], moves()), (original, 0))
 
     def test_current_authority_and_incomplete_sources(self):
+        """Check source eligibility, private readback and revocation between intake and the operator's
+        final decision.
+        """
         f, op, record, source, original = self.interrupted("replaced", "authority")
         attempt = record["attempt_id"]
         for right in ("read", "reconcile"):
@@ -308,6 +335,7 @@ class Reconciliation(unittest.TestCase):
         op.reconcile(attempt, source, expected="forbidden")
 
     def test_pending_crash_matrix_and_duplicate_operators(self):
+        """Interrupt each ruling publication step and check what a second operator can recover from the files."""
         for stage in ("intake", "ruling", "confirm_ruling", "clear_intake"):
             for cut in ("before_rename", "after_rename", "before_dir_sync", "after_dir_sync"):
                 with self.subTest(stage=stage, cut=cut):
@@ -350,6 +378,7 @@ class Reconciliation(unittest.TestCase):
         self.assertEqual(result, op.reconcile(*cmd[1:]))
 
     def fresh(self, f, key):
+        """Bind a new submission key and grant to the current workspace subject and the revised proposal."""
         f.key = key
         f.proposal.update(base_digest=subject(f.workspace), content=GOOD + "# separately authorized\n")
         approval = dict(f.grant["approval"], subject_digest=f.proposal["base_digest"], approval_id=key + "-grant")
@@ -357,6 +386,9 @@ class Reconciliation(unittest.TestCase):
                      proposal_digest=digest(canonical(f.proposal)), approval=approval)
 
     def equivocation(self, record):
+        """Build an intentionally conflicting observer deposit for a dispute test. The original run
+        produced only one outcome.
+        """
         # The honest run observed a replacement. This deliberately contradictory observer
         # deposit tests dispute handling. It isn't a second physical outcome from that run.
         other = copy.deepcopy(record)
@@ -367,6 +399,9 @@ class Reconciliation(unittest.TestCase):
         return other
 
     def test_late_dispute_preserves_intervening_run(self):
+        """Admit a contradiction after a later run completes and verify the hold alongside that run's
+        original receipt.
+        """
         f, op, record, source, original = self.interrupted("replaced", "equivocation")
         attempt = record["attempt_id"]
         original_key = f.key
@@ -409,6 +444,9 @@ class Reconciliation(unittest.TestCase):
         self.assertNotIn("attempt", hidden)
 
     def test_quiescence_archive_loss_and_pinned_malformed_input(self):
+        """Check that a surviving writer lease, missing evidence or an incomplete entry-gate record
+        prevents unsafe progress.
+        """
         for label in ("retained-writer", "lost-source", "malformed"):
             with self.subTest(label=label):
                 f, op, rec, source, _ = self.interrupted("not_started", label)
@@ -445,6 +483,9 @@ class Reconciliation(unittest.TestCase):
                     self.assertEqual(f.submit(key="fresh")[1]["status"], "workspace_held")
 
     def test_capacity_and_storage_withdrawal(self):
+        """Exhaust the generation counter and verify that the pending contradiction survives volume
+        withdrawal and reopening.
+        """
         f, op = self.fixture("exhausted-generation")
         with op.old_handoff():
             code, original = f.submit(binary=ARGS.old_reference)
@@ -482,6 +523,9 @@ class Reconciliation(unittest.TestCase):
             self.assertEqual(read(f.slot.anchor)["pending"]["evidence_digest"], disagreement)
 
     def test_control_and_archive_failures(self):
+        """Check the surviving target and operator response after writeback failure, a foreign stage, an
+        unconfirmed journal or lock replacement.
+        """
         for label in ("directory-sync", "stage-close", "foreign-stage", "one-ahead", "changed-lock"):
             with self.subTest(label=label):
                 f, op = self.fixture(label)

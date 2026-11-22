@@ -10,6 +10,9 @@ from qual_operator_observer import DirectoryWatch, observe
 
 
 def check_sealed_failure(case):
+    """Admit the observed stage abort and verify both original seals and zero workspace writes on
+    lookup and retry.
+    """
     f, op = case.fixture("sealed-failure")
     case.converted(f, op)
     target = snapshot(f.target)

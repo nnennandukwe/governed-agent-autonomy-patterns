@@ -19,6 +19,7 @@ from qual_submit_host import sync_dir, terminate
 
 
 def tracked(workspace):
+    """Read the three shipping inputs and their file identities for the observer's repository snapshot."""
     files = {}
     for name in ("TASK.md", "shipping.py", "deployment.json"):
         with (workspace / name).open("rb") as stream:
@@ -29,7 +30,10 @@ def tracked(workspace):
 
 
 class DirectoryWatch:
+    """Retain workspace events in kernel order from before worker launch through inspection after exit."""
+
     def __init__(self, workspace):
+        """Install a nonblocking inotify watch on the workspace and record when coverage begins."""
         libc = ctypes.CDLL(None, use_errno=True)
         self.fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if self.fd < 0:
@@ -43,6 +47,7 @@ class DirectoryWatch:
         self.armed = time.monotonic_ns()
 
     def drain(self):
+        """Append all queued events with their move cookies. Fail on a lost watch or queue overflow."""
         while True:
             try:
                 data = os.read(self.fd, 65536)
@@ -57,6 +62,9 @@ class DirectoryWatch:
                 data = data[16 + size:]
 
     def pin_stage(self, stack, f, name):
+        """Wait for the stage writer to close, check the proposed bytes and return the open file and its
+        event boundary.
+        """
         until = time.monotonic() + 4
         while time.monotonic() < until:
             self.drain()

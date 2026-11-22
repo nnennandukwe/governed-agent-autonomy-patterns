@@ -10,7 +10,12 @@ from qual_submit_host import sync_dir
 
 
 class Operator:
+    """Act as the test supervisor that owns operator grants, writer leases and private observer deposits."""
+
     def __init__(self, slot, state, health):
+        """Provision separate authority and evidence directories, bind them to the enrolled slot and pin
+        its conversion source.
+        """
         self.slot = slot
         self.commands = []
         self.legacy_host = dict(slot.host)
@@ -36,6 +41,7 @@ class Operator:
         self.pin_source()
 
     def publish_rights(self):
+        """Replace and sync the current grants while holding the supervisor's exclusive authority lock."""
         record = {k: self.profile[k] for k in ("workspace_id", "store_id")}
         record.update(format="gaap.reconciliation-authority/0.2",
                       reconciliation_profile_digest=self.profile_digest, principals=self.rights)
@@ -47,6 +53,7 @@ class Operator:
             sync_dir(self.authority)
 
     def pin_source(self):
+        """Bind the supervisor handoff to the anchor's current generation and the exact bytes of both source files."""
         anchor = self.slot.anchor.read_bytes()
         self.config["conversion"] = dict(source_generation=json.loads(anchor)["generation"],
             source_anchor_digest=digest(anchor), source_journal_digest=digest(self.slot.journal.read_bytes()))
@@ -54,6 +61,7 @@ class Operator:
 
     @contextlib.contextmanager
     def old_handoff(self):
+        """Expose the original host configuration to the released client and restore the current handoff on exit."""
         current = self.slot.host
         self.slot.host = self.legacy_host
         self.slot.configure()
@@ -64,6 +72,9 @@ class Operator:
             self.slot.configure()
 
     def deposit(self, record):
+        """Create a private file for the canonical observer record and return its digest after syncing
+        the file and directory.
+        """
         raw = canonical(record)
         checksum = digest(raw)
         path = self.candidates / (checksum[7:] + ".json")
@@ -76,13 +87,16 @@ class Operator:
         return checksum
 
     def command(self, *args, expected, **options):
+        """Run a fresh CLI process, check its expected status and record the arguments, principal and reply."""
         result = self.slot.call(*args, expected=expected, **options)
         self.commands.append({"argv": list(args), "principal": self.slot.host["principal"],
                               "result": result})
         return result
 
     def convert(self):
+        """Require the converter to acknowledge the source pinned by this supervisor."""
         return self.command("convert", expected="converted")
 
     def reconcile(self, attempt, source, expected="recorded", **options):
+        """Submit only the attempt ID and deposited source digest, and check the operator's expected status."""
         return self.command("reconcile", attempt, source, expected=expected, **options)
