@@ -352,3 +352,58 @@ recorder.rehearse(Path(sys.argv[1]))
                 invalid = recorder.run_control(task, [failed], "raw", limits, path)
                 with self.assertRaisesRegex(ValueError, "Selection"):
                     recorder.verify_control(task, arm, [failed], dict(invalid, arm=arm), limits)
+
+    def test_resampling_refusals_and_replacements_in_generation_order(self):
+        """Charge both independent replies and select the earliest eligible replacement."""
+        task, gold, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        examples = {"pass": recorder.fixture_response(gold, True),
+                    "fail": recorder.fixture_response(b"{}", False),
+                    "refuse": recorder.encoded({"replacement_utf8": None, "claimed_complete": False,
+                                                "refusal": "No proposal.", "lesson": None})}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "record"
+            for first in examples:
+                for second in examples:
+                    with self.subTest(first=first, second=second):
+                        labels = (first, second)
+                        replies = [examples[label] for label in labels]
+                        chosen = next((i for i, label in enumerate(labels) if label == "pass"),
+                                      next((i for i, label in enumerate(labels) if label == "fail"), None))
+                        record = recorder.run_control(task, replies, "resampling", limits, path)
+                        expected = "refused" if chosen is None else ("verified" if labels[chosen] == "pass" else "rejected")
+                        self.assertEqual((record["status"], record["selected"]), (expected, chosen))
+                        self.assertEqual(record["usage"]["candidates"], 2)
+                        self.assertEqual([c["reply_hex"] for c in record["candidates"]], [r.hex() for r in replies])
+                        self.assertTrue(all(c["parent"] is None and c["request_utf8"] == record["initial_request_utf8"]
+                                            for c in record["candidates"]))
+                        self.assertEqual(record["operations"].count("public_check"), 2 - labels.count("refuse"))
+                        self.assertEqual(record["operations"].count("placement"), int(chosen is not None))
+                        self.assertEqual(record["usage"]["evaluator_calls"], int(chosen is not None))
+                        if chosen is None:
+                            self.assertEqual(record["before"], record["after"])
+                        recorder.verify_control(task, "resampling", replies, record, limits)
+            # A third offered reply can't enter the two-response comparison.
+            replies = [examples["refuse"], examples["fail"], examples["pass"]]
+            record = recorder.run_control(task, replies, "resampling", limits, path)
+            self.assertEqual((record["status"], record["selected"], record["usage"]["candidates"]), ("rejected", 1, 2))
+            recorder.verify_control(task, "resampling", replies, record, limits)
+            expanded = dict(limits, candidates=3)
+            longer = recorder.run_control(task, replies, "resampling", expanded, path)
+            self.assertEqual(len(longer["candidates"]), 3)
+            with self.assertRaisesRegex(ValueError, "response after the strategy stopped"):
+                recorder.verify_control(task, "resampling", replies, longer, limits)
+            premature = recorder.run_control(task, [examples["refuse"]], "resampling", limits, path)
+            with self.assertRaisesRegex(ValueError, "Terminal status"):
+                recorder.verify_control(task, "resampling", [examples["refuse"], examples["pass"]], premature, limits)
+            # An admitted malformed or oversized reply ends selection and retains its exact bytes.
+            oversized = recorder.fixture_response(b" " * (corpus.MAX_REPLACEMENT_BYTES + 1), False)
+            for replies in ([b"false", examples["pass"]], [examples["pass"], b"false"],
+                            [examples["pass"], oversized]):
+                record = recorder.run_control(task, replies, "resampling", limits, path)
+                self.assertEqual(record["status"], "malformed_response")
+                self.assertEqual(record["effect"], "none")
+                self.assertEqual(record["before"], record["after"])
+                received = len(record["candidates"])
+                self.assertEqual([c["reply_hex"] for c in record["candidates"]], [r.hex() for r in replies[:received]])
+                recorder.verify_control(task, "resampling", replies, record, limits)

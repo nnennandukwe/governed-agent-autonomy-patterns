@@ -30,7 +30,7 @@ Public CI can verify the development fixtures and split structure. A private com
 
 ## What changes between arms
 
-Use the same starting subject, base instructions, model, tools, policy and maximum resources for each arm. All arms get the same first request, with no arm label. The raw arm submits its first proposal. The revision arm may revise once after a failed public check. The lesson arm links the same revision to its own observed failure. Resampling starts fresh and selects the first public pass in generation order, or the first proposal when none passes. The final scorer can't guide this choice. Charge every candidate, retry, check and selection to its originating cell. [Arm instructions and selection rules](study.json)
+Use the same starting subject, base instructions, model, tools, policy and maximum resources for each arm. All arms get the same first request, with no arm label. The raw arm submits its first proposal. The revision arm may revise once after a failed public check. The lesson arm links the same revision to its own observed failure. Resampling starts fresh. A valid refusal consumes one sample and leaves the next independent sample eligible. Select the first replacement passing the public check in generation order, or the first valid replacement when none passes. A cell with only refusals stays unscored. The final scorer can't guide this choice. Charge every candidate, retry, check and selection to its originating cell. [Arm instructions and selection rules](study.json)
 
 A completion claim belongs to the selected replacement only when its response explicitly claims completion. Bind that flag to the selected bytes before final scoring. Retain unknown claims and unresolved verdicts.
 

@@ -22,7 +22,7 @@
     {
       "id": "resampling",
       "prompt": "For a second sample, repeat the common first request against a fresh copy of the initial workspace. Withhold earlier proposals and checks.",
-      "selection": "Select the first proposal passing public checks in generation order, otherwise the first proposal. Charge all sampling and selection."
+      "selection": "Charge every response, including a valid refusal. Continue independent sampling within the two-response limit. Select the first replacement passing public checks in generation order, otherwise the first valid replacement. With only refusals, record an unscored refusal. A malformed response ends the cell incomplete. Stop on an uncertain effect."
     }
   ],
   "common_policy": "All four strategies share the model, initial task, base prompt, tools, effect policy and maximum resources. Only the arm instruction and the resulting selection rule vary. Only the host can apply the selected replacement to its allowed file. A candidate can't read the scorer, private expected answer, another cell or host record.",

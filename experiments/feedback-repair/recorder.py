@@ -146,9 +146,20 @@ def decode_candidate(reply, lesson_required):
     return fields, None, None, parsed["lesson"]
 
 
-def stop_after_check(arm, public_pass):
-    """Close raw sampling after one proposal and revision arms after a public pass."""
-    return arm == "raw" or (arm in ("revision", "lesson") and public_pass)
+def after_reply(arm, index, status, public_pass, offered_count, candidate_limit):
+    """Choose the next operation from the reply, public check and remaining samples."""
+    last = index + 1 == offered_count or (arm == "resampling" and index + 1 >= candidate_limit)
+    if status == "refused":
+        if arm == "resampling":
+            return "placement" if last else "response"
+        return "placement" if index and arm in ("revision", "lesson") else "finish"
+    if status is not None:
+        return "finish"
+    if public_pass is None:
+        return "public_check"
+    if last or arm == "raw" or (arm in ("revision", "lesson") and public_pass):
+        return "placement"
+    return "response"
 
 
 def select(arm, candidates):
@@ -201,6 +212,7 @@ def run_control(task, proposals, arm, limits, record_path):
             initial_pass = corpus.public_checks(task, (subject / task["target"]).read_bytes())
             initial = common_request(study, task, subject, initial_pass)
             record["initial_request_utf8"] = encoded(initial).decode()
+            last_refusal = None
             for number, reply in enumerate(proposals):
                 previous = record["candidates"][-1] if number else None
                 revised = previous is not None and arm in ("revision", "lesson")
@@ -215,22 +227,27 @@ def run_control(task, proposals, arm, limits, record_path):
                 candidate.update(fields)
                 if lesson is not None:
                     record["lesson"] = bound_lesson(task, number - 1, previous, lesson)
-                if status is not None:
-                    if status == "refused" and revised:
-                        break
+                if status is None:
+                    replacement = fields["utf8"].encode()
+                    charge("public_check")
+                    candidate["public_pass"] = corpus.public_checks(task, replacement)
+                elif status == "refused":
+                    last_refusal = reason
+                next_op = after_reply(arm, number, status, candidate["public_pass"],
+                                      len(proposals), limits["candidates"])
+                if next_op == "finish":
                     record.update(status=status, reason=reason)
-                    break
-                replacement = fields["utf8"].encode()
-                charge("public_check")
-                candidate["public_pass"] = corpus.public_checks(task, replacement)
-                if stop_after_check(arm, candidate["public_pass"]):
+                if next_op != "response":
                     break
             stopped = record["status"] in ("malformed_response", "refused")
             chosen = None if stopped else select(arm, record["candidates"])
             record["selected"] = chosen
             if chosen is None:
                 if not stopped:
-                    record["status"] = "missing_proposal"
+                    if last_refusal is None:
+                        record["status"] = "missing_proposal"
+                    else:
+                        record.update(status="refused", reason=last_refusal)
             else:
                 replacement = record["candidates"][chosen]["utf8"].encode()
                 record["status"] = "selected"
@@ -354,7 +371,7 @@ def rehearse(directory):
     return root_digest(packet_bytes(directory, names))
 
 
-def verified_history(task, arm, proposals, record, initial):
+def verified_history(task, arm, proposals, record, initial, candidate_limit):
     """Rebuild each arrived reply and public observation, including the final partial step."""
     candidates = record["candidates"]
     if record["initial_request_utf8"] is None:
@@ -368,6 +385,7 @@ def verified_history(task, arm, proposals, record, initial):
     lesson = None
     next_op = "response"
     stop = None
+    last_refusal = None
     for number, candidate in enumerate(candidates):
         if next_op != "response" or number >= len(proposals):
             raise ValueError("Unexpected response after the strategy stopped.")
@@ -387,14 +405,11 @@ def verified_history(task, arm, proposals, record, initial):
             if status is not None or type(checked) is not bool or checked != corpus.public_checks(task, fields["utf8"].encode()):
                 raise ValueError("A recorded public check differs from its replacement.")
             ops.append("public_check")
-        if status:
-            if not (status == "refused" and previous is not None):
-                stop = (status, reason)
-            next_op = "finish" if stop else "placement"
-        elif checked is None:
-            next_op = "public_check"
-        elif number + 1 == len(proposals) or stop_after_check(arm, checked):
-            next_op = "placement"
+        if status == "refused":
+            last_refusal = reason
+        next_op = after_reply(arm, number, status, checked, len(proposals), candidate_limit)
+        if next_op == "finish":
+            stop = (status, reason)
     if record["lesson"] != lesson:
         raise ValueError("The lesson differs from the recorded failure and reply.")
     if not proposals:
@@ -404,6 +419,8 @@ def verified_history(task, arm, proposals, record, initial):
         chosen = select(arm, candidates)
         if chosen is None:
             next_op = "finish"
+            if last_refusal is not None:
+                stop = ("refused", last_refusal)
     return ops, next_op, chosen, stop
 
 
@@ -423,7 +440,9 @@ def verify_control(task, arm, proposals, record, limits):
         before = corpus.reset(task, scratch)
         initial_check = corpus.public_checks(task, (scratch / task["target"]).read_bytes())
         initial = common_request(read(HERE / "study.json"), task, scratch, initial_check)
-        ops, next_op, chosen, response_stop = verified_history(task, arm, proposals, record, initial)
+        ops, next_op, chosen, response_stop = verified_history(
+            task, arm, proposals, record, initial, limits["candidates"]
+        )
         if record["selected"] != chosen or (chosen is not None and type(record["selected"]) is not int):
             raise ValueError("Selection doesn't follow the frozen public rule.")
         expected_status = "missing_proposal" if response_stop is None else response_stop[0]
