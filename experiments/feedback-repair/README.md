@@ -18,6 +18,8 @@ Keep the root digest separately if another person will verify the packet. The ve
 
 A scripted proposal supplies replacement JSON. The host starts each attempt from known file contents, applies the permitted replacement and observes its effect. Public checks can guide selection. After selection, the local evaluator reads the workspace and checks the selected result and protected files against the task’s expected state. The script runs as trusted host code. The submitted JSON never executes. A public decoy exercises the case where the public check passes and final scoring rejects the change. The rehearsal also exercises a working repair and a missing proposal. Its counts describe these controls.
 
+The public notification-catalog fixture contains Spanish messages as localization test data. Keep those messages intact so the check can catch a lost named argument while preserving the user-facing translation. [Notification-catalog fixture](fixtures/b49b7d1040a26261fc2fc95382dd068d.json)
+
 The proposed study has **48 assigned cells and zero provider trials run**. Each of twelve families has one assignment per arm. Two families are public development inputs. Two validation families and eight held-out families have opaque public identifiers and commitments. The custodian keeps the original private inputs, expected answers and salts outside the repository. The following owner-only check recomputes commitments without publishing those inputs.
 
 ```sh
