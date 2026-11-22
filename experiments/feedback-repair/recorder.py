@@ -146,9 +146,16 @@ def decode_candidate(reply, lesson_required):
     return fields, None, None, parsed["lesson"]
 
 
+def response_window(arm, offered, candidate_limit):
+    """Admit only replies the arm can use and identify an unfunded first response."""
+    arm_limit = 1 if arm == "raw" else 2
+    admitted = offered[:min(candidate_limit, arm_limit)]
+    return admitted, bool(offered) and not admitted
+
+
 def after_reply(arm, index, status, public_pass, offered_count, candidate_limit):
     """Choose the next operation from the reply, public check and remaining samples."""
-    last = index + 1 == offered_count or (arm == "resampling" and index + 1 >= candidate_limit)
+    last = index + 1 == offered_count
     if status == "refused":
         if arm == "resampling":
             return "placement" if last else "response"
@@ -157,6 +164,8 @@ def after_reply(arm, index, status, public_pass, offered_count, candidate_limit)
         return "finish"
     if public_pass is None:
         return "public_check"
+    if arm in ("revision", "lesson") and index == 0 and not public_pass and candidate_limit == 1:
+        return "response"
     if last or arm == "raw" or (arm in ("revision", "lesson") and public_pass):
         return "placement"
     return "response"
@@ -213,6 +222,9 @@ def run_control(task, proposals, arm, limits, record_path):
             initial = common_request(study, task, subject, initial_pass)
             record["initial_request_utf8"] = encoded(initial).decode()
             last_refusal = None
+            proposals, first_blocked = response_window(arm, proposals, limits["candidates"])
+            if first_blocked:
+                charge("response")
             for number, reply in enumerate(proposals):
                 previous = record["candidates"][-1] if number else None
                 revised = previous is not None and arm in ("revision", "lesson")
@@ -239,6 +251,9 @@ def run_control(task, proposals, arm, limits, record_path):
                     record.update(status=status, reason=reason)
                 if next_op != "response":
                     break
+                if number + 1 == len(proposals):
+                    # A failed first check requires a revision even when its allowance ran out.
+                    charge("response")
             stopped = record["status"] in ("malformed_response", "refused")
             chosen = None if stopped else select(arm, record["candidates"])
             record["selected"] = chosen
@@ -374,6 +389,7 @@ def rehearse(directory):
 def verified_history(task, arm, proposals, record, initial, candidate_limit):
     """Rebuild each arrived reply and public observation, including the final partial step."""
     candidates = record["candidates"]
+    proposals, first_blocked = response_window(arm, proposals, candidate_limit)
     if record["initial_request_utf8"] is None:
         if candidates:
             raise ValueError("A proposal has no starting request.")
@@ -412,7 +428,7 @@ def verified_history(task, arm, proposals, record, initial, candidate_limit):
             stop = (status, reason)
     if record["lesson"] != lesson:
         raise ValueError("The lesson differs from the recorded failure and reply.")
-    if not proposals:
+    if not proposals and not first_blocked:
         next_op = "finish"
     chosen = None
     if next_op == "placement":

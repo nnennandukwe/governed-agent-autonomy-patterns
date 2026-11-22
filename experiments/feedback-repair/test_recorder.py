@@ -388,9 +388,7 @@ recorder.rehearse(Path(sys.argv[1]))
             record = recorder.run_control(task, replies, "resampling", limits, path)
             self.assertEqual((record["status"], record["selected"], record["usage"]["candidates"]), ("rejected", 1, 2))
             recorder.verify_control(task, "resampling", replies, record, limits)
-            expanded = dict(limits, candidates=3)
-            longer = recorder.run_control(task, replies, "resampling", expanded, path)
-            self.assertEqual(len(longer["candidates"]), 3)
+            longer = dict(record, candidates=[*record["candidates"], record["candidates"][0]])
             with self.assertRaisesRegex(ValueError, "response after the strategy stopped"):
                 recorder.verify_control(task, "resampling", replies, longer, limits)
             premature = recorder.run_control(task, [examples["refuse"]], "resampling", limits, path)
@@ -478,3 +476,42 @@ recorder.rehearse(Path(sys.argv[1]))
                     late = recorder.run_control(task, replies, "raw", limits, out)
                 self.assertEqual((late["status"], late["stopped_before"]), ("timeout", "finish"))
                 recorder.verify_control(task, "raw", replies, late, limits)
+
+    def test_arm_and_cell_response_windows_ignore_unadmitted_values(self):
+        """Queued values outside each arm and resource allowance can't change the observed cell."""
+        task, gold, _ = corpus.controls()[0]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        failed = recorder.fixture_response(b"{}", False)
+        passing = recorder.fixture_response(gold, True)
+        opaque = object()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "row"
+            for arm in recorder.ARMS:
+                for final in (gold, b'{"unrepaired":true}'):
+                    second = recorder.fixture_response(final, True, "Restore the setting." if arm == "lesson" else None)
+                    prefix = [failed] if arm == "raw" else [failed, second]
+                    for capacity in (1, 2, 3):
+                        with self.subTest(arm=arm, capacity=capacity, final_passes=final == gold):
+                            caps = dict(limits, candidates=capacity)
+                            window = prefix[:capacity]
+                            original = recorder.run_control(task, window, arm, caps, path)
+                            offered = window + [opaque]
+                            extended = recorder.run_control(task, offered, arm, caps, path)
+                            recorder.verify_control(task, arm, offered, original, caps)
+                            recorder.verify_control(task, arm, window, extended, caps)
+                            for row in (original, extended):
+                                row["usage"].pop("elapsed_ns")
+                            self.assertEqual(original, extended)
+                            if capacity == 1 and arm in ("revision", "lesson"):
+                                self.assertEqual(original["status"], "exhausted")
+                                self.assertIsNone(original["selected"])
+                            elif arm in ("revision", "lesson"):
+                                self.assertEqual(original["selected"], 1)
+                                self.assertEqual(original["status"], "verified" if final == gold else "rejected")
+                zero = dict(limits, candidates=0)
+                for offered, expected in (([], "missing_proposal"), ([opaque], "exhausted")):
+                    row = recorder.run_control(task, offered, arm, zero, path)
+                    self.assertEqual((row["status"], row["usage"]["candidates"]), (expected, 0))
+                    recorder.verify_control(task, arm, offered, row, zero)
+                early = recorder.run_control(task, [passing, opaque], arm, dict(limits, candidates=1), path)
+                self.assertEqual((early["status"], early["selected"]), ("verified", 0))
