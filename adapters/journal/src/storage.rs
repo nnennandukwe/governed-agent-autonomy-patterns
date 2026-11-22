@@ -87,7 +87,10 @@ enum Phase {
 }
 
 fn validate_anchor(host: &Host, saved: &Snapshot) -> Result<Phase> {
-    let record = crate::json_document(&saved.bytes, true)?;
+    anchor_phase(host, crate::json_document(&saved.bytes, true)?)
+}
+
+fn anchor_phase(host: &Host, record: Value) -> Result<Phase> {
     if record["format"] == v2::ANCHOR_FORMAT {
         let (binding, generation, digest) = v2::Binding::decode(host, &record)?;
         return Ok(if record["phase"] == "cutover" {
@@ -375,8 +378,19 @@ impl SlotOperation<'_> {
 
     fn process(&self, request: &Request) -> Result<Value> {
         let saved = self.read_anchor()?;
-        let state = validate_anchor(self.host, &saved)?;
-        match state {
+        let record = crate::json_document(&saved.bytes, true);
+        // Enrollment authority covers an original v0.1 slot, including a repeat on its
+        // active binding. Require current read access before interpreting any newer state.
+        let _enrollment_read = if matches!(request, Request::Enroll)
+            && !record
+                .as_ref()
+                .is_ok_and(|anchor| anchor["format"] == "gaap.journal-anchor/0.1")
+        {
+            self.read_fence()?
+        } else {
+            None
+        };
+        match anchor_phase(self.host, record?)? {
             Phase::Unused => {
                 self.entries(&[])?;
                 self.recheck(&saved, None)?;
@@ -479,7 +493,7 @@ impl Pair {
         }
         let hash = crate::digest(bytes);
         let active = match self.binding.as_deref() {
-            Some(b) => b.render(slot.host, "active", generation, &hash),
+            Some(binding) => binding.render(slot.host, "active", generation, &hash),
             None => anchor(slot.host, "active", json!(generation), json!(hash)),
         };
         let control = crate::canonical(&active)?;
@@ -495,8 +509,9 @@ impl Pair {
 }
 
 pub fn run(host: &Host, health: &File, request: &Request) -> Result<Value> {
-    with_slot(host, health, matches!(request, Request::Enroll), |slot| {
-        let _read = slot.read_fence()?;
+    let enrolling = matches!(request, Request::Enroll);
+    with_slot(host, health, enrolling, |slot| {
+        let _reader = if enrolling { None } else { slot.read_fence()? };
         slot.process(request)
     })
 }

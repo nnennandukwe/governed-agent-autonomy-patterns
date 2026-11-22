@@ -85,7 +85,7 @@ fn locked(host: &Host, name: &str, pin: &Identity, exclusive: bool) -> Result<(F
     if !identity_matches(&md, pin) || md.len() != 0 {
         return Err(unavailable());
     }
-    bounded_flock(&lock, exclusive).map_err(|e| match e {
+    bounded_flock(&lock, exclusive).map_err(|error| match error {
         rustix::io::Errno::AGAIN => Error::new("busy", "supervisor_fence_busy"),
         _ => unavailable(),
     })?;
@@ -111,9 +111,14 @@ impl OperatorFence {
         if !host.can_read {
             return Err(forbidden());
         }
-        let b = binding(host)?;
-        let (dir, lock) = locked(host, "authority.lock", &b.authority_lock, false)?;
-        let file = regular(&dir, "operator.json", b.authority.uid)?;
+        let reconciliation = binding(host)?;
+        let (dir, lock) = locked(
+            host,
+            "authority.lock",
+            &reconciliation.authority_lock,
+            false,
+        )?;
+        let file = regular(&dir, "operator.json", reconciliation.authority.uid)?;
         const LIMIT: u64 = 64 * 1024;
         let mut bytes = Vec::new();
         file.take(LIMIT + 1)
@@ -160,11 +165,11 @@ impl Quiescence {
     }
 }
 pub(crate) fn writer_lease(host: &Host) -> Result<Option<File>> {
-    let Some(b) = &host.reconciliation else {
+    let Some(reconciliation) = &host.reconciliation else {
         return Ok(None);
     };
     Ok(Some(
-        locked(host, "writers.lock", &b.writers_lock, false)?.1,
+        locked(host, "writers.lock", &reconciliation.writers_lock, false)?.1,
     ))
 }
 

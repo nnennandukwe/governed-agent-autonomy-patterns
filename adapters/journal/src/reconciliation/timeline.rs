@@ -36,7 +36,7 @@ impl Effect {
                     after: observed
                         .payload
                         .get("after")
-                        .filter(|v| !v.is_null())
+                        .filter(|output| !output.is_null())
                         .cloned(),
                 });
             }
@@ -113,11 +113,11 @@ impl Timeline<'_> {
         }
         let source = index
             .assess(host, volume, row, &ruling.evidence_digest)
-            .map_err(|e| {
-                if e.status == "ineligible_evidence" {
+            .map_err(|error| {
+                if error.status == "ineligible_evidence" {
                     Error::invalid("retained ruling lacks admissible evidence")
                 } else {
-                    e
+                    error
                 }
             })?;
         if ruling.observer_id != host.profile.effect_observer
@@ -225,14 +225,14 @@ pub(crate) fn lookup(
             "ruling history disagrees with confirmed generation",
         ));
     }
-    if let Some(p) = pending
-        && (!token(&p.intake_by)
-            || !is_digest(&p.evidence_digest)
-            || !index.contains(&p.evidence_digest)
+    if let Some(intake) = pending
+        && (!token(&intake.intake_by)
+            || !is_digest(&intake.evidence_digest)
+            || !index.contains(&intake.evidence_digest)
             || !timeline
                 .effects
-                .get(&p.attempt_id)
-                .is_some_and(|e| !matches!(e, Effect::Undispatched)))
+                .get(&intake.attempt_id)
+                .is_some_and(|effect| !matches!(effect, Effect::Undispatched)))
     {
         return Err(Error::invalid(
             "pending intake lost its original attempt or pinned source",
@@ -244,12 +244,12 @@ pub(crate) fn lookup(
             .effects
             .get(&id)
             .map(|effect| effect.status().to_owned());
-        answer.intake_pending = Some(pending.is_some_and(|p| p.attempt_id == id));
+        answer.intake_pending = Some(pending.is_some_and(|intake| intake.attempt_id == id));
         answer.rulings = Some(
             journal
                 .rulings
                 .iter()
-                .filter(|r| r["attempt_id"].as_str() == Some(&id))
+                .filter(|ruling| ruling["attempt_id"].as_str() == Some(&id))
                 .cloned()
                 .collect(),
         );

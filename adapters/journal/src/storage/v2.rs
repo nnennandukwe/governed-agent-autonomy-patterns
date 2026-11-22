@@ -122,11 +122,11 @@ impl Binding {
             .ok_or_else(|| Error::invalid("v2_anchor_phase"))?;
         let generation = raw["generation"]
             .as_u64()
-            .filter(|&g| g <= MAX_SAFE)
+            .filter(|&generation| generation <= MAX_SAFE)
             .ok_or_else(|| Error::invalid("v2_anchor_generation"))?;
         let hash = raw["journal_digest"]
             .as_str()
-            .filter(|s| is_digest(s))
+            .filter(|hash| is_digest(hash))
             .ok_or_else(|| Error::invalid("v2_anchor_digest"))?;
         if !matches!(phase, "active" | "cutover")
             || origin.source_generation > generation
@@ -137,7 +137,7 @@ impl Binding {
                 &origin.initial_journal_digest,
             ]
             .iter()
-            .all(|s| is_digest(s))
+            .all(|hash| is_digest(hash))
             || (phase == "cutover"
                 && (pending.is_some()
                     || generation != origin.source_generation

@@ -42,7 +42,9 @@ pub(crate) fn reconcile(
         let selection_rights = OperatorFence::acquire(host, Role::Reconcile)?;
         let history = tx.lookup(&request)?;
         let pending = tx.pending();
-        if pending.is_some_and(|p| p.attempt_id != attempt_id || p.evidence_digest != digest) {
+        if pending.is_some_and(|intake| {
+            intake.attempt_id != attempt_id || intake.evidence_digest != digest
+        }) {
             return Err(Error::new("busy", "another evidence intake is pending"));
         }
         if let Some(stored) = history.rulings.as_ref().and_then(|rows| {
@@ -110,12 +112,12 @@ pub(crate) fn reconcile(
         let generation = journal
             .generation
             .checked_add(1)
-            .filter(|&n| n <= MAX_SAFE)
+            .filter(|&next| next <= MAX_SAFE)
             .ok_or_else(|| Error::new("capacity", "journal generation exhausted"))?;
-        let original_fact_count = journal.attempts.iter().try_fold(0u64, |n, row| {
+        let original_fact_count = journal.attempts.iter().try_fold(0u64, |total, row| {
             row["facts"]
                 .as_array()
-                .map(|facts| n + facts.len() as u64)
+                .map(|facts| total + facts.len() as u64)
                 .ok_or_else(|| Error::invalid("missing original fact frontier"))
         })?;
         let ruling = Ruling {

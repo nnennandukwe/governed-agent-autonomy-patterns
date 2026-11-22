@@ -164,6 +164,48 @@ class Reconciliation(unittest.TestCase):
                     self.assertEqual(after["workspace_hold"], legacy["workspace_hold"])
                     self.assertEqual(moves(), 0)
 
+    def test_enrollment_privilege_and_version_boundary(self):
+        """Preserve v0.1 enroll-only access before conversion and enforce current read access afterward."""
+        root, health = self.area(ARGS.root), self.area(ARGS.health_root)
+        slot = Slot(root, health, ARGS.release, ARGS.qualification)
+        slot.host.update(principal="provisioner", can_enroll=True, can_read=False)
+        operator = Operator(slot, root, health)
+        case = ARGS.evidence / "operator" / self._testMethodName
+        records = []
+        self.addCleanup(save, case, slot, operator, records)
+        expected = {name: slot.host["slot"][name] for name in ("workspace_id", "store_id")}
+        expected.update(status="enrolled", generation=0)
+        self.assertEqual(operator.command("enroll", expected="enrolled"), expected)
+        original = pair(slot)
+        self.assertEqual(operator.command("enroll", expected="enrolled"), expected)
+        with operator.old_handoff():
+            self.assertEqual(operator.command("enroll", expected="enrolled", binary=ARGS.old_release), expected)
+        operator.command("lookup", "unseen", expected="forbidden")
+        self.assertEqual(pair(slot), original)
+        records.append({"phase": "active-v01", "pair": original, "enrollment": expected})
+
+        slot.host.update(principal="alice", can_read=True)
+        operator.pin_source()
+        kill_stopped(slot.stop("cutover_fence.after_dir_sync", command=("convert",)))
+        for phase in ("cutover", "active"):
+            self.assertEqual(read(slot.anchor)["phase"], phase)
+            self.assertEqual(read(slot.anchor)["format"], "gaap.journal-anchor/0.2")
+            original = pair(slot)
+            for principal, host_can_read in (("alice", False), ("provisioner", True)):
+                slot.host.update(principal=principal, can_read=host_can_read)
+                slot.configure()
+                for argv in (("enroll",), ("lookup", "never")):
+                    self.assertNotIn("attempt", operator.command(*argv, expected="forbidden"))
+            self.assertEqual(pair(slot), original)
+            records.append({"phase": phase, "denied_pair": original})
+            slot.host.update(principal="alice", can_read=True)
+            slot.configure()
+            if phase == "cutover":
+                operator.command("enroll", expected="cutover_pending")
+                operator.convert()
+            else:
+                self.assertEqual(operator.command("enroll", expected="enrolled"), expected)
+
     def test_original_identity_reuse(self):
         """Duplicate an admission in a rehashed journal and require lookup to withhold even an unrelated key."""
         shipping, operator = self.fixture()
@@ -495,7 +537,7 @@ class Reconciliation(unittest.TestCase):
         """Check that a surviving writer lease, missing evidence or an incomplete entry-gate record
         prevents unsafe progress.
         """
-        for label in ("retained-writer", "lost-source", "malformed"):
+        for label in ("retained-writer", "lost-source", "incomplete", "noncanonical", "digest-mismatch"):
             with self.subTest(label=label):
                 shipping, operator, rec, source, _ = self.interrupted("not_started", label)
                 attempt = rec["attempt_id"]
@@ -515,20 +557,65 @@ class Reconciliation(unittest.TestCase):
                     operator.reconcile(attempt, source)
                     path = operator.candidates / (source[7:] + ".json")
                     raw = path.read_bytes()
-                    path.unlink()
-                    self.assertNotIn("attempt", operator.command("lookup", "unknown", expected={"invalid_store", "unavailable"}))
-                    self.assertNotEqual(shipping.submit(key="fresh")[0], 0)
-                    write_private(path, raw)
-                    self.assertFalse(shipping.lookup(shipping.key, expected="partial")["workspace_hold"])
+                    with watch_target(shipping.workspace) as moves:
+                        original_pair = pair(shipping.slot)
+                        path.unlink()
+                        for key in (shipping.key, "unknown"):
+                            denied = operator.command("lookup", key, expected="invalid_store")
+                            self.assertNotIn("attempt", denied)
+                        self.assertEqual(shipping.submit(key="fresh")[1]["status"], "invalid_store")
+                        write_private(path, raw)
+                        self.assertFalse(shipping.lookup(shipping.key, expected="partial")["workspace_hold"])
+                        self.assertEqual(pair(shipping.slot), original_pair)
+                        self.assertEqual(moves(), 0)
+                    shipping.commands.append({"withdrawn_ruling_source": source, "target_moves": 0})
+                elif label == "incomplete":
+                    incomplete = copy.deepcopy(rec)
+                    del incomplete["gate"]["reply"]
+                    selected_digest = operator.deposit(incomplete)
+                    journal_before = snapshot(shipping.slot.journal)
+                    with watch_target(shipping.workspace) as moves:
+                        result = operator.reconcile(attempt, selected_digest, expected="ineligible_evidence")
+                        self.assertEqual(result["reason"], "incomplete_observer_record")
+                        self.assertEqual(snapshot(shipping.slot.journal), journal_before)
+                        self.assertIsNone(read(shipping.slot.anchor)["pending"])
+                        self.assertTrue(shipping.lookup(shipping.key, expected="partial")["workspace_hold"])
+                        self.assertEqual(shipping.submit(key="fresh")[1]["status"], "workspace_held")
+                        accepted = operator.reconcile(attempt, source)
+                        self.assertFalse(accepted["workspace_hold"])
+                        self.assertEqual(moves(), 0)
+                        self.fresh(shipping, "fresh")
+                        self.assertEqual(shipping.submit()[1]["status"], "published")
+                        self.assertEqual(moves(), 1)
+                    shipping.commands.append({"insufficient": selected_digest, "successor": source,
+                                              "moves_during_rulings": 0, "fresh_moves": 1})
                 else:
-                    malformed = copy.deepcopy(rec)
-                    del malformed["gate"]["reply"]
-                    bad = operator.deposit(malformed)
-                    operator.reconcile(attempt, bad, expected="invalid_store")
-                    self.assertEqual(read(shipping.slot.anchor)["pending"]["evidence_digest"], bad)
-                    self.assertTrue(shipping.lookup(shipping.key, expected="partial")["workspace_hold"])
-                    operator.reconcile(attempt, source, expected="busy")
-                    self.assertEqual(shipping.submit(key="fresh")[1]["status"], "workspace_held")
+                    if label == "noncanonical":
+                        # A real filename-to-bytes match, but the source has a trailing JSON newline.
+                        raw_bytes = canonical(rec) + b"\n"
+                        selected_digest = digest(raw_bytes)
+                        selected_file = operator.candidates / (selected_digest[7:] + ".json")
+                        write_private(selected_file, raw_bytes)
+                    else:
+                        changed = copy.deepcopy(rec)
+                        changed["binding"] = digest(b"different invocation")
+                        selected_digest = operator.deposit(changed)
+                        selected_file = operator.candidates / (selected_digest[7:] + ".json")
+                        write_private(selected_file, canonical(rec))
+                    journal_before = snapshot(shipping.slot.journal)
+                    with watch_target(shipping.workspace) as moves:
+                        for _ in range(2):
+                            operator.reconcile(attempt, selected_digest, expected="invalid_store")
+                            pending = read(shipping.slot.anchor)["pending"]
+                            self.assertEqual(pending, dict(attempt_id=attempt, evidence_digest=selected_digest,
+                                                           intake_by="alice"))
+                        self.assertTrue(shipping.lookup(shipping.key, expected="partial")["workspace_hold"])
+                        operator.reconcile(attempt, source, expected="busy")
+                        self.assertEqual(shipping.submit(key="fresh")[1]["status"], "workspace_held")
+                        self.assertEqual(snapshot(shipping.slot.journal), journal_before)
+                        self.assertEqual(moves(), 0)
+                    shipping.commands.append({"integrity_failure": label, "selected": selected_digest,
+                                              "observed_bytes": digest(selected_file.read_bytes()), "target_moves": 0})
 
     def test_capacity_and_storage_withdrawal(self):
         """Exhaust the generation counter and verify that the pending contradiction survives volume

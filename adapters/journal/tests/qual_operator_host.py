@@ -38,7 +38,10 @@ class Operator:
         self.rights = {name: dict(read=True, convert=allowed, reconcile=allowed)
                        for name, allowed in (("alice", True), ("bob", False), ("operator2", True))}
         self.publish_rights()
-        self.pin_source()
+        if slot.journal.exists():
+            self.pin_source()
+        else:
+            slot.configure()
 
     def publish_rights(self):
         """Replace and sync the current grants while holding the supervisor's exclusive authority lock."""

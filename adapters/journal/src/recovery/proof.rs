@@ -17,13 +17,15 @@ pub(super) fn insufficient(reason: &'static str) -> Error {
     Error::new("ineligible_evidence", reason)
 }
 
+const CANDIDATE_FORMAT: &str = "gaap.shipping-observer-candidate/0.2";
+
 // Missing bytes can't stand in for an observed null (especially a withheld entry permit).
-fn nullable<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
+fn nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    Option::deserialize(d)
+    Option::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]
@@ -70,14 +72,14 @@ impl Snapshot {
     fn observation(&self, root: &Identity) -> Result<Value> {
         let names = ["TASK.md", "deployment.json", "shipping.py"];
         if self.files.len() != names.len()
-            || !names.iter().all(|n| self.files.contains_key(*n))
-            || self.files.values().any(|f| {
-                f.content.len() > 32768
-                    || f.identity.inode == 0
-                    || f.identity.inode > MAX_SAFE
-                    || f.identity.device > MAX_SAFE
-                    || f.identity.device.to_string() != root.dev
-                    || f.identity.mode > 0o777
+            || !names.iter().all(|name| self.files.contains_key(*name))
+            || self.files.values().any(|file| {
+                file.content.len() > 32768
+                    || file.identity.inode == 0
+                    || file.identity.inode > MAX_SAFE
+                    || file.identity.device > MAX_SAFE
+                    || file.identity.device.to_string() != root.dev
+                    || file.identity.mode > 0o777
             })
         {
             return Err(insufficient("incomplete_observer_snapshot"));
@@ -148,24 +150,37 @@ struct Stage {
     final_nlink: u64,
 }
 
-fn number(s: &str) -> Result<u64> {
-    s.parse::<u64>()
+fn number(decimal: &str) -> Result<u64> {
+    decimal
+        .parse::<u64>()
         .ok()
-        .filter(|n| n.to_string() == s)
+        .filter(|number| number.to_string() == decimal)
         .ok_or_else(|| insufficient("invalid_kernel_counter"))
 }
-fn boot_id(s: &str) -> bool {
-    s.len() == 36
-        && s.bytes().enumerate().all(|(i, c)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                c == b'-'
+fn boot_id(identifier: &str) -> bool {
+    identifier.len() == 36
+        && identifier.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
             } else {
-                c.is_ascii_digit() || (b'a'..=b'f').contains(&c)
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
             }
         })
 }
 
 impl Candidate {
+    /// The private archive has verified the selected bytes, digest and canonical encoding.
+    fn decode(raw: Value) -> Result<Self> {
+        let known_format = raw["format"] == CANDIDATE_FORMAT;
+        serde_json::from_value(raw).map_err(|_| {
+            if known_format {
+                insufficient("incomplete_observer_record")
+            } else {
+                Error::invalid("malformed_observer_deposit")
+            }
+        })
+    }
+
     fn binding<'a>(&self, host: &Host, attempt: &'a Value) -> Result<&'a Value> {
         let slot = &host.slot;
         let facts = attempt["facts"]
@@ -173,7 +188,7 @@ impl Candidate {
             .ok_or_else(|| Error::invalid("original_facts_missing"))?;
         let dispatch = facts
             .iter()
-            .find(|f| f["tag"] == "dispatch")
+            .find(|fact| fact["tag"] == "dispatch")
             .ok_or_else(|| insufficient("original_attempt_never_dispatched"))?;
         let proposed = &attempt["proposal"];
         let proposal_digest = digest(&canonical(proposed)?);
@@ -191,7 +206,7 @@ impl Candidate {
             intent["run_request_digest"],
             intent["effect_request_digest"]
         ]))?);
-        if self.format != "gaap.shipping-observer-candidate/0.2"
+        if self.format != CANDIDATE_FORMAT
             || self.workspace_id != slot.workspace_id
             || self.store_id != slot.store_id
             || self.profile_digest != slot.profile_digest
@@ -210,21 +225,25 @@ impl Candidate {
     }
 
     fn coverage(&self, host: &Host) -> Result<()> {
-        let s = &self.stop;
-        let launched = number(&s.launched_ns)?;
-        let stopped = number(&s.stopped_ns)?;
+        let stop = &self.stop;
+        let launched = number(&stop.launched_ns)?;
+        let stopped = number(&stop.stopped_ns)?;
         if self.watch.wd <= 0
             || self.watch.events.len() > 128
             || self.watch.bound_at > self.watch.events.len()
-            || self.watch.events.iter().any(|e| e.wd != self.watch.wd)
-            || !boot_id(&s.boot_id)
-            || number(&s.start_ticks)? == 0
-            || s.pid <= 0
-            || s.pidfd_revents & libc::POLLIN == 0
-            || s.pidfd_revents & !(libc::POLLIN | libc::POLLHUP) != 0
-            || !match s.wait_code {
-                libc::CLD_EXITED => (0..=255).contains(&s.wait_status),
-                libc::CLD_KILLED | libc::CLD_DUMPED => (1..=64).contains(&s.wait_status),
+            || self
+                .watch
+                .events
+                .iter()
+                .any(|event| event.wd != self.watch.wd)
+            || !boot_id(&stop.boot_id)
+            || number(&stop.start_ticks)? == 0
+            || stop.pid <= 0
+            || stop.pidfd_revents & libc::POLLIN == 0
+            || stop.pidfd_revents & !(libc::POLLIN | libc::POLLHUP) != 0
+            || !match stop.wait_code {
+                libc::CLD_EXITED => (0..=255).contains(&stop.wait_status),
+                libc::CLD_KILLED | libc::CLD_DUMPED => (1..=64).contains(&stop.wait_status),
                 _ => false,
             }
             || number(&self.watch.armed_ns)? > launched
@@ -236,7 +255,7 @@ impl Candidate {
         if let Some(gate) = &self.gate {
             let received = number(&gate.received_ns)?;
             let permit = format!("permit {} {}", self.attempt_id, self.binding);
-            if gate.sender_pid != s.pid
+            if gate.sender_pid != stop.pid
                 || gate.sender_uid != host.slot.workspace.uid
                 || received < launched
                 || received > stopped
@@ -258,13 +277,19 @@ impl Candidate {
             || stage.content != proposed
             || stage_inode == 0
             || stage.ino == self.before.target.ino
-            || prefix.first().is_none_or(|e| e.mask != libc::IN_CREATE)
-            || prefix.iter().filter(|e| e.mask == libc::IN_CREATE).count() != 1
-            || prefix.iter().any(|e| {
-                e.name != stage.name
-                    || e.cookie != 0
+            || prefix
+                .first()
+                .is_none_or(|event| event.mask != libc::IN_CREATE)
+            || prefix
+                .iter()
+                .filter(|event| event.mask == libc::IN_CREATE)
+                .count()
+                != 1
+            || prefix.iter().any(|event| {
+                event.name != stage.name
+                    || event.cookie != 0
                     || !matches!(
-                        e.mask,
+                        event.mask,
                         libc::IN_CREATE | libc::IN_MODIFY | libc::IN_ATTRIB | libc::IN_CLOSE_WRITE
                     )
             })
@@ -276,30 +301,32 @@ impl Candidate {
 }
 
 pub(super) fn assess(host: &Host, attempt: &Value, raw: Value) -> Result<Finding> {
-    let c: Candidate =
-        serde_json::from_value(raw).map_err(|_| Error::invalid("malformed_observer_deposit"))?;
-    let dispatched = c.binding(host, attempt)?;
-    c.coverage(host)?;
-    if c.before.observation(&c.workspace)? != *dispatched {
+    let candidate = Candidate::decode(raw)?;
+    let dispatched = candidate.binding(host, attempt)?;
+    candidate.coverage(host)?;
+    if candidate.before.observation(&candidate.workspace)? != *dispatched {
         return Err(insufficient("observer_before_mismatch"));
     }
-    let after = c.after.observation(&c.workspace)?;
-    let withheld = c.gate.as_ref().is_some_and(|g| g.reply.is_none());
-    let (disposition, reason, result) = if let Some(stage) = &c.stage {
+    let after = candidate.after.observation(&candidate.workspace)?;
+    let withheld = candidate
+        .gate
+        .as_ref()
+        .is_some_and(|gate| gate.reply.is_none());
+    let (disposition, reason, result) = if let Some(stage) = &candidate.stage {
         if withheld {
             return Err(insufficient("observed_stage_without_entry"));
         }
         let content = attempt["proposal"]["content"]
             .as_str()
             .ok_or_else(|| Error::invalid("missing_original_content"))?;
-        c.stage_setup(stage, content)?;
+        candidate.stage_setup(stage, content)?;
         if ["TASK.md", "deployment.json"]
             .iter()
-            .any(|name| c.before.files[*name] != c.after.files[*name])
+            .any(|name| candidate.before.files[*name] != candidate.after.files[*name])
         {
             return Err(insufficient("unrelated_subject_change"));
         }
-        match &c.watch.events[c.watch.bound_at..] {
+        match &candidate.watch.events[candidate.watch.bound_at..] {
             [from, to]
                 if from.name == stage.name
                     && to.name == "shipping.py"
@@ -308,9 +335,9 @@ pub(super) fn assess(host: &Host, attempt: &Value, raw: Value) -> Result<Finding
                     && from.cookie != 0
                     && from.cookie == to.cookie
                     && stage.final_nlink == 1
-                    && c.after.target.ino == stage.ino
-                    && c.after.target.mode == stage.mode
-                    && c.after.files["shipping.py"].content == stage.content =>
+                    && candidate.after.target.ino == stage.ino
+                    && candidate.after.target.mode == stage.mode
+                    && candidate.after.files["shipping.py"].content == stage.content =>
             {
                 ("replaced", "observed_replacement", Some(after))
             }
@@ -319,20 +346,23 @@ pub(super) fn assess(host: &Host, attempt: &Value, raw: Value) -> Result<Finding
                     && delete.name == stage.name
                     && delete.cookie == 0
                     && stage.final_nlink == 0
-                    && c.before == c.after =>
+                    && candidate.before == candidate.after =>
             {
                 ("stopped_before_rename", "failed_before_rename", None)
             }
             _ => return Err(insufficient("ambiguous_observer_stage_outcome")),
         }
-    } else if withheld && c.watch.events.is_empty() && c.watch.bound_at == 0 && c.before == c.after
+    } else if withheld
+        && candidate.watch.events.is_empty()
+        && candidate.watch.bound_at == 0
+        && candidate.before == candidate.after
     {
         ("not_started", "never_entered_before_stop", None)
     } else {
         return Err(insufficient("missing_end_to_end_effect_evidence"));
     };
     Ok(Finding {
-        observer_id: c.observer_id,
+        observer_id: candidate.observer_id,
         disposition: disposition.into(),
         reason: reason.into(),
         after: result,
@@ -357,7 +387,7 @@ mod tests {
             "stop":{"pid":34,"boot_id":"boot","start_ticks":"245","launched_ns":"2","stopped_ns":"4",
                     "pidfd_revents":1,"wait_code":2,"wait_status":9},"stage":null
         });
-        assert!(serde_json::from_value::<Candidate>(record.clone()).is_ok());
+        assert!(Candidate::decode(record.clone()).is_ok());
         for (object, member) in [("", "gate"), ("", "stage"), ("/gate", "reply")] {
             let mut incomplete = record.clone();
             incomplete
@@ -366,10 +396,18 @@ mod tests {
                 .unwrap()
                 .remove(member)
                 .unwrap();
-            assert!(
-                serde_json::from_value::<Candidate>(incomplete).is_err(),
+            let error = Candidate::decode(incomplete)
+                .err()
+                .expect("missing proof field");
+            assert_eq!(
+                (error.status, error.reason),
+                ("ineligible_evidence", "incomplete_observer_record"),
                 "{object}/{member}"
             );
         }
+        let malformed = Candidate::decode(json!({}))
+            .err()
+            .expect("missing candidate format");
+        assert_eq!(malformed.status, "invalid_store");
     }
 }
