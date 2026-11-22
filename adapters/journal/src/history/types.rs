@@ -39,7 +39,7 @@ pub struct ArchiveEntry {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Attempt {
+pub(crate) struct Attempt {
     pub principal: String,
     pub key: String,
     pub attempt_id: String,
@@ -52,7 +52,7 @@ pub(super) struct Attempt {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Change {
+pub(crate) struct Change {
     pub path: String,
     pub content: String,
     pub plan: String,
@@ -61,7 +61,7 @@ pub(super) struct Change {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Fact {
+pub(crate) struct Fact {
     pub binding: String,
     pub tag: String,
     pub payload: serde_json::Value,
