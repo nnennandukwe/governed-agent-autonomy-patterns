@@ -83,21 +83,22 @@ def _credential(admin):
     return value
 
 
-def _fingerprint(credential):
+def _fingerprint(credential, scope):
     """Derive a study-specific binding that can't authenticate a provider request."""
-    return hmac.digest(credential.encode("ascii"), b"GAAP feedback-repair serving key v1", "sha256").hex()
+    binding = corpus.encode(["GAAP feedback-repair serving key v1", *scope])
+    return hmac.digest(credential.encode("ascii"), binding, "sha256").hex()
 
 
-def serving_credential_fingerprint():
+def serving_credential_fingerprint(*, scope=None):
     """Bind the serving key at activation without retaining its secret bytes."""
-    return _fingerprint(_credential(False))
+    return _fingerprint(_credential(False), read_account_scope() if scope is None else scope)
 
 
-def _bound_serving_key(expected):
+def _bound_serving_key(expected, scope):
     """Read once and pass that exact verified key through to the HTTP header."""
     key = _credential(False)
     _require(isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected) and
-             hmac.compare_digest(expected, _fingerprint(key)), "Serving credential changed.")
+             hmac.compare_digest(expected, _fingerprint(key, scope)), "Serving credential or billing scope changed.")
     return key
 
 
@@ -198,7 +199,7 @@ def _response_id(status, headers, workspace):
 def prepare_message(public_request, remaining_tokens, deadline, *, expected_fingerprint):
     """Count the identical text for free and return exact bytes and their reservation."""
     workspace, key = read_account_scope()
-    serving_key = _bound_serving_key(expected_fingerprint)
+    serving_key = _bound_serving_key(expected_fingerprint, (workspace, key))
     _require(type(public_request) is dict, "Expected one host-projected public request.")
     remaining = min(_integer(remaining_tokens), BUDGET["per_cell_limits"]["total_tokens"])
     envelope = _envelope(corpus.encode(public_request).decode())
@@ -226,7 +227,7 @@ def send_message(wire, deadline, *, reservation):
     _require(type(reservation) is dict and reservation.get("workspace_id") == workspace and
              reservation.get("key_id") == key and reservation.get("wire_sha256") == corpus.digest(wire),
              "Request bytes or account scope changed after reservation.")
-    serving_key = _bound_serving_key(reservation.get("credential_fingerprint"))
+    serving_key = _bound_serving_key(reservation.get("credential_fingerprint"), (workspace, key))
     payload = _object(wire, BUDGET["per_cell_limits"]["total_tokens"])
     messages = payload.get("messages")
     _require(type(messages) is list and len(messages) == 1 and type(messages[0]) is dict,

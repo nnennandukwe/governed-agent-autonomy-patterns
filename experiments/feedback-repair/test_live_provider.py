@@ -72,8 +72,10 @@ class ProviderTests(unittest.TestCase):
     def test_resampling_wire_stays_identical_and_limits_precede_paid_effect(self):
         """A repeat uses identical output settings even with less capacity left."""
         with patch.object(provider, "_request", return_value=(200, HEADERS, b'{"input_tokens":50}')) as native:
-            first, reserved = provider.prepare_message({"task": "repeat"}, 12000, self.deadline, expected_fingerprint=self.activated)
-            second, _ = provider.prepare_message({"task": "repeat"}, 8000, self.deadline, expected_fingerprint=self.activated)
+            first, reserved = provider.prepare_message({"task": "repeat"}, 12000, self.deadline,
+                                                       expected_fingerprint=self.activated)
+            second, _ = provider.prepare_message({"task": "repeat"}, 8000, self.deadline,
+                                                 expected_fingerprint=self.activated)
             self.assertEqual(first, second)
             with self.assertRaises(provider.ReservationError):
                 provider.prepare_message({"task": "x" * 2048}, 3000, self.deadline, expected_fingerprint=self.activated)
@@ -131,9 +133,11 @@ class ProviderTests(unittest.TestCase):
             response.status, response.length = 200, 0
             response.getheader.side_effect = HEADERS.get
             response.read1.side_effect = [b'{"input_tokens":20}', b"", b"{}", b""]
-            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-other-activation"}):
-                with self.assertRaisesRegex(provider.ProviderError, "credential"):
-                    provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
+            for binding in ({"ANTHROPIC_API_KEY": "fixture-other-activation"},
+                            {"ANTHROPIC_WORKSPACE_ID": "wrkspc_other"}, {"ANTHROPIC_API_KEY_ID": "apikey_other"}):
+                with self.subTest(binding=list(binding)), patch.dict(os.environ, binding):
+                    with self.assertRaisesRegex(provider.ProviderError, "credential"):
+                        provider.prepare_message({}, 12000, self.deadline, expected_fingerprint=self.activated)
             constructor.assert_not_called()
             wire, reservation = provider.prepare_message({}, 12000, self.deadline,
                                                          expected_fingerprint=self.activated)
@@ -224,11 +228,13 @@ class ProviderTests(unittest.TestCase):
                 connection.reset_mock()
             connection.getresponse.side_effect = TimeoutError()
             with self.assertRaises(provider.ProviderError):
-                provider._request("POST", "/v1/messages", b"{}", self.deadline, workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
+                provider._request("POST", "/v1/messages", b"{}", self.deadline,
+                                  workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
             connection.request.assert_called_once()
             connection.reset_mock()
             with self.assertRaises(provider.ProviderError):
-                provider._request("POST", "/v1/messages", b"{}", time.monotonic()-1, workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
+                provider._request("POST", "/v1/messages", b"{}", time.monotonic() - 1,
+                                  workspace_id=WORKSPACE, serving_key=ENV["ANTHROPIC_API_KEY"])
             connection.request.assert_not_called()
 
 

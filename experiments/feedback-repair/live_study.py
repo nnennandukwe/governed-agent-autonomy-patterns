@@ -227,7 +227,7 @@ def account_binding():
     """Bind the initial operator-designated account to the serving credential used throughout collection."""
     workspace, key = live_provider.read_account_scope()
     return {"workspace_id": workspace, "key_id": key,
-            "credential_fingerprint": live_provider.serving_credential_fingerprint()}
+            "credential_fingerprint": live_provider.serving_credential_fingerprint(scope=(workspace, key))}
 
 
 def dispatch(db, cell, request, remaining_tokens, deadline, initial_digest):
