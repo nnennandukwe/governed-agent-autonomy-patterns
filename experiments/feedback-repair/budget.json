@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "authorization": {
+    "provider_calls": 0,
+    "provider_cost_microusd": 0
+  },
+  "price_snapshot": {
+    "checked_on": "2026-11-21",
+    "provider": "anthropic",
+    "model": "claude-sonnet-5",
+    "api": "messages",
+    "service_tier": "standard_only",
+    "inference_geo": "global",
+    "effort": "medium",
+    "thinking": "adaptive",
+    "prompt_caching": false,
+    "server_tools": [],
+    "automatic_retries": 0,
+    "input_microusd_per_token": 2,
+    "output_microusd_per_token": 10,
+    "pricing_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "effective_price_decision_url": "https://platform.claude.com/docs/en/release-notes/overview#august-10-2026",
+    "model_identity_url": "https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions",
+    "model_status_url": "https://platform.claude.com/docs/en/about-claude/model-deprecations"
+  },
+  "allocation": {
+    "families_by_split": {"development": 2, "validation": 2, "held_out": 8},
+    "arms": ["raw", "revision", "lesson", "resampling"],
+    "instances_per_family": 1,
+    "repetitions_per_arm": 1
+  },
+  "per_cell_limits": {
+    "provider_calls": 2,
+    "total_tokens": 12000,
+    "candidates": 2,
+    "strategy_tool_calls": 4,
+    "evaluator_calls": 1,
+    "elapsed_seconds": 300,
+    "subagent_calls": 0
+  },
+  "study_limits": {
+    "trials": 48,
+    "provider_calls": 96,
+    "total_tokens": 576000,
+    "candidates": 96,
+    "strategy_tool_calls": 192,
+    "evaluator_calls": 48,
+    "elapsed_seconds": 14400,
+    "subagent_calls": 0,
+    "proposed_cost_stop_microusd": 25000000
+  },
+  "estimates": {
+    "offline_provider_cost_microusd": 0,
+    "actual_trial_provider_cost_microusd": null,
+    "provider_calls_per_evaluator": 0,
+    "full_input_study_microusd": 1152000,
+    "worked_cell": {
+      "input_tokens": 9000,
+      "output_tokens": 3000,
+      "provider_cost_microusd": 48000
+    },
+    "worked_study_microusd": 2304000,
+    "upper_study_microusd": 5760000
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "version": "feedback-repair-preparation/1",
+  "question": "Can a lesson tied to an observed failure increase independently verified repairs at the same resource limit?",
+  "purpose": "Offline development controls and a proposed paired comparison.",
+  "cell": "One strategy on one family instance, with one repetition. Each strategy starts from identical initial bytes for that family.",
+  "arms": [
+    {
+      "id": "raw",
+      "prompt": "Use the common first request. Stop after one proposal.",
+      "selection": "Select the first proposal. Record any unused allowance."
+    },
+    {
+      "id": "revision",
+      "prompt": "If the first public check fails, use that observation for one revision. Return the same response format.",
+      "selection": "Select a valid replacement revision. Keep the original if its public check passes or the second reply is a valid refusal. A missing or malformed second reply after a failed public check ends the cell incomplete with no selection. Retain both attempts and all charges. Stop on an uncertain effect."
+    },
+    {
+      "id": "lesson",
+      "prompt": "If the first public check fails, name the observed failure in the lesson field and use that lesson for one revision. Use the same response format and keep the lesson inside this cell.",
+      "selection": "Select a valid replacement revision. Keep the original if its public check passes or the second reply is a valid refusal. A missing or malformed second reply after a failed public check ends the cell incomplete with no selection. Retain both attempts and all charges. Bind the lesson to the attempt and public observation. Stop on an uncertain effect."
+    },
+    {
+      "id": "resampling",
+      "prompt": "For a second sample, repeat the common first request against a fresh copy of the initial workspace. Withhold earlier proposals and checks.",
+      "selection": "Charge every response, including a valid refusal. Continue independent sampling within the two-response limit. Select the first replacement passing public checks in generation order, otherwise the first valid replacement. With only refusals, record an unscored refusal. A malformed response ends the cell incomplete. Stop on an uncertain effect."
+    }
+  ],
+  "common_policy": "All four strategies share the model, initial task, base prompt, tools, effect policy and maximum resources. Only the arm instruction and the resulting selection rule vary. Only the host can apply the selected replacement to its allowed file. A candidate can't read the scorer, private expected answer, another cell or host record.",
+  "permitted_edits": "One bounded inert JSON replacement for the task's nominated file. Keep protected files and mandatory fields intact.",
+  "feedback": "Public observations guide selection. The independent evaluator scores the selected subject once after selection closes.",
+  "split": "Development can inform the design. Freeze selection before private held-out access. Record exposure. Any public or previously exposed private family loses eligibility as unseen evidence for the exposed strategy.",
+  "outcome": "Evaluate lesson against both raw and equal-budget resampling on the eight paired held-out families. Count all assignments and report each missing result. To consider a larger test, require at least two additional verified repairs over each comparator, zero new mandatory failures and median cost and latency no higher than resampling. Report the revision arm separately. Any missing comparison needed by the rule leaves the decision unresolved. A new mandatory failure, accepted false evidence or an authority substitution rejects the affected strategy.",
+  "adoption": "A passing rehearsal permits assessment of the measurement tools. Strategy adoption requires replication on newly frozen families and an accepted cost and latency tradeoff.",
+  "base_prompt": "Repair the named configuration file using the task instructions, initial public check and permitted inputs. Preserve required settings and all other files. Return a JSON object with replacement_utf8, claimed_complete, refusal and lesson. Supply the proposed replacement as a JSON text string. Use null when a field has no value. If the requested repair is impossible, give a reason in refusal and supply no replacement. Use true or false for claimed_complete. Treat feedback as an observation about the current attempt.",
+  "request_assembly": "Use the same base prompt and byte-identical public task input on the first call of all four arms. Include the task description, target, starting workspace and initial public check from the reset subject. Keep the arm label out of that request. Resampling repeats the first request independently. Only after a failed public check, the revision and lesson arms receive the prior proposal, its observation and their arm-specific instruction. The host records exact request bytes, response bytes, candidate identity and lineage before scoring.",
+  "candidate_response": "The host extracts only replacement_utf8 for the target and retains its exact decoded UTF-8 bytes. Require exactly one of a replacement or a refusal. A refusal has claimed_complete=false. The lesson field stays null except for a lesson-arm revision, which requires a nonempty lesson bound to the observed failure and first proposal digest. The host records malformed or missing responses as incomplete without inferring a claim.",
+  "completion_claim": "Count a claim only when the selected candidate explicitly supplied claimed_complete=true, bound to that replacement digest before scoring. A rejected selected result with such a claim counts as a false completion. A missing verdict leaves the claim unresolved. Report false completions per attempted cell and per selected claim, with claimed, unclaimed, unknown and unresolved counts. Keep zero-denominator rates undefined."
+}
