@@ -3,6 +3,9 @@ pub mod handoff;
 pub mod history;
 pub mod live;
 #[cfg(target_os = "linux")]
+mod reconciliation;
+pub mod recovery;
+#[cfg(target_os = "linux")]
 pub use storage::writer;
 mod json;
 #[cfg(target_os = "linux")]
@@ -95,11 +98,18 @@ pub struct Host {
     pub archive: history::EvidenceArchive,
     #[serde(default)]
     pub live: Option<live::LiveBinding>,
+    #[serde(default)]
+    pub reconciliation: Option<recovery::Binding>,
 }
 
 #[derive(Debug)]
 pub enum Request {
     Enroll,
+    Convert,
+    Reconcile {
+        attempt_id: String,
+        evidence_digest: String,
+    },
     Lookup {
         key: String,
         proposal: Option<Value>,
@@ -112,9 +122,26 @@ pub struct Lookup {
     pub workspace_hold: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rulings: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intake_pending: Option<bool>,
 }
 
 impl Lookup {
+    fn absent() -> Self {
+        Self {
+            status: "absent",
+            workspace_hold: false,
+            attempt: None,
+            rulings: None,
+            effect_status: None,
+            intake_pending: None,
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn at_generation(self, generation: u64) -> Result<Value> {
         let mut answer =
@@ -134,6 +161,10 @@ fn hex(s: &str, len: usize) -> bool {
     s.len() == len
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn is_attempt_id(s: &str) -> bool {
+    hex(s, 32)
 }
 
 pub fn is_digest(s: &str) -> bool {
@@ -232,7 +263,9 @@ fn interpret_with_archive(
         archive,
     };
     let (key, proposal) = match request {
-        Request::Enroll => ("enrollment-check", None),
+        Request::Enroll | Request::Convert | Request::Reconcile { .. } => {
+            ("enrollment-check", None)
+        }
         Request::Lookup { key, proposal } => (key.as_str(), proposal.as_ref()),
     };
     let lookup = history::lookup(&journal.attempts, &ctx, &host.principal, key, proposal)?;
@@ -240,21 +273,38 @@ fn interpret_with_archive(
 }
 
 /// The supervisor supplies the authenticated host configuration and independent health file.
-/// User data can select only a lookup key and optional proposal.
+/// Caller input can select historical data. The supervisor supplies every privilege.
 #[cfg(target_os = "linux")]
 pub fn execute(host: &Host, health: &std::fs::File, request: &Request) -> Result<Value> {
     let permitted = match request {
         Request::Enroll => host.can_enroll,
-        Request::Lookup { .. } => host.can_read,
+        Request::Lookup { .. } | Request::Convert | Request::Reconcile { .. } => host.can_read,
     };
     if !permitted {
         return Err(Error::new("forbidden", "current host permission denied"));
     }
     host.validate()?;
-    if let Request::Lookup { key, proposal } = request {
-        validate_key_and_proposal(key, proposal.as_ref())?;
+    match request {
+        Request::Convert => {
+            recovery::OperatorFence::acquire(host, recovery::Role::Convert)?;
+            storage::convert(host, health)
+        }
+        Request::Reconcile {
+            attempt_id,
+            evidence_digest,
+        } => {
+            if !is_attempt_id(attempt_id) || !is_digest(evidence_digest) {
+                return Err(Error::new("invalid_request", "invalid operator selectors"));
+            }
+            recovery::OperatorFence::acquire(host, recovery::Role::Reconcile)?;
+            reconciliation::reconcile(host, health, attempt_id, evidence_digest)
+        }
+        Request::Lookup { key, proposal } => {
+            validate_key_and_proposal(key, proposal.as_ref())?;
+            storage::run(host, health, request)
+        }
+        Request::Enroll => storage::run(host, health, request),
     }
-    storage::run(host, health, request)
 }
 
 #[cfg(target_os = "linux")]

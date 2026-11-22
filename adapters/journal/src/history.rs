@@ -16,7 +16,8 @@ use serde_json::Value;
 
 use crate::{Error, Identity, Lookup, Result, canonical, digest, is_digest, token};
 use evidence::Index;
-use types::{Attempt, Change, Intent};
+pub(crate) use types::Attempt;
+use types::{Change, Intent};
 
 pub use types::{ArchiveEntry, EvidenceArchive, HistoricalProfile};
 
@@ -41,7 +42,7 @@ fn require(condition: bool, reason: &'static str) -> Result<()> {
 
 // Serde accepts missing Option fields as null. The closed journal grammar requires both
 // a typed parse and an exact field set, including every explicitly nullable member.
-fn closed<T: DeserializeOwned + Serialize>(value: &Value) -> Result<T> {
+pub(crate) fn closed<T: DeserializeOwned + Serialize>(value: &Value) -> Result<T> {
     let parsed: T = serde_json::from_value(value.clone())
         .map_err(|_| Error::invalid("invalid history object shape"))?;
     let normalized = serde_json::to_value(&parsed)
@@ -138,22 +139,37 @@ pub fn lookup(
         token(principal) && token(key),
         "invalid principal or submission key",
     )?;
+    if let Some(input) = proposal {
+        validate_proposal(input)?;
+    }
+    let mut lookup = Lookup::absent();
+    visit(attempts, ctx, |raw, attempt, status, hold| {
+        require(
+            !lookup.workspace_hold || !attempt.facts.iter().any(|fact| fact.tag == "dispatch"),
+            "later dispatch crosses a workspace hold",
+        )?;
+        lookup.workspace_hold |= hold;
+        if attempt.principal == principal && attempt.key == key {
+            select(&mut lookup, raw, status, proposal);
+        }
+        Ok(())
+    })?;
+    Ok(lookup)
+}
+
+// Both formats validate every original attempt before releasing any selected data.
+pub(crate) fn visit(
+    attempts: &[Value],
+    ctx: &HistoryContext<'_>,
+    mut checked: impl FnMut(&Value, &Attempt, &'static str, bool) -> Result<()>,
+) -> Result<()> {
     require(
         attempts.len() <= ATTEMPT_LIMIT,
         "history exceeds the retained-attempt limit",
     )?;
     ctx.profile.validate()?;
     let archive = ctx.archive.index()?;
-    if let Some(input) = proposal {
-        validate_proposal(input)?;
-    }
-    let supplied = proposal.map(canonical).transpose()?;
     let support = ContractSupport::new(ctx.profile.policies.iter().cloned());
-    let mut lookup = Lookup {
-        status: "absent",
-        workspace_hold: false,
-        attempt: None,
-    };
     let mut keys = BTreeSet::new();
     let mut identities = BTreeSet::new();
     for raw in attempts {
@@ -173,23 +189,25 @@ pub fn lookup(
             "duplicate historical admission identity",
         )?;
         let (status, hold) = inspect(&attempt, ctx, &support, &archive)?;
-        require(
-            !lookup.workspace_hold || !attempt.facts.iter().any(|fact| fact.tag == "dispatch"),
-            "later dispatch crosses a workspace hold",
-        )?;
-        lookup.workspace_hold |= hold;
-        if attempt.principal == principal && attempt.key == key {
-            if let Some(candidate) = &supplied
-                && canonical(&attempt.proposal)? != *candidate
-            {
-                lookup.status = "conflict";
-            } else {
-                lookup.status = status;
-                lookup.attempt = Some(raw.clone());
-            }
-        }
+        checked(raw, &attempt, status, hold)?;
     }
-    Ok(lookup)
+    Ok(())
+}
+
+pub(crate) fn select(
+    result: &mut Lookup,
+    raw: &Value,
+    status: &'static str,
+    proposal: Option<&Value>,
+) {
+    // The closed local proposal contains strings only. JSON value equality compares exactly
+    // the object members and their values, independent of their serialized key order.
+    if proposal.is_some_and(|candidate| raw.get("proposal") != Some(candidate)) {
+        result.status = "conflict";
+    } else {
+        result.status = status;
+        result.attempt = Some(raw.clone());
+    }
 }
 
 fn inspect(

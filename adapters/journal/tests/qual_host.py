@@ -149,9 +149,9 @@ class Slot:
 
     def start(self, args, *, point=None, action=None, trace=None, fail_cleanup=False,
               handoff="normal", fail_sync_ordinal=None, sync_errno="EIO", read_trace=None,
-              fail_read_ordinal=None, child_umask=-1, fail_stage_chmod=False):
+              fail_read_ordinal=None, child_umask=-1, fail_stage_chmod=False, binary=None):
         """Launch an independent host process with the journal's real descriptor handoff."""
-        binary = self.qualification if point else self.release
+        binary = binary or (self.qualification if point else self.release)
         command = [str(binary), *args]
         if read_trace:
             # Trace the release CLI after the Python supervisor has opened fd 3 and fd 4.
@@ -203,16 +203,17 @@ class Slot:
         allowed = {expected} if isinstance(expected, str) else set(expected)
         if reply.get("status") not in allowed:
             raise AssertionError((args, allowed, child.returncode, reply))
-        if reply["status"] in {"enrolled", "absent", "partial", "published", "conflict"}:
+        if reply["status"] in {"enrolled", "absent", "partial", "published", "converted", "recorded"} or (
+                args[0] == "lookup" and reply["status"] == "conflict"):
             if child.returncode:
                 raise AssertionError((args, child.returncode, reply))
         elif child.returncode == 0 or not reply.get("reason"):
             raise AssertionError((args, "rejection requires a failure exit and reason", reply))
         return reply
 
-    def stop(self, point, **options):
+    def stop(self, point, *, command=("enroll",), **options):
         """Wait for a named hook and confirm the writer actually entered SIGSTOP."""
-        child = self.start(["enroll"], point=point, action="stop", **options)
+        child = self.start(command, point=point, action="stop", **options)
         try:
             with selectors.DefaultSelector() as sel:
                 sel.register(child.stderr, selectors.EVENT_READ)
@@ -238,6 +239,14 @@ def exec_with_host_fds(args):
     """Open existing files in the required modes and grant only the two selected FDs."""
     import fcntl
     pins, health, handoff, command, *rest = args
+    if handoff.startswith("operator:"):
+        # Save sources above all handoff targets before assigning their public fd numbers.
+        table = [part.split("=") for part in handoff.split(":")[1:]]
+        saved_extra = [(fcntl.fcntl(int(source), fcntl.F_DUPFD_CLOEXEC, 16), int(target))
+                       for target, source in table]
+        for saved, target in saved_extra:
+            os.dup2(saved, target, inheritable=True)
+            os.close(saved)
     descriptors = [(pins, os.O_RDWR if handoff == "writable-config" else os.O_RDONLY, 3)]
     if handoff != "missing-health":
         descriptors.append((health, os.O_RDONLY if handoff == "readonly-health" else os.O_RDWR, 4))

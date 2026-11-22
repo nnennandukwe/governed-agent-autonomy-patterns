@@ -40,6 +40,7 @@ fn dedicated_workspace(tx: &Submission<'_>) -> JResult<()> {
 }
 
 fn run(tx: &mut Submission<'_>, key: &str, proposal: &Value) -> JResult<()> {
+    gaap_journal::recovery::seal_gate(tx.host())?;
     tx.check_workspace()?;
     dedicated_workspace(tx)?;
     let enrolled = &tx.host().profile;
@@ -209,6 +210,7 @@ impl ShippingWorkspace for JournalWorkspace<'_, '_> {
                 "reserved": reserved,
                 "usage_floor": usage,
             }))?;
+            gaap_journal::recovery::enter(tx.host(), self.attempt, &self.binding)?;
             self.witness.replace(Some(witness));
             self.dispatch
                 .replace(Some((usage.clone(), reserved.clone())));

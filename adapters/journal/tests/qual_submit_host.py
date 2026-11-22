@@ -100,11 +100,12 @@ class Shipping:
                               "key": key, "reply": reply})
         return reply
 
-    def start(self, *, key=None, point=None, action="stop", trace=(), binary=None, fail_cleanup=False):
+    def start(self, *, key=None, point=None, action="stop", trace=(), binary=None, fail_cleanup=False, supervisor_fds=()):
         """Launch the real submission command through the existing descriptor handoff."""
         binary = binary or (self.args.fault_reference if point else self.args.reference)
+        handoff = "operator:" + ":".join(f"{target}={source}" for target, source in supervisor_fds) if supervisor_fds else "normal"
         argv = [sys.executable, "-B", str(Path(__file__).with_name("qual_host.py")),
-                str(self.slot.config), str(self.slot.health), "normal",
+                str(self.slot.config), str(self.slot.health), handoff,
                 *map(str, trace), str(binary), "journal-submit", key or self.key]
         env = dict(os.environ)
         if fail_cleanup:
@@ -112,7 +113,7 @@ class Shipping:
         if point:
             env.update(GAAP_JOURNAL_POINT=point, GAAP_JOURNAL_ACTION=action)
         child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 env=env, start_new_session=True)
+                                 env=env, start_new_session=True, pass_fds=tuple(source for _, source in supervisor_fds))
         self.commands.append({"command": "journal-submit", "principal": self.slot.host["principal"],
                               "key": key or self.key, "binary": str(binary), "pid": child.pid, "cut": point})
         return child

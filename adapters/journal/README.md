@@ -1,4 +1,4 @@
-# Local journal enrollment and lookup
+# Local journal enrollment, lookup and operator reconciliation
 
 A trusted host can enroll one private workspace and read a previous submission after losing a response. Enrollment creates generation zero. A lookup can return the caller's original sealed receipt, its partial evidence, a conflict, or confirmed absence. A workspace hold applies across all callers. The separate shipping reference can submit one foreground file replacement under the same journal lock. [Accepted storage contract](../../docs/contracts/journal-enrollment-v0.1.md) · [Recovery decisions](../../docs/adr/0009-durable-agent-run-reconciliation.md)
 
@@ -17,9 +17,22 @@ The host launches exactly one operation per process. The command accepts these a
 gaap-journal enroll
 gaap-journal lookup KEY
 gaap-journal lookup KEY --proposal-stdin
+gaap-journal convert
+gaap-journal reconcile ATTEMPT_ID EVIDENCE_DIGEST
 ```
 
 With `--proposal-stdin`, send the full local-file proposal as JSON on standard input. The reader compares its canonical bytes with the saved proposal. Read the single JSON object on standard output, including on a refusal. An optional `warning` records a second failure during cleanup. A nonzero exit indicates a request, access, storage or delivery error. An absent receipt after response loss calls for lookup. Neither a successful read nor the process exit code grants new execution authority.
+
+## Recover an uncertain shipping effect
+
+A workspace operator can admit the enrolled host observer's original evidence after an interrupted shipping invocation. Start by confirming which slot, source generation and digest pair the supervisor authorized. For a new workspace, enroll once and withhold shipping grants until conversion finishes. A deployed slot needs its own conversion authorization. The command changes the format in place. Released v0.1 clients subsequently refuse it. [Operator contract](../../docs/contracts/journal-reconciliation-v0.2.md)
+
+1. Provision the supervisor's reconciliation binding on fd 3. Pin the historical profile, the host observer's separate private archive, current workspace rights, permanent authority lock and writer lease. The supervisor holds a shared writer lease from before launch until every possible committer stops. Every worker, including one launched with a v0.1 binary, must retain that lease across launcher death. Serialize policy changes under the authority lock. The observer has sole deposit authority over its archive.
+2. Run `gaap-journal convert` under current conversion rights with the expected source generation and both canonical source digests in the trusted handoff. A lost reply permits the same authorized conversion to reconfirm its origin. Keep both files and the volume health state if the pair can't be confirmed.
+3. Run `gaap-journal reconcile ATTEMPT_ID EVIDENCE_DIGEST` with current read and reconciliation rights. The attempt ID has 32 lowercase hex digits. The digest names a retained observer deposit. The operator reports a disposition only after the pending intake and ruling have reached their separate commit points. An interrupted operator can retry the same pair. A successor needs their own current rights.
+4. Use the ordinary private lookup to read the original run and its separate effect status. A workspace dispute blocks all fresh submissions. An old receipt stays sealed and an unsealed dispatch stays unsealed. Preserve missing or damaged evidence for diagnosis. A healthy volume alone can't clear a pending or disputed effect.
+
+In the trusted `reconciliation` object, `candidates` pins the observer directory on the enrolled volume. `authority`, `authority_lock` and `writers_lock` pin the independent supervisor directory and its two lock files. The directory holds canonical `operator.json` with the slot IDs, reconciliation profile digest and per-principal read, convert and reconcile permissions. `conversion` pins the source generation and both digests. A host that observes entry also pins `entry_socket_cookie` to the worker's one-use Unix packet socket on fd 5. To establish non-entry, start the watcher before the supervised launch and retain the bound entry request, the withheld permit and coverage through definitive stop. The optional gate alone can't establish a file outcome. [Host binding](src/recovery.rs) · [Disposable supervisor example](tests/qual_operator_host.py) · [Witness records](tests/qual_operator_observer.py)
 
 ## Provision the host handoff
 

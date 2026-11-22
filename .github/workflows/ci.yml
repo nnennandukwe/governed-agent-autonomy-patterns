@@ -230,6 +230,22 @@ jobs:
       - name: Check out GAAP
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Build the released v0.1 reader and shipping writer
+        run: |
+          set -euo pipefail
+          released=209b87cf6f6feaaaaba06bb1756825920b8c1cb2
+          git fetch --no-tags --depth=1 origin "$released"
+          test "$(git rev-parse "$released^{tree}")" = 709e36fb94444d0e2a2b7cfb569a40eba155cce1
+          old="$RUNNER_TEMP/released-gaap"
+          mkdir -m 700 "$old"
+          git archive "$released" | tar -x -C "$old"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/journal-target"
+          for package in adapters/journal examples/submitted-proposal; do
+            cargo build --locked --manifest-path "$old/$package/Cargo.toml"
+          done
+          cp "$CARGO_TARGET_DIR/debug/gaap-journal" "$RUNNER_TEMP/journal-v01"
+          cp "$CARGO_TARGET_DIR/debug/gaap-submitted-proposal-reference" "$RUNNER_TEMP/reference-v01"
+
       - name: Build and test the production and qualification binaries
         run: |
           set -euo pipefail
@@ -250,7 +266,8 @@ jobs:
           bash adapters/journal/qualify-ext4.sh "$RUNNER_TEMP/gaap-journal-production" \
             "$RUNNER_TEMP/journal-target/debug/gaap-journal" \
             "$RUNNER_TEMP/reference-production" "$RUNNER_TEMP/journal-evidence" \
-            "$RUNNER_TEMP/journal-target/debug/gaap-submitted-proposal-reference"
+            "$RUNNER_TEMP/journal-target/debug/gaap-submitted-proposal-reference" \
+            "$RUNNER_TEMP/journal-v01" "$RUNNER_TEMP/reference-v01"
 
       - name: Audit the journal dependency lockfile
         run: |

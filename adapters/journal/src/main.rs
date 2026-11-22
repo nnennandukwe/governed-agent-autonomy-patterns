@@ -1,16 +1,18 @@
-use gaap_journal::{Error, Result, token};
+use gaap_journal::{Error, Result, is_attempt_id, is_digest, token};
 #[cfg(target_os = "linux")]
 use serde_json::Value;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-const HELP: &str = "Usage: gaap-journal enroll\n       gaap-journal lookup KEY [--proposal-stdin]\n\nThe trusted host supplies configuration on fd 3 and the volume health latch on fd 4.\nLookup reads a complete local-file proposal from stdin only with --proposal-stdin.\n";
+const HELP: &str = "Usage: gaap-journal enroll\n       gaap-journal lookup KEY [--proposal-stdin]\n       gaap-journal convert\n       gaap-journal reconcile ATTEMPT_ID EVIDENCE_DIGEST\n\nThe trusted host supplies configuration on fd 3 and the volume health latch on fd 4.\nLookup reads a complete local-file proposal from stdin only with --proposal-stdin.\n";
 
 #[derive(Debug, PartialEq)]
 enum Command {
     Help,
     Enroll,
+    Convert,
+    Reconcile(String, String),
     Lookup(String, bool),
 }
 
@@ -28,6 +30,10 @@ fn command(args: Vec<OsString>) -> Result<Command> {
     match args.as_slice() {
         ["--help"] | ["-h"] => Ok(Command::Help),
         ["enroll"] => Ok(Command::Enroll),
+        ["convert"] => Ok(Command::Convert),
+        ["reconcile", attempt_id, digest] if is_attempt_id(attempt_id) && is_digest(digest) => Ok(
+            Command::Reconcile((*attempt_id).to_owned(), (*digest).to_owned()),
+        ),
         ["lookup", key] if token(key) => Ok(Command::Lookup((*key).to_owned(), false)),
         ["lookup", key, "--proposal-stdin"] if token(key) => {
             Ok(Command::Lookup((*key).to_owned(), true))
@@ -45,7 +51,7 @@ mod linux {
         let host = host_config()?;
         let allowed = match command {
             Command::Enroll => host.can_enroll,
-            Command::Lookup(..) => host.can_read,
+            Command::Lookup(..) | Command::Convert | Command::Reconcile(..) => host.can_read,
             Command::Help => unreachable!(),
         };
         if !allowed {
@@ -53,6 +59,11 @@ mod linux {
         }
         let request = match command {
             Command::Enroll => Request::Enroll,
+            Command::Convert => Request::Convert,
+            Command::Reconcile(attempt_id, evidence_digest) => Request::Reconcile {
+                attempt_id,
+                evidence_digest,
+            },
             Command::Lookup(key, with_proposal) => Request::Lookup {
                 key,
                 proposal: with_proposal.then(caller_proposal).transpose()?,
@@ -108,7 +119,18 @@ mod tests {
             parse(&["lookup", "my.key", "--proposal-stdin"]).unwrap(),
             Command::Lookup("my.key".into(), true)
         );
+        assert_eq!(parse(&["convert"]).unwrap(), Command::Convert);
+        let id = "12ab".repeat(8);
+        let digest = format!("sha256:{}", "ef".repeat(32));
+        assert_eq!(
+            parse(&["reconcile", &id, &digest]).unwrap(),
+            Command::Reconcile(id.clone(), digest.clone())
+        );
         for bad in [
+            &["convert", "slot"][..],
+            &["reconcile", &id, &digest, "replaced"],
+            &["reconcile", &id.to_uppercase(), &digest],
+            &["reconcile", &id, "other"],
             &["enroll", "/other"][..],
             &["lookup", "a/b"],
             &["lookup", "key", "--principal"],

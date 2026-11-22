@@ -175,6 +175,13 @@ impl SlotOperation<'_> {
             point(volume, step, "close")?;
             point(volume, step, "before_rename")?;
             self.recheck(anchor, journal)?;
+            if self.host.reconciliation.is_some() {
+                if std::ptr::eq(dir, &self.handles.control) {
+                    self.control_entries(&["lock", ANCHOR, staging])?;
+                } else {
+                    self.control_entries(&["lock", ANCHOR])?;
+                }
+            }
             match stage {
                 Stage::Reserve => self.entries(&[])?,
                 Stage::Journal => self.entries(&[staging])?,

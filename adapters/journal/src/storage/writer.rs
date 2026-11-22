@@ -1,12 +1,9 @@
 //! One authenticated foreground submission holds the permanent slot and volume locks.
 //! The frozen reader checks each proposed generation before it can replace the prior one.
 use super::linux::Volume;
-use super::publication::{Stage, point};
-use super::{Phase, SlotOperation, Snapshot, anchor, validate_anchor, with_slot};
-use crate::{
-    ATTEMPT_LIMIT, Error, Host, JOURNAL_LIMIT, Journal, MAX_SAFE, Request, Result, canonical,
-    digest,
-};
+use super::publication::point;
+use super::{JournalV2, Pair, Phase, SlotOperation, validate_anchor, with_slot};
+use crate::{ATTEMPT_LIMIT, Error, Host, Journal, MAX_SAFE, Request, Result, canonical, digest};
 use gaap::contracts::{
     AgentRunRequest, ProtectedEffectRequest, ProtectedEffectResult, TerminalRunReceipt,
 };
@@ -39,8 +36,7 @@ impl Fact {
 pub struct Submission<'a> {
     slot: SlotOperation<'a>,
     request: Request,
-    journal: Snapshot,
-    anchor: Snapshot,
+    pair: Pair,
     binding: Option<String>,
     last: Option<Fact>,
     failed: bool,
@@ -63,12 +59,19 @@ pub fn with_submission(
         key: key.to_owned(),
         proposal: Some(proposal.clone()),
     };
+    let _writers = crate::recovery::writer_lease(host)?;
     with_slot(host, health, true, |slot| {
+        let read = slot.read_fence()?;
         let saved = slot.read_anchor()?;
-        let Phase::Active { generation, digest } = validate_anchor(host, &saved)? else {
+        let Phase::Active {
+            generation,
+            digest,
+            binding,
+        } = validate_anchor(host, &saved)?
+        else {
             return slot.process(&request);
         };
-        let (journal, lookup) = slot.confirmed(&saved, generation, &digest, &request)?;
+        let (pair, lookup) = slot.confirmed(saved, generation, &digest, binding, &request)?;
         if lookup.status != "absent" {
             return lookup.at_generation(generation);
         }
@@ -78,17 +81,23 @@ pub fn with_submission(
         if lookup.workspace_hold {
             return Err(Error::new("workspace_held", "unresolved_effect"));
         }
-        let retained: Journal = serde_json::from_slice(&journal.bytes)
+        if host.reconciliation.is_some() && pair.binding.is_none() {
+            return Err(Error::unsupported("conversion_required"));
+        }
+        let retained: Value = serde_json::from_slice(&pair.journal.bytes)
             .map_err(|_| Error::invalid("invalid journal shape"))?;
+        let attempts = retained["attempts"]
+            .as_array()
+            .ok_or_else(|| Error::invalid("invalid journal shape"))?;
         // A fresh successful invocation needs intent, dispatch, observed, verified and published.
-        if retained.attempts.len() >= ATTEMPT_LIMIT || generation > MAX_SAFE - 5 {
+        if attempts.len() >= ATTEMPT_LIMIT || generation > MAX_SAFE - 5 {
             return Err(Error::new("capacity", "journal admission limit reached"));
         }
+        drop(read);
         let mut tx = Submission {
             slot,
             request,
-            journal,
-            anchor: saved,
+            pair,
             binding: None,
             last: None,
             failed: false,
@@ -99,7 +108,12 @@ pub fn with_submission(
         }
         tx.check_workspace()?;
         point(tx.volume(), "submit", "before_response")?;
-        let (generation, lookup) = tx.slot.interpret(&tx.journal.bytes, &tx.request)?;
+        let _read = tx.slot.read_fence()?;
+        let (generation, lookup) = tx.slot.lookup_bytes(
+            &tx.pair.journal.bytes,
+            tx.pair.binding.as_deref(),
+            &tx.request,
+        )?;
         lookup.at_generation(generation)
     })
 }
@@ -121,9 +135,7 @@ impl Submission<'_> {
 
     /// Recheck the healthy volume and the exact files held by this transaction.
     pub fn check_workspace(&self) -> Result<()> {
-        self.volume().healthy()?;
-        self.slot.entries(&[super::JOURNAL])?;
-        self.slot.recheck(&self.anchor, Some(&self.journal))
+        self.pair.check(&self.slot)
     }
 
     /// Reads can also occur inside the final target guard while its pending marker is set.
@@ -203,8 +215,8 @@ impl Submission<'_> {
             "facts":[{"tag":"intent","binding":binding,"payload":{"run_request_digest":run_hash,
                 "effect_request_digest":effect_hash,"proposed_artifact_digest":digest(content.as_bytes())}}]
         });
-        self.advance(Fact::Intent, |journal| {
-            journal.attempts.push(attempt);
+        self.advance(Fact::Intent, |attempts| {
+            attempts.push(attempt);
             Ok(())
         })?;
         self.binding = Some(binding.clone());
@@ -240,9 +252,8 @@ impl Submission<'_> {
             .binding
             .clone()
             .ok_or_else(|| Error::invalid("intent_required"))?;
-        self.advance(fact, |journal| {
-            let facts = journal
-                .attempts
+        self.advance(fact, |attempts| {
+            let facts = attempts
                 .last_mut()
                 .and_then(|attempt| attempt["facts"].as_array_mut())
                 .ok_or_else(|| Error::invalid("missing_current_attempt"))?;
@@ -254,7 +265,7 @@ impl Submission<'_> {
     fn advance(
         &mut self,
         fact: Fact,
-        append: impl FnOnce(&mut Journal) -> Result<()>,
+        append: impl FnOnce(&mut Vec<Value>) -> Result<()>,
     ) -> Result<()> {
         if self.failed || self.last == Some(Fact::Published) {
             return Err(Error::invalid("attempt_closed"));
@@ -262,51 +273,24 @@ impl Submission<'_> {
         // A failure anywhere below permanently disables later writes from this invocation.
         self.failed = true;
         self.check_workspace()?;
-        let mut candidate: Journal = serde_json::from_slice(&self.journal.bytes)
-            .map_err(|_| Error::invalid("invalid journal shape"))?;
-        if candidate.generation >= MAX_SAFE {
+        if self.pair.generation == MAX_SAFE {
             return Err(Error::new("capacity", "journal_generation_exhausted"));
         }
-        candidate.generation += 1;
-        append(&mut candidate)?;
-        let bytes = canonical(&candidate)?;
-        if bytes.len() > JOURNAL_LIMIT {
-            return Err(Error::new("capacity", "journal_bytes_exhausted"));
-        }
-        self.slot.interpret(&bytes, &self.request)?;
+        let bytes = if self.pair.binding.is_some() {
+            let mut candidate = JournalV2::decode(&self.pair.journal.bytes)?;
+            candidate.generation += 1;
+            append(&mut candidate.attempts)?;
+            canonical(&candidate)?
+        } else {
+            let mut candidate: Journal = serde_json::from_slice(&self.pair.journal.bytes)
+                .map_err(|_| Error::invalid("invalid journal shape"))?;
+            candidate.generation += 1;
+            append(&mut candidate.attempts)?;
+            canonical(&candidate)?
+        };
         let (tag, confirm) = fact.labels();
-        self.slot.publish(
-            Stage::Append(tag),
-            &bytes,
-            &self.anchor,
-            Some(&self.journal),
-        )?;
-        let journal = self
-            .slot
-            .journal()?
-            .ok_or_else(|| Error::invalid("missing_published_journal"))?;
-        if journal.bytes != bytes {
-            return Err(Error::invalid("published_journal_changed"));
-        }
-        let active = canonical(&anchor(
-            self.host(),
-            "active",
-            json!(candidate.generation),
-            json!(digest(&bytes)),
-        ))?;
-        self.slot.publish(
-            Stage::Confirm(confirm),
-            &active,
-            &self.anchor,
-            Some(&journal),
-        )?;
-        let confirmed = self.slot.read_anchor()?;
-        if confirmed.bytes != active {
-            return Err(Error::invalid("confirmed_anchor_changed"));
-        }
-        self.slot.recheck(&confirmed, Some(&journal))?;
-        self.journal = journal;
-        self.anchor = confirmed;
+        self.pair
+            .advance(&self.slot, &self.request, &bytes, tag, confirm)?;
         self.last = Some(fact);
         self.failed = false;
         Ok(())
