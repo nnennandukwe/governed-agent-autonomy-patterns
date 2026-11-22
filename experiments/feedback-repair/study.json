@@ -12,12 +12,12 @@
     {
       "id": "revision",
       "prompt": "If the first public check fails, use that observation for one revision. Return the same response format.",
-      "selection": "Select the revision when produced, otherwise the original. Stop on an uncertain effect."
+      "selection": "Select a valid replacement revision. Keep the original if its public check passes or the second reply is a valid refusal. A malformed second reply ends the cell incomplete with no selection. Retain both attempts and all charges. Stop on an uncertain effect."
     },
     {
       "id": "lesson",
       "prompt": "If the first public check fails, name the observed failure in the lesson field and use that lesson for one revision. Use the same response format and keep the lesson inside this cell.",
-      "selection": "Select the revision when produced, otherwise the original. Bind the lesson to the attempt and public observation. Stop on an uncertain effect."
+      "selection": "Select a valid replacement revision. Keep the original if its public check passes or the second reply is a valid refusal. A malformed second reply ends the cell incomplete with no selection. Retain both attempts and all charges. Bind the lesson to the attempt and public observation. Stop on an uncertain effect."
     },
     {
       "id": "resampling",

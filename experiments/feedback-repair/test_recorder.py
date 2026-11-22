@@ -261,6 +261,25 @@ recorder.rehearse(Path(sys.argv[1]))
                     with self.subTest(fields=list(changes)), self.assertRaises(ValueError):
                         recorder.verify_control(task, "raw", replies, dict(record, **changes), limits)
 
+    def test_malformed_revision_keeps_both_attempts_without_scoring(self):
+        """A malformed second reply ends the cell with its original observation intact."""
+        task, _, _ = corpus.controls()[0]
+        original = recorder.fixture_response(b"{}", False)
+        replies = [original, b"false"]
+        limits = recorder.read(HERE / "budget.json")["per_cell_limits"]
+        with tempfile.TemporaryDirectory() as directory:
+            for arm in ("revision", "lesson"):
+                with self.subTest(arm=arm):
+                    record = recorder.run_control(task, replies, arm, limits, Path(directory) / arm)
+                    self.assertEqual(record["status"], "malformed_response")
+                    self.assertEqual([item["reply_hex"] for item in record["candidates"]],
+                                     [reply.hex() for reply in replies])
+                    self.assertIs(record["candidates"][0]["public_pass"], False)
+                    self.assertEqual(record["before"], record["after"])
+                    self.assertIsNone(record["selected"])
+                    self.assertEqual(record["usage"]["evaluator_calls"], 0)
+                    recorder.verify_control(task, arm, replies, record, limits)
+
     def test_revision_refusal_preserves_first_proposal_and_all_charges(self):
         """Charge a valid refused revision and apply the original exactly once under both arms."""
         task, _, _ = corpus.controls()[0]
