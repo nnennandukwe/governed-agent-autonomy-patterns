@@ -62,14 +62,14 @@ class Operator:
     @contextlib.contextmanager
     def old_handoff(self):
         """Expose the original host configuration to the released client and restore the current handoff on exit."""
-        current = self.slot.host
+        current, path = self.slot.host, self.slot.config
         self.slot.host = self.legacy_host
+        self.slot.config = path.with_name("released-host.json")
         self.slot.configure()
         try:
             yield
         finally:
-            self.slot.host = current
-            self.slot.configure()
+            self.slot.host, self.slot.config = current, path
 
     def deposit(self, record):
         """Create a private file for the canonical observer record and return its digest after syncing

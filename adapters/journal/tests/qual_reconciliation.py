@@ -15,7 +15,7 @@ import unittest
 
 from qual_executor_quiescence import watch_target
 from qual_history import GOOD, exercise_unknown, number_canonical, reference, reference_profile
-from qual_host import Slot, canonical, digest, observe_tree, snapshot, write_private
+from qual_host import Slot, canonical, digest, identity, observe_tree, snapshot, write_private
 from qual_operator_host import Operator
 from qual_operator_observer import observe
 from qual_operator_seal import check_sealed_failure
@@ -50,6 +50,37 @@ def kill_stopped(child):
     child.kill()
     assert child.wait(timeout=5) == -signal.SIGKILL
     child.communicate(timeout=3)
+
+
+def send_proposal(child, proposal):
+    """Deliver one request to a contender and close its input before waiting for its lock."""
+    child.stdin.write(canonical(proposal))
+    child.stdin.close()
+    child.stdin = None
+
+
+def contender(child, executable, pin, *, minimum=1, owned=False):
+    """Read the actual executable, open lock descriptors and kernel flock records while the owner is live."""
+    proc = Path(f"/proc/{child.pid}")
+    limit = time.monotonic() + 2
+    expected = pin.stat()
+    while time.monotonic() < limit and child.poll() is None:
+        try:
+            if os.path.samefile(proc / "exe", executable):
+                descriptors = {}
+                for fd in (proc / "fd").iterdir():
+                    info = fd.stat()
+                    if (info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino):
+                        raw = (proc / "fdinfo" / fd.name).read_text()
+                        descriptors[fd.name] = [line for line in raw.splitlines() if line.startswith("lock:")]
+                locked = any(" FLOCK " in line for lines in descriptors.values() for line in lines)
+                if len(descriptors) >= minimum and (locked or not owned):
+                    return {"pid": child.pid, "executable": str(executable), "pin": identity(pin),
+                            "descriptors": descriptors}
+        except FileNotFoundError:
+            pass
+        time.sleep(.001)
+    raise AssertionError(("contender missed pinned lock", child.pid, str(executable), str(pin), child.poll()))
 
 
 class Reconciliation(unittest.TestCase):
@@ -175,48 +206,65 @@ class Reconciliation(unittest.TestCase):
              [{"convert": result, "unknown_receipt": history["facts"][-1]["payload"]["receipt"]["receipt_digest"]}])
 
     def test_mixed_writers(self):
-        """Race a released writer against conversion and verify which history each client can use after the fence."""
+        """Race both generations under the original locks and count every target replacement."""
         f, op = self.fixture("old-wins")
-        with watch_target(f.workspace) as moves, op.old_handoff():
-            code, old = f.submit(binary=ARGS.old_reference)
-            self.assertEqual((code, old["status"], moves()), (0, "published", 1))
-        prior = pair(f.slot)
-        op.command("convert", expected="conflict")
-        self.assertEqual(pair(f.slot), prior)
+        with watch_target(f.workspace) as moves:
+            # Hold the original issuer so the released worker pauses inside its live slot transaction.
+            with f.authority_lock.open("rb") as issuer:
+                fcntl.flock(issuer, fcntl.LOCK_EX)
+                with op.writers.open("rb") as lease, op.old_handoff():
+                    fcntl.flock(lease, fcntl.LOCK_SH)
+                    writer = f.start(binary=ARGS.old_reference, supervisor_fds=((8, lease.fileno()),))
+                    self.addCleanup(terminate, writer)
+                    send_proposal(writer, f.proposal)
+                owners = {
+                    "writer_lease": contender(writer, ARGS.old_reference, op.writers, owned=True),
+                    "slot_owner": contender(writer, ARGS.old_reference, f.slot.lock, owned=True),
+                    "old_waiting_on_issuer": contender(writer, ARGS.old_reference, f.authority_lock)}
+                converter = f.slot.start(["convert"])
+                self.addCleanup(terminate, converter)
+                owners["converter_waiting_on_lease"] = contender(converter, ARGS.release, op.writers)
+                self.assertEqual(read(f.slot.anchor)["generation"], 0)
+            code, old = f.finish(writer)
+            self.assertEqual((code, old["status"]), (0, "published"))
+            code, stale = f.finish(converter)
+            self.assertEqual((code, stale["status"], stale["reason"]), (1, "conflict", "conversion_source_changed"))
+            self.assertEqual((read(f.slot.anchor)["generation"], moves()), (5, 1))
+            self.assertEqual(read(f.slot.anchor)["format"], "gaap.journal-anchor/0.1")
+            f.commands.append({"contention": owners, "stale_origin": stale, "target_moves": 1})
+
         f, op = self.fixture("cutover-wins")
         with watch_target(f.workspace) as moves:
             converter = f.slot.stop("cutover_fence.after_dir_sync", command=("convert",))
             self.addCleanup(terminate, converter)
+            owners = {"converter_slot": contender(converter, ARGS.qualification, f.slot.lock, owned=True),
+                      "converter_health": contender(converter, ARGS.qualification, f.slot.health, owned=True),
+                      "converter_lease": contender(converter, ARGS.qualification, op.writers, owned=True)}
             with op.old_handoff():
-                children = [f.start(binary=ARGS.old_reference), f.slot.start(["enroll"], binary=ARGS.old_release)]
-                for child in children:
-                    self.addCleanup(terminate, child)
-                children[0].stdin.write(canonical(f.proposal))
-                children[0].stdin.close()
-                children[0].stdin = None
-                # Both old processes have opened their own v0.1 handoff before this owner dies.
-                for child, exe in zip(children, (ARGS.old_reference, ARGS.old_release)):
-                    limit = time.monotonic() + 2
-                    while time.monotonic() < limit:
-                        try:
-                            if os.path.samefile(f"/proc/{child.pid}/exe", exe):
-                                break
-                        except FileNotFoundError:
-                            pass
-                        time.sleep(.002)
-                    else:
-                        self.fail("old client never reached its executable")
-                kill_stopped(converter)
-                for child in children:
-                    code, reply = f.finish(child)
-                    self.assertEqual((code != 0, reply["status"]), (True, "unsupported_storage"))
+                old_writer = f.start(binary=ARGS.old_reference)
+                old_enroll = f.slot.start(["enroll"], binary=ARGS.old_release)
+            new_writer = f.start()
+            for child in (old_writer, old_enroll, new_writer):
+                self.addCleanup(terminate, child)
+            for child in (old_writer, new_writer):
+                send_proposal(child, f.proposal)
+            # fd 4 is the inherited health file. Its separate duplicate and flock description
+            # show both released clients reached lock_health while the converter still owned it.
+            owners["old_writer_waiting_on_health"] = contender(old_writer, ARGS.old_reference, f.slot.health, minimum=3)
+            owners["old_enroll_waiting_on_health"] = contender(old_enroll, ARGS.old_release, f.slot.health, minimum=3)
+            owners["new_writer_waiting_on_lease"] = contender(new_writer, ARGS.reference, op.writers)
+            kill_stopped(converter)
+            for child, status in ((old_writer, "unsupported_storage"), (old_enroll, "unsupported_storage"),
+                                  (new_writer, "cutover_pending")):
+                code, reply = f.finish(child)
+                self.assertEqual((code, reply["status"]), (1, status))
             op.command("lookup", f.key, expected="cutover_pending")
-            code, held = f.submit()
-            self.assertTrue(code and held["status"] == "cutover_pending", held)
             self.assertEqual(moves(), 0)
             self.assertEqual(op.convert()["generation"], 0)
             with op.old_handoff():
                 op.command("lookup", f.key, binary=ARGS.old_release, expected="unsupported_storage")
+            self.assertEqual(moves(), 0)
+            f.commands.append({"contention": owners, "target_moves": 0})
 
     def test_conversion_interruptions(self):
         """Kill the converter around each rename and sync, then check the permitted retry against the
